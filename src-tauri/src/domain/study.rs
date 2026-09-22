@@ -4,6 +4,11 @@ use uuid::Uuid;
 
 const MAX_TASK_MINUTES: i64 = 1_440;
 const MAX_SESSION_SECONDS: i64 = 604_800;
+pub const SESSION_XP_DAILY_CAP: i64 = 120;
+pub const QUESTION_XP_PER_DAY: i64 = 2;
+pub const QUESTION_XP_DAILY_CAP: i64 = 60;
+pub const XP_RULES_VERSION: i64 = 1;
+pub const QUESTION_XP_RULES_VERSION: i64 = 1;
 
 #[derive(Debug, Clone)]
 pub struct CreateStudyTaskInput {
@@ -16,8 +21,30 @@ pub struct CreateStudyTaskInput {
 }
 
 #[derive(Debug, Clone)]
+pub struct RescheduleStudyTaskInput {
+    pub task_id: String,
+    pub scheduled_for: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkipStudyTaskInput {
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct StartStudySessionInput {
     pub task_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PauseStudySessionInput {
+    pub session_id: String,
+    pub effective_seconds: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResumeStudySessionInput {
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +99,7 @@ pub struct StudySessionSummary {
     pub task_id: String,
     pub subject_id: Option<String>,
     pub started_at: String,
+    pub active_started_at: Option<String>,
     pub effective_seconds: i64,
     pub status: StudySessionStatus,
 }
@@ -82,6 +110,46 @@ pub struct DailyPlan {
     pub date: String,
     pub tasks: Vec<StudyTaskSummary>,
     pub active_session: Option<StudySessionSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishStudySessionResult {
+    pub session: StudySessionSummary,
+    pub xp_granted: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyHistoryEntry {
+    pub session_id: String,
+    pub task_id: String,
+    pub task_title: String,
+    pub subject_name: Option<String>,
+    pub ended_at: String,
+    pub effective_seconds: i64,
+    pub task_status: StudyTaskStatus,
+    pub xp_granted: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyProgressSummary {
+    pub total_xp: i64,
+    pub completed_sessions: i64,
+    pub effective_seconds: i64,
+    pub recent_sessions: Vec<StudyHistoryEntry>,
+}
+
+pub fn calculate_session_xp(effective_seconds: i64, granted_today: i64) -> i64 {
+    let available_today = (SESSION_XP_DAILY_CAP - granted_today).max(0);
+    (effective_seconds / 60)
+        .clamp(0, SESSION_XP_DAILY_CAP)
+        .min(available_today)
+}
+
+pub fn calculate_question_xp(granted_today: i64) -> i64 {
+    (QUESTION_XP_DAILY_CAP - granted_today).clamp(0, QUESTION_XP_PER_DAY)
 }
 
 pub fn normalize_study_task_input(
@@ -117,6 +185,44 @@ pub fn normalize_start_session_input(
 ) -> Result<StartStudySessionInput, String> {
     Ok(StartStudySessionInput {
         task_id: normalize_id(&input.task_id, "A tarefa")?,
+    })
+}
+
+pub fn normalize_reschedule_task_input(
+    input: RescheduleStudyTaskInput,
+) -> Result<RescheduleStudyTaskInput, String> {
+    Ok(RescheduleStudyTaskInput {
+        task_id: normalize_id(&input.task_id, "A tarefa")?,
+        scheduled_for: normalize_date(&input.scheduled_for)?,
+    })
+}
+
+pub fn normalize_skip_task_input(input: SkipStudyTaskInput) -> Result<SkipStudyTaskInput, String> {
+    Ok(SkipStudyTaskInput {
+        task_id: normalize_id(&input.task_id, "A tarefa")?,
+    })
+}
+
+pub fn normalize_pause_session_input(
+    input: PauseStudySessionInput,
+) -> Result<PauseStudySessionInput, String> {
+    if !(0..=MAX_SESSION_SECONDS).contains(&input.effective_seconds) {
+        return Err(format!(
+            "A duração efetiva deve estar entre 0 e {MAX_SESSION_SECONDS} segundos."
+        ));
+    }
+
+    Ok(PauseStudySessionInput {
+        session_id: normalize_id(&input.session_id, "A sessão")?,
+        effective_seconds: input.effective_seconds,
+    })
+}
+
+pub fn normalize_resume_session_input(
+    input: ResumeStudySessionInput,
+) -> Result<ResumeStudySessionInput, String> {
+    Ok(ResumeStudySessionInput {
+        session_id: normalize_id(&input.session_id, "A sessão")?,
     })
 }
 
@@ -164,13 +270,19 @@ pub fn parse_session_status(value: &str) -> Result<StudySessionStatus, String> {
     }
 }
 
-fn normalize_required_text(value: String, label: &str, max_length: usize) -> Result<String, String> {
+fn normalize_required_text(
+    value: String,
+    label: &str,
+    max_length: usize,
+) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(format!("{label} é obrigatório."));
     }
     if trimmed.chars().count() > max_length {
-        return Err(format!("{label} deve ter no máximo {max_length} caracteres."));
+        return Err(format!(
+            "{label} deve ter no máximo {max_length} caracteres."
+        ));
     }
     if trimmed.chars().any(char::is_control) {
         return Err(format!("{label} contém caracteres inválidos."));
@@ -191,6 +303,19 @@ fn normalize_optional_text(
         return Ok(None);
     }
     normalize_required_text(trimmed.to_string(), label, max_length).map(Some)
+}
+
+#[cfg(test)]
+mod question_xp_tests {
+    use super::{calculate_question_xp, QUESTION_XP_DAILY_CAP};
+
+    #[test]
+    fn grants_two_xp_until_the_daily_cap() {
+        assert_eq!(calculate_question_xp(0), 2);
+        assert_eq!(calculate_question_xp(59), 1);
+        assert_eq!(calculate_question_xp(QUESTION_XP_DAILY_CAP), 0);
+        assert_eq!(calculate_question_xp(80), 0);
+    }
 }
 
 fn normalize_id(value: &str, label: &str) -> Result<String, String> {
@@ -236,6 +361,20 @@ mod tests {
         };
 
         assert!(normalize_study_task_input(task).is_err());
+        assert!(normalize_pause_session_input(PauseStudySessionInput {
+            session_id: "not-an-id".to_string(),
+            effective_seconds: 30,
+        })
+        .is_err());
         assert!(normalize_task_completion("unknown").is_err());
+    }
+
+    #[test]
+    fn calculates_session_xp_with_daily_cap() {
+        assert_eq!(calculate_session_xp(59, 0), 0);
+        assert_eq!(calculate_session_xp(3_600, 0), 60);
+        assert_eq!(calculate_session_xp(9_000, 0), SESSION_XP_DAILY_CAP);
+        assert_eq!(calculate_session_xp(3_600, 100), 20);
+        assert_eq!(calculate_session_xp(3_600, SESSION_XP_DAILY_CAP), 0);
     }
 }

@@ -1,0 +1,378 @@
+use serde::Serialize;
+use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct QuestionOptionInput {
+    pub key: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateQuestionInput {
+    pub question_type: String,
+    pub statement_markdown: String,
+    pub options: Vec<QuestionOptionInput>,
+    pub answer_key: Option<String>,
+    pub explanation_markdown: Option<String>,
+    pub source_name: Option<String>,
+    pub board: Option<String>,
+    pub organization: Option<String>,
+    pub role: Option<String>,
+    pub exam_year: Option<i64>,
+    pub subject_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListQuestionsInput {
+    pub subject_id: Option<String>,
+    pub question_type: Option<String>,
+    pub status: Option<String>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnswerQuestionInput {
+    pub question_id: String,
+    pub selected_key: Option<String>,
+    pub confidence: String,
+    pub elapsed_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionOptionSummary {
+    pub key: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionSummary {
+    pub id: String,
+    pub question_type: String,
+    pub statement_markdown: String,
+    pub options: Vec<QuestionOptionSummary>,
+    pub answer_key: Option<String>,
+    pub explanation_markdown: Option<String>,
+    pub source_name: Option<String>,
+    pub board: Option<String>,
+    pub organization: Option<String>,
+    pub role: Option<String>,
+    pub exam_year: Option<i64>,
+    pub subject_id: Option<String>,
+    pub subject_name: Option<String>,
+    pub status: String,
+    pub attempts_count: i64,
+    pub first_attempt_result: Option<String>,
+    pub last_attempt_result: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionAttemptSummary {
+    pub id: String,
+    pub question_id: String,
+    pub selected_key: Option<String>,
+    pub confidence: String,
+    pub elapsed_seconds: i64,
+    pub answer_key_at_attempt: Option<String>,
+    pub result: String,
+    pub answered_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerQuestionResult {
+    pub attempt: QuestionAttemptSummary,
+    pub question: QuestionSummary,
+    pub xp_granted: i64,
+}
+
+pub fn normalize_create_question_input(
+    input: CreateQuestionInput,
+) -> Result<CreateQuestionInput, String> {
+    let question_type = normalize_question_type(&input.question_type)?;
+    let statement_markdown = normalize_markdown(input.statement_markdown, "O enunciado", 50_000)?;
+    let options = normalize_options(&question_type, input.options)?;
+    let answer_key = input
+        .answer_key
+        .map(|value| normalize_answer_key(&value, &question_type))
+        .transpose()?;
+
+    if let Some(answer_key) = answer_key.as_deref() {
+        if !options.iter().any(|option| option.key == answer_key) {
+            return Err("O gabarito precisa apontar para uma alternativa existente.".to_string());
+        }
+    }
+
+    Ok(CreateQuestionInput {
+        question_type,
+        statement_markdown,
+        options,
+        answer_key,
+        explanation_markdown: input
+            .explanation_markdown
+            .map(|value| normalize_markdown(value, "A explicação", 50_000))
+            .transpose()?,
+        source_name: normalize_optional_text(input.source_name, "A origem", 240)?,
+        board: normalize_optional_text(input.board, "A banca", 160)?,
+        organization: normalize_optional_text(input.organization, "O órgão", 160)?,
+        role: normalize_optional_text(input.role, "O cargo", 160)?,
+        exam_year: normalize_exam_year(input.exam_year)?,
+        subject_id: input
+            .subject_id
+            .map(|value| normalize_id(&value, "O assunto"))
+            .transpose()?,
+    })
+}
+
+pub fn normalize_list_questions_input(
+    input: ListQuestionsInput,
+) -> Result<ListQuestionsInput, String> {
+    let limit = if input.limit == 0 {
+        50
+    } else if !(1..=100).contains(&input.limit) {
+        return Err("A quantidade de questões deve ficar entre 1 e 100.".to_string());
+    } else {
+        input.limit
+    };
+    if input.offset < 0 {
+        return Err("O deslocamento da lista não pode ser negativo.".to_string());
+    }
+
+    Ok(ListQuestionsInput {
+        subject_id: input
+            .subject_id
+            .map(|value| normalize_id(&value, "O assunto"))
+            .transpose()?,
+        question_type: input
+            .question_type
+            .map(|value| normalize_question_type(&value))
+            .transpose()?,
+        status: input
+            .status
+            .map(|value| normalize_status(&value))
+            .transpose()?,
+        limit,
+        offset: input.offset,
+    })
+}
+
+pub fn normalize_answer_question_input(
+    input: AnswerQuestionInput,
+) -> Result<AnswerQuestionInput, String> {
+    if input.elapsed_seconds < 0 || input.elapsed_seconds > 86_400 {
+        return Err("O tempo da tentativa precisa estar entre 0 e 24 horas.".to_string());
+    }
+
+    let confidence = match input.confidence.trim() {
+        "certain" | "doubt" | "guess" => input.confidence.trim().to_string(),
+        _ => return Err("A confiança precisa ser certeza, dúvida ou chute.".to_string()),
+    };
+
+    Ok(AnswerQuestionInput {
+        question_id: normalize_id(&input.question_id, "A questão")?,
+        selected_key: input
+            .selected_key
+            .map(|value| normalize_selected_key(&value))
+            .transpose()?,
+        confidence,
+        elapsed_seconds: input.elapsed_seconds,
+    })
+}
+
+fn normalize_question_type(value: &str) -> Result<String, String> {
+    match value.trim() {
+        "multiple_choice" | "true_false" => Ok(value.trim().to_string()),
+        _ => Err("O tipo da questão precisa ser múltipla escolha ou certo/errado.".to_string()),
+    }
+}
+
+fn normalize_options(
+    question_type: &str,
+    options: Vec<QuestionOptionInput>,
+) -> Result<Vec<QuestionOptionInput>, String> {
+    let mut normalized = Vec::new();
+    for option in options {
+        let key = normalize_option_key(&option.key, question_type)?;
+        if normalized
+            .iter()
+            .any(|item: &QuestionOptionInput| item.key == key)
+        {
+            return Err("As alternativas não podem repetir a mesma letra.".to_string());
+        }
+        normalized.push(QuestionOptionInput {
+            key,
+            text: normalize_markdown(option.text, "O texto da alternativa", 10_000)?,
+        });
+    }
+
+    if question_type == "multiple_choice" {
+        if !(2..=5).contains(&normalized.len()) {
+            return Err(
+                "Uma questão de múltipla escolha precisa de 2 a 5 alternativas.".to_string(),
+            );
+        }
+    } else {
+        let has_true = normalized.iter().any(|option| option.key == "true");
+        let has_false = normalized.iter().any(|option| option.key == "false");
+        if normalized.len() != 2 || !has_true || !has_false {
+            return Err("Uma questão certo/errado precisa das opções Certo e Errado.".to_string());
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_option_key(value: &str, question_type: &str) -> Result<String, String> {
+    let key = value.trim();
+    if question_type == "true_false" {
+        return match key {
+            "true" | "false" => Ok(key.to_string()),
+            _ => Err("As opções certo/errado devem usar true ou false.".to_string()),
+        };
+    }
+
+    match key {
+        "A" | "B" | "C" | "D" | "E" => Ok(key.to_string()),
+        _ => Err("As alternativas devem usar as letras A até E.".to_string()),
+    }
+}
+
+fn normalize_answer_key(value: &str, question_type: &str) -> Result<String, String> {
+    normalize_option_key(value.trim(), question_type)
+}
+
+fn normalize_selected_key(value: &str) -> Result<String, String> {
+    let key = value.trim();
+    match key {
+        "A" | "B" | "C" | "D" | "E" | "true" | "false" => Ok(key.to_string()),
+        _ => Err("A resposta escolhida não é válida.".to_string()),
+    }
+}
+
+fn normalize_status(value: &str) -> Result<String, String> {
+    match value.trim() {
+        "active" | "annulled" | "outdated" | "answer_changed" => Ok(value.trim().to_string()),
+        _ => Err("A situação da questão não é válida.".to_string()),
+    }
+}
+
+fn normalize_markdown(value: String, label: &str, max_length: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label} é obrigatório."));
+    }
+    if trimmed.chars().count() > max_length {
+        return Err(format!(
+            "{label} deve ter no máximo {max_length} caracteres."
+        ));
+    }
+    if trimmed
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(format!("{label} contém caracteres inválidos."));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_optional_text(
+    value: Option<String>,
+    label: &str,
+    max_length: usize,
+) -> Result<Option<String>, String> {
+    value
+        .map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            if trimmed.chars().count() > max_length || trimmed.chars().any(char::is_control) {
+                return Err(format!(
+                    "{label} contém caracteres inválidos ou é longo demais."
+                ));
+            }
+            Ok(Some(trimmed.to_string()))
+        })
+        .transpose()
+        .map(|value| value.flatten())
+}
+
+fn normalize_exam_year(value: Option<i64>) -> Result<Option<i64>, String> {
+    match value {
+        None => Ok(None),
+        Some(year) if (1900..=2200).contains(&year) => Ok(Some(year)),
+        Some(_) => Err("O ano da questão deve estar entre 1900 e 2200.".to_string()),
+    }
+}
+
+fn normalize_id(value: &str, label: &str) -> Result<String, String> {
+    Uuid::parse_str(value.trim())
+        .map(|parsed| parsed.to_string())
+        .map_err(|_| format!("{label} não é válido."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_multiple_choice_with_pending_answer() {
+        let question = normalize_create_question_input(CreateQuestionInput {
+            question_type: "multiple_choice".to_string(),
+            statement_markdown: "  Qual protocolo?  ".to_string(),
+            options: vec![
+                QuestionOptionInput {
+                    key: "A".to_string(),
+                    text: "TCP".to_string(),
+                },
+                QuestionOptionInput {
+                    key: "B".to_string(),
+                    text: "UDP".to_string(),
+                },
+            ],
+            answer_key: None,
+            explanation_markdown: None,
+            source_name: None,
+            board: None,
+            organization: None,
+            role: None,
+            exam_year: None,
+            subject_id: Some(Uuid::new_v4().to_string()),
+        })
+        .expect("a questão deve ser válida");
+
+        assert_eq!(question.statement_markdown, "Qual protocolo?");
+        assert_eq!(question.options.len(), 2);
+    }
+
+    #[test]
+    fn rejects_invalid_confidence_and_options() {
+        assert!(normalize_answer_question_input(AnswerQuestionInput {
+            question_id: Uuid::new_v4().to_string(),
+            selected_key: None,
+            confidence: "maybe".to_string(),
+            elapsed_seconds: 10,
+        })
+        .is_err());
+        assert!(normalize_create_question_input(CreateQuestionInput {
+            question_type: "true_false".to_string(),
+            statement_markdown: "Questão".to_string(),
+            options: vec![QuestionOptionInput {
+                key: "true".to_string(),
+                text: "Certo".to_string(),
+            }],
+            answer_key: None,
+            explanation_markdown: None,
+            source_name: None,
+            board: None,
+            organization: None,
+            role: None,
+            exam_year: None,
+            subject_id: None,
+        })
+        .is_err());
+    }
+}

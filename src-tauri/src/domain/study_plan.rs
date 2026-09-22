@@ -68,7 +68,11 @@ pub fn normalize_subject_input(input: CreateSubjectInput) -> Result<CreateSubjec
     })
 }
 
-fn normalize_required_text(value: String, label: &str, max_length: usize) -> Result<String, String> {
+fn normalize_required_text(
+    value: String,
+    label: &str,
+    max_length: usize,
+) -> Result<String, String> {
     let trimmed = value.trim();
 
     if trimmed.is_empty() {
@@ -76,7 +80,9 @@ fn normalize_required_text(value: String, label: &str, max_length: usize) -> Res
     }
 
     if trimmed.chars().count() > max_length {
-        return Err(format!("{label} deve ter no máximo {max_length} caracteres."));
+        return Err(format!(
+            "{label} deve ter no máximo {max_length} caracteres."
+        ));
     }
 
     if trimmed.chars().any(char::is_control) {

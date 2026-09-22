@@ -30,11 +30,15 @@ impl<S: StudyPlanStore> StudyPlanService<S> {
         &self,
         input: CreatePreparationInput,
     ) -> Result<PreparationSummary, WorkspaceError> {
-        let normalized = normalize_preparation_input(input).map_err(WorkspaceError::InvalidInput)?;
+        let normalized =
+            normalize_preparation_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.create_preparation(&normalized)
     }
 
-    pub fn create_subject(&self, input: CreateSubjectInput) -> Result<SubjectSummary, WorkspaceError> {
+    pub fn create_subject(
+        &self,
+        input: CreateSubjectInput,
+    ) -> Result<SubjectSummary, WorkspaceError> {
         let normalized = normalize_subject_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.create_subject(&normalized)
     }

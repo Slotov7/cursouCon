@@ -11,11 +11,24 @@ O primeiro protótipo vertical implementa:
 - manifesto versionado em `workspace.json`;
 - validação de formato, estrutura e permissão de escrita;
 - banco SQLite de trabalho fora da pasta portátil, em `appDataDir`;
-- migração inicial para preparações, assuntos, tarefas, sessões e eventos de XP;
+- migrações SQLite versionadas para preparações, assuntos, tarefas, sessões, materiais, notas, questões, tentativas e hashes de importação;
 - cadastro persistente de preparações e árvore inicial de disciplinas/assuntos;
-- tela Hoje e navegação inicial sem criar dados fictícios.
+- criação de tarefas para uma data e plano diário local;
+- reagendamento, pulo e conclusão parcial de tarefas sem apagar seus registros;
+- importação de materiais para `blobs/<sha256>`, deduplicação e vínculo opcional a assunto;
+- criação e edição de notas Markdown vinculadas a material ou assunto;
+- início, pausa, retomada e encerramento idempotentes de sessões, com resultado parcial ou concluído;
+- concessão idempotente de XP por sessão, com teto diário e regras versionadas;
+- concessão de 2 XP pela primeira tentativa diária de cada questão, limitada a 60 XP/dia nessa categoria;
+- cadastro manual de questões de múltipla escolha e certo/errado;
+- filtros locais por assunto e tipo, resolução offline e tentativas imutáveis com confiança, tempo e resultado;
+- núcleo e ponte IPC para importação JSON versionada de questões, com prévia, diagnóstico de inválidas/duplicadas e gravação transacional;
+- núcleo e ponte IPC para exportação das questões ativas em pacotes locais de `exports/`, preservando referências e hashes de anexos;
+- tela Evolução com métricas locais e histórico recente de sessões;
+- tela Hoje, tela Plano e navegação inicial sem criar dados fictícios;
+- interface responsiva estilizada com Tailwind CSS 4 e tokens visuais locais.
 
-O núcleo ainda não implementa ciclo de estudos, materiais, questões ou sessões. Essas áreas entram em fatias seguintes e não são simuladas pela interface.
+Leitura integrada de PDFs com retomada de página, notas Markdown, questões manuais e tentativas já estão disponíveis. Os controles visuais da troca JSON, cadernos, revisões agendadas, sequência de dias e as áreas de exploração entram em fatias seguintes.
 
 ## Desenvolvimento
 
@@ -33,6 +46,8 @@ npm run tauri dev
 ## Organização
 
 - `src/app/`: composição da interface e navegação inicial.
+- `src/features/`: fluxos de workspace, Hoje, Plano, Materiais e Praticar.
+- `src/shared/ui/`: primitivas visuais e tokens usados pelos componentes.
 - `src/shared/desktop/`: contratos e chamadas IPC tipadas.
 - `src-tauri/src/domain/`: identidade e validações do espaço.
 - `src-tauri/src/application/`: caso de uso e contrato do armazenamento.

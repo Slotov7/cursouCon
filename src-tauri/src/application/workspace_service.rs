@@ -1,4 +1,6 @@
-use crate::domain::workspace::{validate_workspace_name, validate_workspace_path, WorkspaceManifest, WorkspaceSummary};
+use crate::domain::workspace::{
+    validate_workspace_name, validate_workspace_path, WorkspaceManifest, WorkspaceSummary,
+};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -10,10 +12,9 @@ pub struct WorkspaceRecord {
 
 impl WorkspaceRecord {
     pub fn summary(&self) -> Result<WorkspaceSummary, WorkspaceError> {
-        let path = self
-            .path
-            .to_str()
-            .ok_or_else(|| WorkspaceError::InvalidWorkspace("O caminho do espaço não é válido.".to_string()))?;
+        let path = self.path.to_str().ok_or_else(|| {
+            WorkspaceError::InvalidWorkspace("O caminho do espaço não é válido.".to_string())
+        })?;
 
         Ok(WorkspaceSummary {
             workspace_id: self.manifest.workspace_id,

@@ -3,7 +3,9 @@ use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study::{
     normalize_task_completion, CreateStudyTaskInput, DailyPlan, FinishStudySessionInput,
-    StartStudySessionInput, StudySessionSummary, StudyTaskSummary,
+    FinishStudySessionResult, PauseStudySessionInput, RescheduleStudyTaskInput,
+    ResumeStudySessionInput, SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary,
+    StudySessionSummary, StudyTaskSummary,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -27,8 +29,34 @@ pub struct CreateStudyTaskRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RescheduleStudyTaskRequest {
+    pub task_id: String,
+    pub scheduled_for: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkipStudyTaskRequest {
+    pub task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartStudySessionRequest {
     pub task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseStudySessionRequest {
+    pub session_id: String,
+    pub effective_seconds: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeStudySessionRequest {
+    pub session_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +99,33 @@ pub fn create_study_task(
 }
 
 #[tauri::command]
+pub fn reschedule_study_task(
+    app: AppHandle,
+    request: RescheduleStudyTaskRequest,
+) -> Result<StudyTaskSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .reschedule_task(RescheduleStudyTaskInput {
+            task_id: request.task_id,
+            scheduled_for: request.scheduled_for,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn skip_study_task(
+    app: AppHandle,
+    request: SkipStudyTaskRequest,
+) -> Result<StudyTaskSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .skip_task(SkipStudyTaskInput {
+            task_id: request.task_id,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub fn start_study_session(
     app: AppHandle,
     request: StartStudySessionRequest,
@@ -84,10 +139,37 @@ pub fn start_study_session(
 }
 
 #[tauri::command]
+pub fn pause_study_session(
+    app: AppHandle,
+    request: PauseStudySessionRequest,
+) -> Result<StudySessionSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .pause_session(PauseStudySessionInput {
+            session_id: request.session_id,
+            effective_seconds: request.effective_seconds,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn resume_study_session(
+    app: AppHandle,
+    request: ResumeStudySessionRequest,
+) -> Result<StudySessionSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .resume_session(ResumeStudySessionInput {
+            session_id: request.session_id,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub fn finish_study_session(
     app: AppHandle,
     request: FinishStudySessionRequest,
-) -> Result<StudySessionSummary, CommandError> {
+) -> Result<FinishStudySessionResult, CommandError> {
     let store = local_workspace_store(&app)?;
     let task_status = normalize_task_completion(&request.task_status)
         .map_err(|error| CommandError::new("invalid_input", error))?;
@@ -98,5 +180,13 @@ pub fn finish_study_session(
             effective_seconds: request.effective_seconds,
             task_status,
         })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_study_progress(app: AppHandle) -> Result<StudyProgressSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .study_progress()
         .map_err(CommandError::from)
 }

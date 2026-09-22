@@ -157,9 +157,7 @@ fn load_preparations(
         .collect()
 }
 
-fn load_subjects(
-    connection: &rusqlite::Connection,
-) -> Result<Vec<SubjectSummary>, WorkspaceError> {
+fn load_subjects(connection: &rusqlite::Connection) -> Result<Vec<SubjectSummary>, WorkspaceError> {
     let mut statement = connection
         .prepare(
             "SELECT s.id, s.preparation_id, s.parent_id, s.name, s.position
@@ -240,8 +238,10 @@ mod tests {
 
     #[test]
     fn creates_preparation_and_nested_subjects_in_one_plan() {
-        let workspace_path = std::env::temp_dir().join(format!("cursoucon-plan-{}", Uuid::new_v4()));
-        let app_data_dir = std::env::temp_dir().join(format!("cursoucon-app-data-{}", Uuid::new_v4()));
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-plan-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-app-data-{}", Uuid::new_v4()));
         let store = LocalWorkspaceStore::new(app_data_dir.clone());
         store
             .create_workspace(&workspace_path, "Plano de teste")

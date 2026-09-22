@@ -19,9 +19,7 @@ pub struct OpenWorkspaceRequest {
     pub workspace_path: String,
 }
 
-pub(crate) fn local_workspace_store(
-    app: &AppHandle,
-) -> Result<LocalWorkspaceStore, CommandError> {
+pub(crate) fn local_workspace_store(app: &AppHandle) -> Result<LocalWorkspaceStore, CommandError> {
     let app_data_dir = app.path().app_data_dir().map_err(|error| CommandError {
         code: "app_data_unavailable".to_string(),
         message: format!("Não foi possível preparar o armazenamento local: {error}"),
@@ -30,7 +28,9 @@ pub(crate) fn local_workspace_store(
     Ok(LocalWorkspaceStore::new(app_data_dir))
 }
 
-fn workspace_service(app: &AppHandle) -> Result<WorkspaceService<LocalWorkspaceStore>, CommandError> {
+fn workspace_service(
+    app: &AppHandle,
+) -> Result<WorkspaceService<LocalWorkspaceStore>, CommandError> {
     Ok(WorkspaceService::new(local_workspace_store(app)?))
 }
 
@@ -57,9 +57,7 @@ pub fn open_workspace(
 }
 
 #[tauri::command]
-pub fn get_active_workspace(
-    app: AppHandle,
-) -> Result<Option<WorkspaceSummary>, CommandError> {
+pub fn get_active_workspace(app: AppHandle) -> Result<Option<WorkspaceSummary>, CommandError> {
     let service = workspace_service(&app)?;
     service.active().map_err(CommandError::from)
 }
