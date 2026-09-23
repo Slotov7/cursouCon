@@ -52,6 +52,7 @@ pub struct FinishStudySessionInput {
     pub session_id: String,
     pub effective_seconds: i64,
     pub task_status: TaskCompletion,
+    pub review_on: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -70,6 +71,13 @@ pub enum StudySessionStatus {
     Paused,
     Completed,
     Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StudyReviewStatus {
+    Pending,
+    Completed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +118,7 @@ pub struct DailyPlan {
     pub date: String,
     pub tasks: Vec<StudyTaskSummary>,
     pub active_session: Option<StudySessionSummary>,
+    pub reviews: Vec<StudyReviewSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,6 +126,32 @@ pub struct DailyPlan {
 pub struct FinishStudySessionResult {
     pub session: StudySessionSummary,
     pub xp_granted: i64,
+    pub review: Option<StudyReviewSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyReviewSummary {
+    pub id: String,
+    pub subject_id: String,
+    pub subject_name: String,
+    pub source_session_id: String,
+    pub due_date: String,
+    pub status: StudyReviewStatus,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RescheduleStudyReviewInput {
+    pub review_id: String,
+    pub due_date: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompleteStudyReviewInput {
+    pub review_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,7 +173,60 @@ pub struct StudyProgressSummary {
     pub total_xp: i64,
     pub completed_sessions: i64,
     pub effective_seconds: i64,
+    pub streak: StudyStreakSummary,
     pub recent_sessions: Vec<StudyHistoryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyStreakSummary {
+    pub current_planned_days: i64,
+    pub longest_planned_days: i64,
+    pub last_study_day: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlannedStudyDay {
+    pub date: String,
+    pub completed: bool,
+}
+
+pub fn calculate_study_streak(days: &[PlannedStudyDay], as_of_date: &str) -> StudyStreakSummary {
+    let mut ordered_days = days
+        .iter()
+        .filter(|day| day.date.as_str() <= as_of_date)
+        .collect::<Vec<_>>();
+    ordered_days.sort_by(|left, right| left.date.cmp(&right.date));
+
+    let mut longest_planned_days = 0;
+    let mut run_length = 0;
+    let mut last_study_day = None;
+    for day in &ordered_days {
+        if day.completed {
+            run_length += 1;
+            longest_planned_days = longest_planned_days.max(run_length);
+            last_study_day = Some(day.date.clone());
+        } else {
+            run_length = 0;
+        }
+    }
+
+    let mut current_planned_days = 0;
+    for day in ordered_days.iter().rev() {
+        if day.date == as_of_date && !day.completed {
+            continue;
+        }
+        if !day.completed {
+            break;
+        }
+        current_planned_days += 1;
+    }
+
+    StudyStreakSummary {
+        current_planned_days,
+        longest_planned_days,
+        last_study_day,
+    }
 }
 
 pub fn calculate_session_xp(effective_seconds: i64, granted_today: i64) -> i64 {
@@ -235,10 +323,42 @@ pub fn normalize_finish_session_input(
         ));
     }
 
+    let review_on = input
+        .review_on
+        .map(|date| {
+            normalize_date(&date).map_err(|_| {
+                "A data da revisão deve ser uma data válida no formato AAAA-MM-DD.".to_string()
+            })
+        })
+        .transpose()?;
+    if input.task_status == TaskCompletion::Partial && review_on.is_some() {
+        return Err("Uma revisão só pode ser agendada ao concluir a tarefa.".to_string());
+    }
+
     Ok(FinishStudySessionInput {
         session_id: normalize_id(&input.session_id, "A sessão")?,
         effective_seconds: input.effective_seconds,
         task_status: input.task_status,
+        review_on,
+    })
+}
+
+pub fn normalize_reschedule_study_review_input(
+    input: RescheduleStudyReviewInput,
+) -> Result<RescheduleStudyReviewInput, String> {
+    Ok(RescheduleStudyReviewInput {
+        review_id: normalize_id(&input.review_id, "A revisão")?,
+        due_date: normalize_date(&input.due_date).map_err(|_| {
+            "A data da revisão deve ser uma data válida no formato AAAA-MM-DD.".to_string()
+        })?,
+    })
+}
+
+pub fn normalize_complete_study_review_input(
+    input: CompleteStudyReviewInput,
+) -> Result<CompleteStudyReviewInput, String> {
+    Ok(CompleteStudyReviewInput {
+        review_id: normalize_id(&input.review_id, "A revisão")?,
     })
 }
 
@@ -345,8 +465,16 @@ mod tests {
             session_id: Uuid::new_v4().to_string(),
             effective_seconds: 45 * 60,
             task_status: TaskCompletion::Completed,
+            review_on: Some("2032-03-01".to_string()),
         })
         .is_ok());
+        assert!(normalize_finish_session_input(FinishStudySessionInput {
+            session_id: Uuid::new_v4().to_string(),
+            effective_seconds: 45 * 60,
+            task_status: TaskCompletion::Partial,
+            review_on: Some("2032-03-01".to_string()),
+        })
+        .is_err());
     }
 
     #[test]
@@ -376,5 +504,32 @@ mod tests {
         assert_eq!(calculate_session_xp(9_000, 0), SESSION_XP_DAILY_CAP);
         assert_eq!(calculate_session_xp(3_600, 100), 20);
         assert_eq!(calculate_session_xp(3_600, SESSION_XP_DAILY_CAP), 0);
+    }
+
+    #[test]
+    fn calculates_streak_across_rest_days_and_breaks_after_a_missed_planned_day() {
+        let planned_days = [
+            PlannedStudyDay {
+                date: "2032-01-05".to_string(),
+                completed: true,
+            },
+            PlannedStudyDay {
+                date: "2032-01-07".to_string(),
+                completed: true,
+            },
+            PlannedStudyDay {
+                date: "2032-01-10".to_string(),
+                completed: false,
+            },
+        ];
+
+        let streak_today = calculate_study_streak(&planned_days, "2032-01-10");
+        let streak_next_day = calculate_study_streak(&planned_days, "2032-01-11");
+
+        assert_eq!(streak_today.current_planned_days, 2);
+        assert_eq!(streak_today.longest_planned_days, 2);
+        assert_eq!(streak_today.last_study_day.as_deref(), Some("2032-01-07"));
+        assert_eq!(streak_next_day.current_planned_days, 0);
+        assert_eq!(streak_next_day.longest_planned_days, 2);
     }
 }

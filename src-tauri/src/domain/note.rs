@@ -56,11 +56,9 @@ fn normalize_note_content(value: String) -> Result<String, String> {
     if value.chars().count() > 100_000 {
         return Err("O conteúdo da nota deve ter no máximo 100.000 caracteres.".to_string());
     }
-    if value.chars().any(char::is_control)
-        && value
-            .chars()
-            .any(|character| character != '\n' && character != '\r' && character != '\t')
-    {
+    if value.chars().any(|character| {
+        character.is_control() && character != '\n' && character != '\r' && character != '\t'
+    }) {
         return Err("O conteúdo da nota contém caracteres inválidos.".to_string());
     }
     Ok(value)
@@ -110,6 +108,14 @@ mod tests {
         assert_eq!(note.title, "HTTP");
         assert_eq!(note.content_markdown, "# Cabeçalhos\n\n- Cache");
         assert_eq!(note.subject_id.as_deref(), Some(subject_id.as_str()));
+        assert!(normalize_save_note_input(SaveNoteInput {
+            id: None,
+            title: "Nota inválida".to_string(),
+            content_markdown: "texto\0inválido".to_string(),
+            material_id: None,
+            subject_id: Some(subject_id.clone()),
+        })
+        .is_err());
         assert!(normalize_save_note_input(SaveNoteInput {
             id: None,
             title: "Sem vínculo".to_string(),

@@ -2,9 +2,10 @@ use crate::application::study_service::StudyService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study::{
-    normalize_task_completion, CreateStudyTaskInput, DailyPlan, FinishStudySessionInput,
-    FinishStudySessionResult, PauseStudySessionInput, RescheduleStudyTaskInput,
-    ResumeStudySessionInput, SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary,
+    normalize_task_completion, CompleteStudyReviewInput, CreateStudyTaskInput, DailyPlan,
+    FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput,
+    RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
+    SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary, StudyReviewSummary,
     StudySessionSummary, StudyTaskSummary,
 };
 use serde::Deserialize;
@@ -65,6 +66,26 @@ pub struct FinishStudySessionRequest {
     pub session_id: String,
     pub effective_seconds: i64,
     pub task_status: String,
+    pub review_on: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescheduleStudyReviewRequest {
+    pub review_id: String,
+    pub due_date: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteStudyReviewRequest {
+    pub review_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyProgressRequest {
+    pub as_of_date: String,
 }
 
 #[tauri::command]
@@ -179,14 +200,45 @@ pub fn finish_study_session(
             session_id: request.session_id,
             effective_seconds: request.effective_seconds,
             task_status,
+            review_on: request.review_on,
         })
         .map_err(CommandError::from)
 }
 
 #[tauri::command]
-pub fn get_study_progress(app: AppHandle) -> Result<StudyProgressSummary, CommandError> {
+pub fn reschedule_study_review(
+    app: AppHandle,
+    request: RescheduleStudyReviewRequest,
+) -> Result<StudyReviewSummary, CommandError> {
     let store = local_workspace_store(&app)?;
     StudyService::new(store)
-        .study_progress()
+        .reschedule_review(RescheduleStudyReviewInput {
+            review_id: request.review_id,
+            due_date: request.due_date,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn complete_study_review(
+    app: AppHandle,
+    request: CompleteStudyReviewRequest,
+) -> Result<StudyReviewSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .complete_review(CompleteStudyReviewInput {
+            review_id: request.review_id,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_study_progress(
+    app: AppHandle,
+    request: StudyProgressRequest,
+) -> Result<StudyProgressSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .study_progress(&request.as_of_date)
         .map_err(CommandError::from)
 }

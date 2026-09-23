@@ -2,7 +2,8 @@ use crate::application::study_plan_service::StudyPlanService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study_plan::{
-    CreatePreparationInput, CreateSubjectInput, PreparationSummary, StudyPlan, SubjectSummary,
+    CreatePreparationInput, CreateSubjectInput, PreparationSummary, SetSubjectStudyStatusInput,
+    StudyPlan, SubjectStudyStatus, SubjectSummary,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -24,6 +25,13 @@ pub struct CreateSubjectRequest {
     pub preparation_id: String,
     pub name: String,
     pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSubjectStudyStatusRequest {
+    pub subject_id: String,
+    pub status: SubjectStudyStatus,
 }
 
 #[tauri::command]
@@ -67,5 +75,19 @@ pub fn create_subject(
 
     StudyPlanService::new(store)
         .create_subject(input)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn set_subject_study_status(
+    app: AppHandle,
+    request: SetSubjectStudyStatusRequest,
+) -> Result<SubjectSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyPlanService::new(store)
+        .set_subject_study_status(SetSubjectStudyStatusInput {
+            subject_id: request.subject_id,
+            status: request.status,
+        })
         .map_err(CommandError::from)
 }

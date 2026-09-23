@@ -15,6 +15,7 @@ import type {
   StudyTaskSummary,
   StudyTaskStatus,
 } from "../../shared/desktop/contracts";
+import { ReviewQueue } from "./ReviewQueue";
 import {
   buttonLightClass,
   buttonOutlineLightClass,
@@ -62,6 +63,7 @@ export function TodayView({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
+  const [reviewOn, setReviewOn] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [pomodoroSettings, setPomodoroSettings] = useState(readPomodoroSettings);
   const [pomodoroPhase, setPomodoroPhase] = useState<PomodoroPhase>("focus");
@@ -75,6 +77,10 @@ export function TodayView({
 
   const primaryPreparation = plan?.preparations.find((prep) => prep.isPrimary);
   const activeSession = dailyPlan?.activeSession ?? null;
+
+  useEffect(() => {
+    setReviewOn("");
+  }, [activeSession?.id]);
 
   const tasksToRender = dailyPlan?.tasks ?? [];
   const activeTask = tasksToRender.find((task) => task.id === activeSession?.taskId) ?? tasksToRender[0];
@@ -273,12 +279,18 @@ export function TodayView({
         sessionId: activeSession.id,
         effectiveSeconds: getElapsedSeconds(activeSession, now),
         taskStatus,
+        reviewOn: taskStatus === "completed" && reviewOn ? reviewOn : null,
       });
-      setActionMessage(
+      const finishMessage =
         result.xpGranted > 0
           ? `Sessão encerrada com sucesso! +${result.xpGranted} XP adicionados.`
-          : "Sessão encerrada.",
+          : "Sessão encerrada.";
+      setActionMessage(
+        result.review
+          ? `${finishMessage} Revisão de ${result.review.subjectName} agendada para ${formatReviewDate(result.review.dueDate)}.`
+          : finishMessage,
       );
+      setReviewOn("");
       setPomodoroRunning(false);
       setPomodoroPhase("focus");
       setPomodoroSecondsLeft(pomodoroSettings.focusMinutes * 60);
@@ -480,8 +492,30 @@ export function TodayView({
               </button>
             )}
           </div>
+
+          {activeSession && (
+            <div className="max-w-md rounded-xl border border-white/15 bg-white/5 p-3">
+              <label className="grid gap-1.5 text-xs font-semibold text-slate-100">
+                Agendar revisão ao concluir a sessão <span className="font-normal text-slate-300">(opcional)</span>
+                <input
+                  className={inputClass}
+                  type="date"
+                  value={reviewOn}
+                  onChange={(event) => setReviewOn(event.target.value)}
+                  disabled={isBusy || !activeSession.subjectId}
+                />
+              </label>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-300">
+                {activeSession.subjectId
+                  ? "A revisão será criada somente se você concluir a tarefa; encerramentos parciais não agendam revisão."
+                  : "Vincule a tarefa a um assunto para poder agendar uma revisão."}
+              </p>
+            </div>
+          )}
         </div>
       </section>
+
+      {dailyPlan && <ReviewQueue reviews={dailyPlan.reviews} onDataChanged={onDataChanged} />}
 
       {/* 2. Daily plan metrics */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
@@ -825,6 +859,15 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return `${minutes.toString().padStart(2, "0")}m ${remainingSeconds.toString().padStart(2, "0")}s`;
+}
+
+function formatReviewDate(dateKey: string): string {
+  const date = new Date(`${dateKey}T00:00:00`);
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
 }
 
 function formatPomodoroTime(seconds: number): string {

@@ -88,6 +88,17 @@ export function CommandPalette({ isOpen, onClose, onNavigate, onToggleTheme }: C
       },
     },
     {
+      id: "nav-explore",
+      label: "Ir para 'Explorar Concursos'",
+      category: "Navegação",
+      shortcut: "G X",
+      icon: IconExplore,
+      perform: () => {
+        onNavigate("explore");
+        onClose();
+      },
+    },
+    {
       id: "action-theme",
       label: "Alternar Tema Claro / Escuro",
       category: "Preferências",

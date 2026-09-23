@@ -1,11 +1,13 @@
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study::{
-    normalize_finish_session_input, normalize_pause_session_input, normalize_reschedule_task_input,
-    normalize_resume_session_input, normalize_skip_task_input, normalize_start_session_input,
-    normalize_study_task_input, CreateStudyTaskInput, DailyPlan, FinishStudySessionInput,
-    FinishStudySessionResult, PauseStudySessionInput, RescheduleStudyTaskInput,
+    normalize_complete_study_review_input, normalize_finish_session_input,
+    normalize_pause_session_input, normalize_reschedule_study_review_input,
+    normalize_reschedule_task_input, normalize_resume_session_input, normalize_skip_task_input,
+    normalize_start_session_input, normalize_study_task_input, CompleteStudyReviewInput,
+    CreateStudyTaskInput, DailyPlan, FinishStudySessionInput, FinishStudySessionResult,
+    PauseStudySessionInput, RescheduleStudyReviewInput, RescheduleStudyTaskInput,
     ResumeStudySessionInput, SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary,
-    StudySessionSummary, StudyTaskSummary,
+    StudyReviewSummary, StudySessionSummary, StudyTaskSummary,
 };
 use crate::domain::study_plan::normalize_date;
 
@@ -39,7 +41,15 @@ pub trait StudyStore {
         &self,
         input: &FinishStudySessionInput,
     ) -> Result<FinishStudySessionResult, WorkspaceError>;
-    fn study_progress(&self) -> Result<StudyProgressSummary, WorkspaceError>;
+    fn reschedule_study_review(
+        &self,
+        input: &RescheduleStudyReviewInput,
+    ) -> Result<StudyReviewSummary, WorkspaceError>;
+    fn complete_study_review(
+        &self,
+        input: &CompleteStudyReviewInput,
+    ) -> Result<StudyReviewSummary, WorkspaceError>;
+    fn study_progress(&self, as_of_date: &str) -> Result<StudyProgressSummary, WorkspaceError>;
 }
 
 pub struct StudyService<S> {
@@ -96,6 +106,24 @@ impl<S: StudyStore> StudyService<S> {
         self.store.finish_study_session(&normalized)
     }
 
+    pub fn reschedule_review(
+        &self,
+        input: RescheduleStudyReviewInput,
+    ) -> Result<StudyReviewSummary, WorkspaceError> {
+        let normalized =
+            normalize_reschedule_study_review_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.reschedule_study_review(&normalized)
+    }
+
+    pub fn complete_review(
+        &self,
+        input: CompleteStudyReviewInput,
+    ) -> Result<StudyReviewSummary, WorkspaceError> {
+        let normalized =
+            normalize_complete_study_review_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.complete_study_review(&normalized)
+    }
+
     pub fn pause_session(
         &self,
         input: PauseStudySessionInput,
@@ -114,7 +142,8 @@ impl<S: StudyStore> StudyService<S> {
         self.store.resume_study_session(&normalized)
     }
 
-    pub fn study_progress(&self) -> Result<StudyProgressSummary, WorkspaceError> {
-        self.store.study_progress()
+    pub fn study_progress(&self, as_of_date: &str) -> Result<StudyProgressSummary, WorkspaceError> {
+        let as_of_date = normalize_date(as_of_date).map_err(WorkspaceError::InvalidInput)?;
+        self.store.study_progress(&as_of_date)
     }
 }

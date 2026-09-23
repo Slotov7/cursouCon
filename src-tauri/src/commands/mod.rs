@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod contest;
 pub mod error;
 pub mod material;
 pub mod note;

@@ -2,11 +2,13 @@ use super::{map_database_error, workspace_store::LocalWorkspaceStore};
 use crate::application::study_service::StudyStore;
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study::{
-    calculate_session_xp, parse_session_status, parse_task_status, CreateStudyTaskInput, DailyPlan,
-    FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput,
+    calculate_session_xp, calculate_study_streak, parse_session_status, parse_task_status,
+    CompleteStudyReviewInput, CreateStudyTaskInput, DailyPlan, FinishStudySessionInput,
+    FinishStudySessionResult, PauseStudySessionInput, PlannedStudyDay, RescheduleStudyReviewInput,
     RescheduleStudyTaskInput, ResumeStudySessionInput, SkipStudyTaskInput, StartStudySessionInput,
-    StudyHistoryEntry, StudyProgressSummary, StudySessionStatus, StudySessionSummary,
-    StudyTaskStatus, StudyTaskSummary, TaskCompletion, XP_RULES_VERSION,
+    StudyHistoryEntry, StudyProgressSummary, StudyReviewStatus, StudyReviewSummary,
+    StudySessionStatus, StudySessionSummary, StudyTaskStatus, StudyTaskSummary, TaskCompletion,
+    XP_RULES_VERSION,
 };
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
@@ -42,17 +44,30 @@ type HistoryRow = (
     String,
     i64,
 );
+type StudyReviewRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+);
 
 impl StudyStore for LocalWorkspaceStore {
     fn daily_plan(&self, date: &str) -> Result<DailyPlan, WorkspaceError> {
         let connection = self.active_database()?;
         let tasks = load_daily_tasks(&connection, date)?;
         let active_session = load_active_session(&connection)?;
+        let reviews = load_due_reviews(&connection, date)?;
 
         Ok(DailyPlan {
             date: date.to_string(),
             tasks,
             active_session,
+            reviews,
         })
     }
 
@@ -310,13 +325,21 @@ impl StudyStore for LocalWorkspaceStore {
             current.status,
             StudySessionStatus::Completed | StudySessionStatus::Interrupted
         ) {
+            let review = load_review_by_session(&transaction, &input.session_id)?;
             transaction
                 .commit()
                 .map_err(|error| map_database_error("confirmar sessão já encerrada", error))?;
             return Ok(FinishStudySessionResult {
                 session: current,
                 xp_granted: 0,
+                review,
             });
+        }
+
+        if input.review_on.is_some() && current.subject_id.is_none() {
+            return Err(WorkspaceError::InvalidInput(
+                "Esta sessão não está vinculada a um assunto para agendar revisão.".to_string(),
+            ));
         }
 
         let task_status = match input.task_status {
@@ -342,6 +365,10 @@ impl StudyStore for LocalWorkspaceStore {
             .map_err(|error| map_database_error("atualizar tarefa encerrada", error))?;
         let summary = load_session(&transaction, &input.session_id)?;
         let xp_granted = grant_session_xp(&transaction, &summary)?;
+        let review = match input.review_on.as_deref() {
+            Some(due_date) => Some(create_review_for_session(&transaction, &summary, due_date)?),
+            None => None,
+        };
 
         transaction
             .commit()
@@ -349,10 +376,73 @@ impl StudyStore for LocalWorkspaceStore {
         Ok(FinishStudySessionResult {
             session: summary,
             xp_granted,
+            review,
         })
     }
 
-    fn study_progress(&self) -> Result<StudyProgressSummary, WorkspaceError> {
+    fn reschedule_study_review(
+        &self,
+        input: &RescheduleStudyReviewInput,
+    ) -> Result<StudyReviewSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar reagendamento da revisão", error))?;
+        let current = load_study_review(&transaction, &input.review_id)?;
+        if current.status == StudyReviewStatus::Completed {
+            return Err(WorkspaceError::InvalidInput(
+                "Uma revisão concluída não pode ser reagendada.".to_string(),
+            ));
+        }
+
+        transaction
+            .execute(
+                "UPDATE study_reviews
+                 SET due_date = ?1, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?2 AND status = 'pending'",
+                params![input.due_date, input.review_id],
+            )
+            .map_err(|error| map_database_error("reagendar revisão", error))?;
+        let updated = load_study_review(&transaction, &input.review_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar reagendamento da revisão", error))?;
+        Ok(updated)
+    }
+
+    fn complete_study_review(
+        &self,
+        input: &CompleteStudyReviewInput,
+    ) -> Result<StudyReviewSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar conclusão da revisão", error))?;
+        let current = load_study_review(&transaction, &input.review_id)?;
+        if current.status == StudyReviewStatus::Completed {
+            transaction
+                .commit()
+                .map_err(|error| map_database_error("confirmar revisão concluída", error))?;
+            return Ok(current);
+        }
+
+        transaction
+            .execute(
+                "UPDATE study_reviews
+                 SET status = 'completed', completed_at = CURRENT_TIMESTAMP,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?1 AND status = 'pending'",
+                params![input.review_id],
+            )
+            .map_err(|error| map_database_error("concluir revisão", error))?;
+        let completed = load_study_review(&transaction, &input.review_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar conclusão da revisão", error))?;
+        Ok(completed)
+    }
+
+    fn study_progress(&self, as_of_date: &str) -> Result<StudyProgressSummary, WorkspaceError> {
         let connection = self.active_database()?;
         let total_xp: i64 = connection
             .query_row(
@@ -371,11 +461,14 @@ impl StudyStore for LocalWorkspaceStore {
             )
             .map_err(|error| map_database_error("consultar esforço acumulado", error))?;
         let recent_sessions = load_recent_history(&connection, 8)?;
+        let planned_days = load_planned_study_days(&connection, as_of_date)?;
+        let streak = calculate_study_streak(&planned_days, as_of_date);
 
         Ok(StudyProgressSummary {
             total_xp,
             completed_sessions,
             effective_seconds,
+            streak,
             recent_sessions,
         })
     }
@@ -494,6 +587,39 @@ fn history_entry_from_parts(parts: HistoryRow) -> Result<StudyHistoryEntry, Work
         task_status,
         xp_granted,
     })
+}
+
+fn load_planned_study_days(
+    connection: &rusqlite::Connection,
+    as_of_date: &str,
+) -> Result<Vec<PlannedStudyDay>, WorkspaceError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT scheduled_for,
+                    MAX(CASE WHEN status IN ('completed', 'partial') THEN 1 ELSE 0 END)
+             FROM study_tasks
+             WHERE scheduled_for IS NOT NULL
+               AND scheduled_for <= ?1
+               AND status <> 'skipped'
+             GROUP BY scheduled_for
+             ORDER BY scheduled_for",
+        )
+        .map_err(|error| map_database_error("preparar leitura dos dias planejados", error))?;
+    let rows = statement
+        .query_map(params![as_of_date], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|error| map_database_error("consultar dias planejados", error))?;
+
+    rows.map(|row| {
+        let (date, completed) =
+            row.map_err(|error| map_database_error("ler dia planejado", error))?;
+        Ok(PlannedStudyDay {
+            date,
+            completed: completed == 1,
+        })
+    })
+    .collect()
 }
 
 fn load_task(
@@ -652,6 +778,146 @@ fn load_session(
     session_summary_from_parts(parts)
 }
 
+fn create_review_for_session(
+    transaction: &rusqlite::Transaction<'_>,
+    session: &StudySessionSummary,
+    due_date: &str,
+) -> Result<StudyReviewSummary, WorkspaceError> {
+    let subject_id = session.subject_id.as_deref().ok_or_else(|| {
+        WorkspaceError::InvalidInput(
+            "Esta sessão não está vinculada a um assunto para agendar revisão.".to_string(),
+        )
+    })?;
+    transaction
+        .execute(
+            "INSERT INTO study_reviews (id, subject_id, source_session_id, due_date)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(source_session_id) DO NOTHING",
+            params![Uuid::new_v4().to_string(), subject_id, session.id, due_date,],
+        )
+        .map_err(|error| map_database_error("agendar revisão da sessão", error))?;
+    load_review_by_session(transaction, &session.id)?.ok_or_else(|| {
+        WorkspaceError::Database("a revisão da sessão não pôde ser localizada".to_string())
+    })
+}
+
+fn load_review_by_session(
+    connection: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Option<StudyReviewSummary>, WorkspaceError> {
+    let row = connection
+        .query_row(
+            "SELECT r.id, r.subject_id, s.name, r.source_session_id, r.due_date,
+                    r.status, r.created_at, r.updated_at, r.completed_at
+             FROM study_reviews r
+             JOIN subjects s ON s.id = r.subject_id
+             WHERE r.source_session_id = ?1",
+            params![session_id],
+            study_review_row,
+        )
+        .optional()
+        .map_err(|error| map_database_error("localizar revisão da sessão", error))?;
+    row.map(study_review_summary_from_row).transpose()
+}
+
+fn load_study_review(
+    connection: &rusqlite::Connection,
+    review_id: &str,
+) -> Result<StudyReviewSummary, WorkspaceError> {
+    let row = connection
+        .query_row(
+            "SELECT r.id, r.subject_id, s.name, r.source_session_id, r.due_date,
+                    r.status, r.created_at, r.updated_at, r.completed_at
+             FROM study_reviews r
+             JOIN subjects s ON s.id = r.subject_id
+             WHERE r.id = ?1",
+            params![review_id],
+            study_review_row,
+        )
+        .optional()
+        .map_err(|error| map_database_error("localizar revisão", error))?
+        .ok_or_else(|| {
+            WorkspaceError::InvalidInput("A revisão escolhida não existe mais.".to_string())
+        })?;
+    study_review_summary_from_row(row)
+}
+
+fn load_due_reviews(
+    connection: &rusqlite::Connection,
+    date: &str,
+) -> Result<Vec<StudyReviewSummary>, WorkspaceError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT r.id, r.subject_id, s.name, r.source_session_id, r.due_date,
+                    r.status, r.created_at, r.updated_at, r.completed_at
+             FROM study_reviews r
+             JOIN subjects s ON s.id = r.subject_id
+             WHERE r.status = 'pending' AND r.due_date <= ?1
+             ORDER BY r.due_date, s.name COLLATE NOCASE, r.id",
+        )
+        .map_err(|error| map_database_error("preparar leitura das revisões vencidas", error))?;
+    let rows = statement
+        .query_map(params![date], study_review_row)
+        .map_err(|error| map_database_error("consultar revisões vencidas", error))?;
+
+    rows.map(|row| {
+        let row = row.map_err(|error| map_database_error("ler revisão vencida", error))?;
+        study_review_summary_from_row(row)
+    })
+    .collect()
+}
+
+fn study_review_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StudyReviewRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+    ))
+}
+
+fn study_review_summary_from_row(
+    row: StudyReviewRow,
+) -> Result<StudyReviewSummary, WorkspaceError> {
+    let (
+        id,
+        subject_id,
+        subject_name,
+        source_session_id,
+        due_date,
+        status,
+        created_at,
+        updated_at,
+        completed_at,
+    ) = row;
+    let status = match status.as_str() {
+        "pending" => StudyReviewStatus::Pending,
+        "completed" => StudyReviewStatus::Completed,
+        _ => {
+            return Err(WorkspaceError::Database(
+                "a revisão possui um status inválido".to_string(),
+            ));
+        }
+    };
+
+    Ok(StudyReviewSummary {
+        id,
+        subject_id,
+        subject_name,
+        source_session_id,
+        due_date,
+        status,
+        created_at,
+        updated_at,
+        completed_at,
+    })
+}
+
 fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     Ok((
         row.get(0)?,
@@ -783,7 +1049,7 @@ mod tests {
     use super::*;
     use crate::application::study_plan_service::StudyPlanStore;
     use crate::application::workspace_service::WorkspaceStore;
-    use crate::domain::study_plan::CreatePreparationInput;
+    use crate::domain::study_plan::{CreatePreparationInput, CreateSubjectInput};
     use std::fs;
 
     #[test]
@@ -869,6 +1135,7 @@ mod tests {
                 session_id: session.id.clone(),
                 effective_seconds: 1_500,
                 task_status: TaskCompletion::Completed,
+                review_on: None,
             })
             .expect("a sessão deve encerrar");
         let daily_plan = store
@@ -879,10 +1146,11 @@ mod tests {
                 session_id: session.id.clone(),
                 effective_seconds: 1_500,
                 task_status: TaskCompletion::Completed,
+                review_on: None,
             })
             .expect("repetir o encerramento deve ser idempotente");
         let progress = store
-            .study_progress()
+            .study_progress("2032-01-15")
             .expect("o resumo de evolução deve ser lido");
 
         assert_eq!(finished.session.status, StudySessionStatus::Completed);
@@ -893,6 +1161,189 @@ mod tests {
         assert_eq!(progress.total_xp, 25);
         assert_eq!(progress.completed_sessions, 1);
         assert_eq!(progress.recent_sessions.len(), 1);
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn schedules_one_review_per_session_and_keeps_it_when_rescheduled_or_completed() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-review-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-review-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Revisões de teste")
+            .expect("o espaço temporário deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Direito Constitucional".to_string(),
+                parent_id: None,
+            })
+            .expect("o assunto deve ser criado");
+        let task = store
+            .create_study_task(&CreateStudyTaskInput {
+                preparation_id: preparation.id,
+                subject_id: Some(subject.id.clone()),
+                title: "Estudar controle de constitucionalidade".to_string(),
+                objective: None,
+                planned_minutes: 30,
+                scheduled_for: "2032-04-01".to_string(),
+            })
+            .expect("a tarefa deve ser criada");
+        let session = store
+            .start_study_session(&StartStudySessionInput { task_id: task.id })
+            .expect("a sessão deve iniciar");
+
+        let finished = store
+            .finish_study_session(&FinishStudySessionInput {
+                session_id: session.id.clone(),
+                effective_seconds: 1_200,
+                task_status: TaskCompletion::Completed,
+                review_on: Some("2032-04-08".to_string()),
+            })
+            .expect("a sessão e a revisão devem ser salvas juntas");
+        let review = finished.review.expect("a revisão deve ser retornada");
+        let before_due = store
+            .daily_plan("2032-04-07")
+            .expect("o plano antes do vencimento deve ser lido");
+        let due = store
+            .daily_plan("2032-04-08")
+            .expect("a revisão vencida deve aparecer no plano");
+        let repeated_finish = store
+            .finish_study_session(&FinishStudySessionInput {
+                session_id: session.id.clone(),
+                effective_seconds: 1_200,
+                task_status: TaskCompletion::Completed,
+                review_on: Some("2032-04-09".to_string()),
+            })
+            .expect("repetir o encerramento não deve criar outra revisão");
+        let rescheduled = store
+            .reschedule_study_review(&RescheduleStudyReviewInput {
+                review_id: review.id.clone(),
+                due_date: "2032-04-10".to_string(),
+            })
+            .expect("a revisão deve ser reagendada na mesma ocorrência");
+        let completed = store
+            .complete_study_review(&CompleteStudyReviewInput {
+                review_id: review.id.clone(),
+            })
+            .expect("a revisão deve ser concluída");
+        let repeated_completion = store
+            .complete_study_review(&CompleteStudyReviewInput {
+                review_id: review.id.clone(),
+            })
+            .expect("repetir a conclusão deve ser idempotente");
+        let after_completion = store
+            .daily_plan("2032-04-10")
+            .expect("a revisão concluída não deve permanecer pendente");
+
+        assert_eq!(review.subject_id, subject.id);
+        assert_eq!(review.due_date, "2032-04-08");
+        assert!(before_due.reviews.is_empty());
+        assert_eq!(due.reviews.len(), 1);
+        assert_eq!(
+            repeated_finish.review.as_ref().map(|item| item.id.as_str()),
+            Some(review.id.as_str())
+        );
+        assert_eq!(repeated_finish.xp_granted, 0);
+        assert_eq!(rescheduled.id, review.id);
+        assert_eq!(rescheduled.due_date, "2032-04-10");
+        assert_eq!(completed.status, StudyReviewStatus::Completed);
+        assert!(completed.completed_at.is_some());
+        assert_eq!(completed.id, repeated_completion.id);
+        assert!(after_completion.reviews.is_empty());
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn progress_streak_uses_planned_days_and_waits_until_today_ends() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-streak-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-streak-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Sequência de teste")
+            .expect("o espaço temporário deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+
+        let make_task = |date: &str, title: &str| {
+            store
+                .create_study_task(&CreateStudyTaskInput {
+                    preparation_id: preparation.id.clone(),
+                    subject_id: None,
+                    title: title.to_string(),
+                    objective: None,
+                    planned_minutes: 20,
+                    scheduled_for: date.to_string(),
+                })
+                .expect("a tarefa planejada deve ser criada")
+        };
+        let first_study_day = make_task("2032-05-01", "Estudo inicial");
+        let missed_study_day = make_task("2032-05-03", "Dia planejado perdido");
+        let later_study_day = make_task("2032-05-05", "Retomada");
+        let latest_study_day = make_task("2032-05-07", "Estudo após descanso");
+        let today_pending = make_task("2032-05-10", "Tarefa de hoje");
+
+        for task_id in [
+            first_study_day.id.as_str(),
+            later_study_day.id.as_str(),
+            latest_study_day.id.as_str(),
+        ] {
+            let session = store
+                .start_study_session(&StartStudySessionInput {
+                    task_id: task_id.to_string(),
+                })
+                .expect("a sessão de estudo deve iniciar");
+            store
+                .finish_study_session(&FinishStudySessionInput {
+                    session_id: session.id,
+                    effective_seconds: 1_200,
+                    task_status: TaskCompletion::Completed,
+                    review_on: None,
+                })
+                .expect("a sessão de estudo deve concluir");
+        }
+
+        let progress_today = store
+            .study_progress("2032-05-10")
+            .expect("a sequência de hoje deve ser calculada");
+        let progress_next_day = store
+            .study_progress("2032-05-11")
+            .expect("o dia planejado perdido deve encerrar a sequência atual");
+
+        assert_eq!(progress_today.streak.current_planned_days, 2);
+        assert_eq!(progress_today.streak.longest_planned_days, 2);
+        assert_eq!(
+            progress_today.streak.last_study_day.as_deref(),
+            Some("2032-05-07")
+        );
+        assert_eq!(progress_next_day.streak.current_planned_days, 0);
+        assert_eq!(progress_next_day.streak.longest_planned_days, 2);
+        assert_eq!(missed_study_day.status, StudyTaskStatus::Pending);
+        assert_eq!(today_pending.status, StudyTaskStatus::Pending);
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

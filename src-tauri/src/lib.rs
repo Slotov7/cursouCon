@@ -17,6 +17,10 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::study_plan::get_study_plan,
             commands::study_plan::create_preparation,
             commands::study_plan::create_subject,
+            commands::study_plan::set_subject_study_status,
+            commands::contest::get_manual_contests,
+            commands::contest::save_manual_contest,
+            commands::contest::set_manual_contest_favorite,
             commands::material::get_materials,
             commands::material::import_material,
             commands::material::open_material,
@@ -49,6 +53,8 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::study::pause_study_session,
             commands::study::resume_study_session,
             commands::study::finish_study_session,
+            commands::study::reschedule_study_review,
+            commands::study::complete_study_review,
             commands::study::get_study_progress
         ])
         .run(tauri::generate_context!())

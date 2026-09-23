@@ -9,6 +9,8 @@ import {
   parseMaterials,
   parseNote,
   parseNotes,
+  parseManualContest,
+  parseManualContests,
   parseOptionalWorkspaceSummary,
   parseQuestion,
   parseQuestionExportResult,
@@ -22,6 +24,8 @@ import {
   parseSyncDestinationSettings,
   parseStudyPlan,
   parseStudyProgress,
+  parseStudyReview,
+  parseSubject,
   parseStudySession,
   parseStudyTask,
   parseWorkspaceSummary,
@@ -38,10 +42,13 @@ import {
   type DailyPlan,
   type FinishStudySessionRequest,
   type FinishStudySessionResult,
+  type CompleteStudyReviewRequest,
+  type GetStudyProgressRequest,
   type GetQuestionsRequest,
   type ImportMaterialRequest,
   type MaterialSummary,
   type NoteSummary,
+  type ManualContestSummary,
   type OpenMaterialRequest,
   type PauseStudySessionRequest,
   type QuestionSummary,
@@ -58,12 +65,18 @@ import {
   type ResumeStudySessionRequest,
   type RestoreBackupRequest,
   type SaveNoteRequest,
+  type SaveManualContestRequest,
+  type SetManualContestFavoriteRequest,
   type SkipStudyTaskRequest,
   type StartStudySessionRequest,
   type StudyPlan,
+  type SubjectSummary,
+  type SetSubjectStudyStatusRequest,
   type StudyProgressSummary,
+  type StudyReviewSummary,
   type StudySessionSummary,
   type StudyTaskSummary,
+  type RescheduleStudyReviewRequest,
   type SyncDestinationSettings,
   type UpdateMaterialPageRequest,
   type WorkspaceRequest,
@@ -103,12 +116,13 @@ let mockStudyPlan: StudyPlan = {
     },
   ],
   subjects: [
-    { id: "subj-1", preparationId: "prep-1", parentId: null, name: "Direito Constitucional", position: 1 },
-    { id: "subj-2", preparationId: "prep-1", parentId: null, name: "Engenharia de Software", position: 2 },
-    { id: "subj-3", preparationId: "prep-1", parentId: null, name: "Língua Portuguesa", position: 3 },
-    { id: "subj-4", preparationId: "prep-1", parentId: null, name: "Bancos de Dados & SQL", position: 4 },
-    { id: "subj-5", preparationId: "prep-1", parentId: null, name: "Direito Administrativo", position: 5 },
+    { id: "subj-1", preparationId: "prep-1", parentId: null, name: "Direito Constitucional", position: 1, studyStatus: "not_started" },
+    { id: "subj-2", preparationId: "prep-1", parentId: null, name: "Engenharia de Software", position: 2, studyStatus: "not_started" },
+    { id: "subj-3", preparationId: "prep-1", parentId: null, name: "Língua Portuguesa", position: 3, studyStatus: "not_started" },
+    { id: "subj-4", preparationId: "prep-1", parentId: null, name: "Bancos de Dados & SQL", position: 4, studyStatus: "not_started" },
+    { id: "subj-5", preparationId: "prep-1", parentId: null, name: "Direito Administrativo", position: 5, studyStatus: "not_started" },
   ],
+  subjectCoverage: [],
 };
 
 function getLocalDateKey(): string {
@@ -156,6 +170,7 @@ let mockTasks: StudyTaskSummary[] = [
 ];
 
 let mockActiveSession: StudySessionSummary | null = null;
+let mockStudyReviews: StudyReviewSummary[] = [];
 let mockXp = 480;
 let mockNotebookEntries: Record<string, QuestionNotebookEntry[]> = {
   "notebook-errors": [],
@@ -171,6 +186,7 @@ let mockNotebooks: NotebookSummary[] = [
     updatedAt: "2026-01-01T00:00:00Z",
   },
 ];
+let mockManualContests: ManualContestSummary[] = [];
 
 // ---------------------------------------------------------------------------
 // IPC Core Wrappers
@@ -375,8 +391,23 @@ export async function pickDirectory(title: string): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
+function getMockStudyPlan(): StudyPlan {
+  const subjectCoverage = mockStudyPlan.preparations.map((preparation) => {
+    const subjects = mockStudyPlan.subjects.filter(
+      (subject) => subject.preparationId === preparation.id,
+    );
+    return {
+      preparationId: preparation.id,
+      totalSubjects: subjects.length,
+      startedSubjects: subjects.filter((subject) => subject.studyStatus !== "not_started").length,
+      completedSubjects: subjects.filter((subject) => subject.studyStatus === "theory_completed").length,
+    };
+  });
+  return { ...mockStudyPlan, subjectCoverage };
+}
+
 export async function getStudyPlan(): Promise<StudyPlan> {
-  if (!isTauri()) return mockStudyPlan;
+  if (!isTauri()) return getMockStudyPlan();
   const response = await invoke<unknown>("get_study_plan");
   return parseStudyPlan(response);
 }
@@ -404,10 +435,76 @@ export async function createSubject(request: CreateSubjectRequest): Promise<void
       parentId: request.parentId,
       name: request.name,
       position: mockStudyPlan.subjects.length + 1,
+      studyStatus: "not_started",
     });
     return;
   }
   await invoke("create_subject", { request });
+}
+
+export async function setSubjectStudyStatus(
+  request: SetSubjectStudyStatusRequest,
+): Promise<SubjectSummary> {
+  if (!isTauri()) {
+    const subject = mockStudyPlan.subjects.find((item) => item.id === request.subjectId);
+    if (!subject) throw new Error("O assunto escolhido não existe mais.");
+    const updated = { ...subject, studyStatus: request.status };
+    mockStudyPlan.subjects = mockStudyPlan.subjects.map((item) =>
+      item.id === updated.id ? updated : item,
+    );
+    return updated;
+  }
+  const response = await invoke<unknown>("set_subject_study_status", { request });
+  return parseSubject(response);
+}
+
+export async function getManualContests(): Promise<ManualContestSummary[]> {
+  if (!isTauri()) return mockManualContests;
+  const response = await invoke<unknown>("get_manual_contests");
+  return parseManualContests(response);
+}
+
+export async function saveManualContest(
+  request: SaveManualContestRequest,
+): Promise<ManualContestSummary> {
+  if (!isTauri()) {
+    const now = new Date().toISOString();
+    const existing = request.id
+      ? mockManualContests.find((contest) => contest.id === request.id)
+      : undefined;
+    if (request.id && !existing) {
+      throw new Error("O concurso escolhido não existe mais.");
+    }
+    const saved: ManualContestSummary = {
+      ...request,
+      id: request.id ?? `contest-${Date.now()}`,
+      isFavorite: existing?.isFavorite ?? false,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    mockManualContests = existing
+      ? mockManualContests.map((contest) => (contest.id === saved.id ? saved : contest))
+      : [saved, ...mockManualContests];
+    return saved;
+  }
+  const response = await invoke<unknown>("save_manual_contest", { request });
+  return parseManualContest(response);
+}
+
+export async function setManualContestFavorite(
+  request: SetManualContestFavoriteRequest,
+): Promise<ManualContestSummary> {
+  if (!isTauri()) {
+    const updated = mockManualContests.find((contest) => contest.id === request.contestId);
+    if (!updated) throw new Error("O concurso escolhido não existe mais.");
+    const saved = { ...updated, isFavorite: request.isFavorite, updatedAt: new Date().toISOString() };
+    mockManualContests = mockManualContests.map((contest) =>
+      contest.id === saved.id ? saved : contest,
+    );
+    return saved;
+  }
+  const response = await invoke<unknown>("set_manual_contest_favorite", { request });
+  return parseManualContest(response);
 }
 
 export async function getDailyPlan(date: string): Promise<DailyPlan> {
@@ -416,6 +513,9 @@ export async function getDailyPlan(date: string): Promise<DailyPlan> {
       date,
       tasks: mockTasks,
       activeSession: mockActiveSession,
+      reviews: mockStudyReviews.filter(
+        (review) => review.status === "pending" && review.dueDate <= date,
+      ),
     };
   }
   const response = await invoke<unknown>("get_daily_plan", { request: { date } });
@@ -834,7 +934,7 @@ export async function finishStudySession(request: FinishStudySessionRequest): Pr
       task.status = request.taskStatus;
     }
     const completedSession = mockActiveSession || {
-      id: `sess-${Date.now()}`,
+      id: request.sessionId,
       taskId: "task-101",
       subjectId: "subj-1",
       startedAt: new Date().toISOString(),
@@ -843,24 +943,84 @@ export async function finishStudySession(request: FinishStudySessionRequest): Pr
       status: "completed" as const,
     };
 
+    let review: StudyReviewSummary | null = mockStudyReviews.find(
+      (item) => item.sourceSessionId === request.sessionId,
+    ) ?? null;
+    if (!review && request.reviewOn && completedSession.subjectId) {
+      const now = new Date().toISOString();
+      review = {
+        id: `review-${Date.now()}`,
+        subjectId: completedSession.subjectId,
+        subjectName:
+          mockStudyPlan.subjects.find((subject) => subject.id === completedSession.subjectId)?.name ??
+          "Assunto",
+        sourceSessionId: request.sessionId,
+        dueDate: request.reviewOn,
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+        completedAt: null,
+      };
+      mockStudyReviews = [review, ...mockStudyReviews];
+    }
+
     mockActiveSession = null;
     mockXp += 50;
 
     return {
       session: { ...completedSession, status: "completed" },
       xpGranted: 50,
+      review,
     };
   }
   const response = await invoke<unknown>("finish_study_session", { request });
   return parseFinishStudySessionResult(response);
 }
 
-export async function getStudyProgress(): Promise<StudyProgressSummary> {
+export async function rescheduleStudyReview(
+  request: RescheduleStudyReviewRequest,
+): Promise<StudyReviewSummary> {
+  if (!isTauri()) {
+    const review = mockStudyReviews.find((item) => item.id === request.reviewId);
+    if (!review) throw new Error("A revisão escolhida não existe mais.");
+    if (review.status === "completed") {
+      throw new Error("Uma revisão concluída não pode ser reagendada.");
+    }
+    const updated = { ...review, dueDate: request.dueDate, updatedAt: new Date().toISOString() };
+    mockStudyReviews = mockStudyReviews.map((item) => item.id === updated.id ? updated : item);
+    return updated;
+  }
+  const response = await invoke<unknown>("reschedule_study_review", { request });
+  return parseStudyReview(response);
+}
+
+export async function completeStudyReview(
+  request: CompleteStudyReviewRequest,
+): Promise<StudyReviewSummary> {
+  if (!isTauri()) {
+    const review = mockStudyReviews.find((item) => item.id === request.reviewId);
+    if (!review) throw new Error("A revisão escolhida não existe mais.");
+    if (review.status === "completed") return review;
+    const now = new Date().toISOString();
+    const completed = { ...review, status: "completed" as const, completedAt: now, updatedAt: now };
+    mockStudyReviews = mockStudyReviews.map((item) => item.id === completed.id ? completed : item);
+    return completed;
+  }
+  const response = await invoke<unknown>("complete_study_review", { request });
+  return parseStudyReview(response);
+}
+
+export async function getStudyProgress(request: GetStudyProgressRequest): Promise<StudyProgressSummary> {
   if (!isTauri()) {
     return {
       totalXp: mockXp,
       completedSessions: 32,
       effectiveSeconds: 67200, // 112h
+      streak: {
+        currentPlannedDays: 4,
+        longestPlannedDays: 9,
+        lastStudyDay: request.asOfDate,
+      },
       recentSessions: [
         {
           sessionId: "sess-1",
@@ -885,7 +1045,7 @@ export async function getStudyProgress(): Promise<StudyProgressSummary> {
       ],
     };
   }
-  const response = await invoke<unknown>("get_study_progress");
+  const response = await invoke<unknown>("get_study_progress", { request });
   return parseStudyProgress(response);
 }
 

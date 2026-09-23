@@ -7,6 +7,7 @@ import { MaterialsView } from "../features/materials/MaterialsView";
 import { ProgressView } from "../features/progress/ProgressView";
 import { TodayView } from "../features/today/TodayView";
 import { PracticeView } from "../features/practice/PracticeView";
+import { ExploreView } from "../features/explore/ExploreView";
 import { WorkspaceSetup } from "../features/workspace/WorkspaceSetup";
 import { WorkspaceDataActions } from "../features/workspace/WorkspaceDataActions";
 import { CommandPalette } from "../shared/ui/CommandPalette";
@@ -37,6 +38,7 @@ const navigation: Array<{
   { id: "materials", label: "Materiais", note: "apostilas & pdfs", icon: IconMaterials },
   { id: "practice", label: "Questões", note: "banco de questões", badge: "Novo", icon: IconPractice },
   { id: "progress", label: "Evolução & Sinais", note: "desempenho local", icon: IconProgress },
+  { id: "explore", label: "Explorar", note: "concursos e prazos", icon: IconExplore },
 ];
 
 export function App() {
@@ -369,6 +371,8 @@ function AppShell({
             <PracticeView plan={studyPlan} refreshKey={refreshVersion} />
           ) : activeView === "progress" ? (
             <ProgressView refreshKey={refreshVersion} />
+          ) : activeView === "explore" ? (
+            <ExploreView refreshKey={refreshVersion} />
           ) : (
             <TodayView
               isLoading={isStudyDataLoading}

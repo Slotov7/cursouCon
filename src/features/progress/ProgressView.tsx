@@ -44,7 +44,7 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
     let cancelled = false;
     setIsLoading(true);
 
-    getStudyProgress()
+    getStudyProgress({ asOfDate: getLocalDateKey() })
       .then((loadedSummary) => {
         if (!cancelled) {
           setSummary(loadedSummary);
@@ -202,7 +202,7 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
       </div>
 
       {/* 3. Metrics Row - 4 Tactile Stats Cards */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5 lg:gap-4">
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
           <p className="text-xs font-semibold text-muted">Total de Pontos XP</p>
           <div className="mt-1 flex items-center justify-between">
@@ -240,6 +240,16 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
             {summary.recentSessions.length}
           </p>
           <p className="mt-2 text-[11px] text-muted font-medium">Sessões retornadas pelo núcleo</p>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
+          <p className="text-xs font-semibold text-muted">Sequência planejada</p>
+          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">
+            {summary.streak.currentPlannedDays} {summary.streak.currentPlannedDays === 1 ? "dia" : "dias"}
+          </p>
+          <p className="mt-2 text-[11px] leading-relaxed text-muted">
+            Recorde: {summary.streak.longestPlannedDays}. Conta tarefas concluídas ou parciais; dias sem tarefas são descanso.
+          </p>
         </div>
       </div>
 
@@ -367,6 +377,14 @@ function formatDuration(seconds: number): string {
     return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
   }
   return `${minutes} min`;
+}
+
+function getLocalDateKey(): string {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function formatHistoryDate(value: string): string {

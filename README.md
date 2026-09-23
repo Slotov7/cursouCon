@@ -19,13 +19,16 @@ O primeiro protótipo vertical implementa:
 - manifesto versionado em `workspace.json`;
 - validação de formato, estrutura e permissão de escrita;
 - banco SQLite de trabalho fora da pasta portátil, em `appDataDir`;
-- migrações SQLite versionadas para preparações, assuntos, tarefas, sessões, materiais, notas, questões, tentativas, hashes de importação e Caderno de Erros;
+- migrações SQLite versionadas para preparações, assuntos, tarefas, sessões, materiais, notas, questões, tentativas, hashes de importação, Caderno de Erros e concursos manuais;
 - cadastro persistente de preparações e árvore inicial de disciplinas/assuntos;
+- estado de estudo independente de domínio e cálculo da cobertura por preparação;
 - criação de tarefas para uma data e plano diário local;
+- cadastro, edição, acompanhamento de situação e favoritos de concursos manuais no SQLite local;
 - reagendamento, pulo e conclusão parcial de tarefas sem apagar seus registros;
 - importação de materiais para `blobs/<sha256>`, deduplicação e vínculo opcional a assunto;
 - criação e edição de notas Markdown vinculadas a material ou assunto;
 - início, pausa, retomada e encerramento idempotentes de sessões, com resultado parcial ou concluído;
+- agendamento opcional de revisão ao concluir uma sessão, com fila vencida, reagendamento e conclusão idempotente;
 - Pomodoro local configurável, com pausas que suspendem a sessão e não entram no tempo estudado;
 - concessão idempotente de XP por sessão, com teto diário e regras versionadas;
 - concessão de 2 XP pela primeira tentativa diária de cada questão, limitada a 60 XP/dia nessa categoria;
@@ -36,11 +39,11 @@ O primeiro protótipo vertical implementa:
 - Caderno de Erros local persistente, com relação questão–caderno idempotente;
 - criação de cadernos manuais e vínculo persistente de questões a múltiplos cadernos;
 - criação de cadernos dinâmicos por estado da tentativa, matéria e formato;
-- tela Evolução com métricas locais e histórico recente de sessões;
-- tela Hoje, tela Plano e navegação inicial sem criar dados fictícios;
+- tela Evolução com métricas locais, histórico recente e sequência nos dias com tarefas planejadas;
+- telas Hoje, Plano e Explorar, com navegação inicial sem criar dados fictícios;
 - interface responsiva estilizada com Tailwind CSS 4 e tokens visuais locais.
 
-Leitura integrada de PDFs com retomada de página, notas Markdown, questões manuais, tentativas e cadernos locais já estão disponíveis. Revisões agendadas, sequência de dias e as áreas de exploração entram em fatias seguintes.
+Leitura integrada de PDFs com retomada de página, notas Markdown, questões manuais, tentativas, cadernos locais, cadastro manual de concursos, revisões de conteúdo, cobertura do edital e sequência de estudo já estão disponíveis. A cobertura usa como denominador todas as disciplinas e assuntos ativos cadastrados; só “Teoria concluída” soma ao numerador e não indica domínio. A sequência considera como planejadas as datas com tarefas não puladas; datas sem tarefas não interrompem o cálculo. A área Explorar ainda não consulta fontes online; essa integração depende de validar uma fonte aprovada.
 
 ## Desenvolvimento
 

@@ -1,4 +1,5 @@
 pub mod backup_service;
+pub mod contest_service;
 pub mod material_service;
 pub mod note_service;
 pub mod question_service;

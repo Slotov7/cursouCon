@@ -4,8 +4,9 @@ import {
   createStudyTask,
   createSubject,
   getDesktopErrorMessage,
+  setSubjectStudyStatus,
 } from "../../shared/desktop/commands";
-import type { StudyPlan, SubjectSummary } from "../../shared/desktop/contracts";
+import type { StudyPlan, SubjectStudyStatus, SubjectSummary } from "../../shared/desktop/contracts";
 import {
   buttonOutlineLightClass,
   buttonPrimaryClass,
@@ -57,8 +58,10 @@ export function PlanView({
 
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [subjectStatusError, setSubjectStatusError] = useState<string | null>(null);
+  const [updatingSubjectId, setUpdatingSubjectId] = useState<string | null>(null);
 
-  const currentPlan: StudyPlan = plan ?? { preparations: [], subjects: [] };
+  const currentPlan: StudyPlan = plan ?? { preparations: [], subjects: [], subjectCoverage: [] };
   const selectedPreparation =
     currentPlan.preparations.find((prep) => prep.id === selectedPreparationId) ||
     currentPlan.preparations.find((prep) => prep.isPrimary) ||
@@ -67,8 +70,33 @@ export function PlanView({
   const subjects = currentPlan.subjects.filter(
     (subj) => !selectedPreparation || subj.preparationId === selectedPreparation.id,
   );
+  const subjectCoverage = currentPlan.subjectCoverage.find(
+    (coverage) => coverage.preparationId === selectedPreparation?.id,
+  );
+  const totalSubjects = subjectCoverage?.totalSubjects ?? 0;
+  const startedSubjects = subjectCoverage?.startedSubjects ?? 0;
+  const completedSubjects = subjectCoverage?.completedSubjects ?? 0;
+  const coveragePercent = totalSubjects > 0
+    ? Math.round((completedSubjects / totalSubjects) * 100)
+    : 0;
   const examDateLabel = formatExamDate(selectedPreparation?.examDate ?? null);
   const examCountdownLabel = formatExamCountdown(selectedPreparation?.examDate ?? null);
+
+  const handleSubjectStudyStatusChange = async (
+    subjectId: string,
+    status: SubjectStudyStatus,
+  ) => {
+    setSubjectStatusError(null);
+    setUpdatingSubjectId(subjectId);
+    try {
+      await setSubjectStudyStatus({ subjectId, status });
+      onPlanChanged();
+    } catch (operationError: unknown) {
+      setSubjectStatusError(getDesktopErrorMessage(operationError));
+    } finally {
+      setUpdatingSubjectId(null);
+    }
+  };
 
   const handlePreparationSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -181,6 +209,12 @@ export function PlanView({
         </div>
       )}
 
+      {subjectStatusError && (
+        <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">
+          {subjectStatusError}
+        </p>
+      )}
+
       {/* 1. Hero Header Banner */}
       <section className="glass-hero relative overflow-hidden rounded-3xl p-6 text-white shadow-xl lg:p-8 border border-white/12">
         <div className="relative z-10 grid gap-4 max-w-3xl">
@@ -256,9 +290,28 @@ export function PlanView({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:gap-4">
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
           <p className="text-xs font-semibold text-muted">Cobertura do Edital</p>
-          <p className="mt-1 font-heading text-xl font-extrabold text-ink">Ainda não calculada</p>
+          <p className="mt-1 font-heading text-xl font-extrabold text-ink">
+            {totalSubjects > 0 ? `${completedSubjects} / ${totalSubjects}` : "Sem itens"}
+          </p>
+          {totalSubjects > 0 && (
+            <div
+              className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-paper-deep"
+              role="progressbar"
+              aria-label="Cobertura de teoria concluída"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={coveragePercent}
+            >
+              <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${coveragePercent}%` }} />
+            </div>
+          )}
           <p className="mt-2 text-[11px] font-medium text-muted">
-            Cadastre tópicos para acompanhar a cobertura real.
+            {totalSubjects > 0
+              ? `${coveragePercent}% concluído · ${startedSubjects} iniciado(s)`
+              : "Cadastre disciplinas e assuntos para iniciar a cobertura."}
+          </p>
+          <p className="mt-1 text-[10px] leading-relaxed text-muted">
+            Concluído = teoria marcada; denominador = todos os itens ativos cadastrados. Não mede domínio.
           </p>
         </div>
 
@@ -554,9 +607,28 @@ export function PlanView({
                   </div>
 
                   <div className="mt-4 rounded-xl border border-dashed border-line bg-paper/60 p-4">
-                    <p className="text-xs font-semibold text-ink">Tópicos ainda não cadastrados</p>
-                    <p className="mt-1 text-[11px] leading-relaxed text-muted">
-                      A disciplina está no plano, mas a árvore de assuntos ainda não foi informada.
+                    <label className={fieldClass}>
+                      Estado do estudo
+                      <select
+                        className={selectClass}
+                        value={subj.studyStatus}
+                        onChange={(event) =>
+                          void handleSubjectStudyStatusChange(
+                            subj.id,
+                            event.target.value as SubjectStudyStatus,
+                          )
+                        }
+                        disabled={updatingSubjectId !== null}
+                      >
+                        <option value="not_started">Não iniciado</option>
+                        <option value="in_progress">Em andamento</option>
+                        <option value="theory_completed">Teoria concluída</option>
+                      </select>
+                    </label>
+                    <p className="mt-2 text-[11px] leading-relaxed text-muted">
+                      {updatingSubjectId === subj.id
+                        ? "Salvando estado..."
+                        : "Marcar a teoria como concluída não registra domínio automaticamente."}
                     </p>
                   </div>
                 </div>

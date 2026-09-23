@@ -67,11 +67,22 @@ export type SubjectSummary = {
   parentId: string | null;
   name: string;
   position: number;
+  studyStatus: SubjectStudyStatus;
+};
+
+export type SubjectStudyStatus = "not_started" | "in_progress" | "theory_completed";
+
+export type SubjectCoverageSummary = {
+  preparationId: string;
+  totalSubjects: number;
+  startedSubjects: number;
+  completedSubjects: number;
 };
 
 export type StudyPlan = {
   preparations: PreparationSummary[];
   subjects: SubjectSummary[];
+  subjectCoverage: SubjectCoverageSummary[];
 };
 
 export type CreatePreparationRequest = {
@@ -86,6 +97,46 @@ export type CreateSubjectRequest = {
   preparationId: string;
   name: string;
   parentId: string | null;
+};
+
+export type SetSubjectStudyStatusRequest = {
+  subjectId: string;
+  status: SubjectStudyStatus;
+};
+
+export type ContestStatus =
+  | "expected"
+  | "authorized"
+  | "notice_published"
+  | "registration_open"
+  | "registration_closed"
+  | "completed";
+
+export type ManualContestSummary = {
+  id: string;
+  name: string;
+  organization: string | null;
+  role: string | null;
+  board: string | null;
+  sourceUrl: string | null;
+  status: ContestStatus;
+  registrationStartsOn: string | null;
+  registrationEndsOn: string | null;
+  feeDeadline: string | null;
+  examDate: string | null;
+  notes: string | null;
+  isFavorite: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SaveManualContestRequest = Omit<ManualContestSummary, "id" | "createdAt" | "updatedAt" | "isFavorite"> & {
+  id: string | null;
+};
+
+export type SetManualContestFavoriteRequest = {
+  contestId: string;
+  isFavorite: boolean;
 };
 
 export type StudyTaskStatus = "pending" | "partial" | "completed" | "skipped";
@@ -114,15 +165,31 @@ export type StudySessionSummary = {
   status: StudySessionStatus;
 };
 
+export type StudyReviewStatus = "pending" | "completed";
+
+export type StudyReviewSummary = {
+  id: string;
+  subjectId: string;
+  subjectName: string;
+  sourceSessionId: string;
+  dueDate: string;
+  status: StudyReviewStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
 export type DailyPlan = {
   date: string;
   tasks: StudyTaskSummary[];
   activeSession: StudySessionSummary | null;
+  reviews: StudyReviewSummary[];
 };
 
 export type FinishStudySessionResult = {
   session: StudySessionSummary;
   xpGranted: number;
+  review: StudyReviewSummary | null;
 };
 
 export type StudyHistoryEntry = {
@@ -140,7 +207,14 @@ export type StudyProgressSummary = {
   totalXp: number;
   completedSessions: number;
   effectiveSeconds: number;
+  streak: StudyStreakSummary;
   recentSessions: StudyHistoryEntry[];
+};
+
+export type StudyStreakSummary = {
+  currentPlannedDays: number;
+  longestPlannedDays: number;
+  lastStudyDay: string | null;
 };
 
 export type MaterialSubjectSummary = {
@@ -386,6 +460,20 @@ export type FinishStudySessionRequest = {
   sessionId: string;
   effectiveSeconds: number;
   taskStatus: "completed" | "partial";
+  reviewOn: string | null;
+};
+
+export type GetStudyProgressRequest = {
+  asOfDate: string;
+};
+
+export type RescheduleStudyReviewRequest = {
+  reviewId: string;
+  dueDate: string;
+};
+
+export type CompleteStudyReviewRequest = {
+  reviewId: string;
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -511,7 +599,14 @@ function parsePreparation(value: unknown): PreparationSummary {
   };
 }
 
-function parseSubject(value: unknown): SubjectSummary {
+function parseSubjectStudyStatus(value: unknown): SubjectStudyStatus {
+  if (value === "not_started" || value === "in_progress" || value === "theory_completed") {
+    return value;
+  }
+  throw new Error("O núcleo local devolveu um estado de estudo inválido.");
+}
+
+export function parseSubject(value: unknown): SubjectSummary {
   if (!isRecord(value)) {
     throw new Error("O núcleo local devolveu um assunto inválido.");
   }
@@ -531,18 +626,102 @@ function parseSubject(value: unknown): SubjectSummary {
     parentId: parseOptionalString(value.parentId, "o assunto pai"),
     name: value.name,
     position: value.position,
+    studyStatus: parseSubjectStudyStatus(value.studyStatus),
+  };
+}
+
+function parseSubjectCoverage(value: unknown): SubjectCoverageSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.preparationId !== "string" ||
+    typeof value.totalSubjects !== "number" ||
+    !Number.isInteger(value.totalSubjects) ||
+    value.totalSubjects < 0 ||
+    typeof value.startedSubjects !== "number" ||
+    !Number.isInteger(value.startedSubjects) ||
+    value.startedSubjects < 0 ||
+    value.startedSubjects > value.totalSubjects ||
+    typeof value.completedSubjects !== "number" ||
+    !Number.isInteger(value.completedSubjects) ||
+    value.completedSubjects < 0 ||
+    value.completedSubjects > value.startedSubjects
+  ) {
+    throw new Error("O núcleo local devolveu um resumo de cobertura inválido.");
+  }
+  return {
+    preparationId: value.preparationId,
+    totalSubjects: value.totalSubjects,
+    startedSubjects: value.startedSubjects,
+    completedSubjects: value.completedSubjects,
   };
 }
 
 export function parseStudyPlan(value: unknown): StudyPlan {
-  if (!isRecord(value) || !Array.isArray(value.preparations) || !Array.isArray(value.subjects)) {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.preparations) ||
+    !Array.isArray(value.subjects) ||
+    !Array.isArray(value.subjectCoverage)
+  ) {
     throw new Error("O núcleo local devolveu um plano inválido.");
   }
 
   return {
     preparations: value.preparations.map(parsePreparation),
     subjects: value.subjects.map(parseSubject),
+    subjectCoverage: value.subjectCoverage.map(parseSubjectCoverage),
   };
+}
+
+function parseContestStatus(value: unknown): ContestStatus {
+  if (
+    value === "expected" ||
+    value === "authorized" ||
+    value === "notice_published" ||
+    value === "registration_open" ||
+    value === "registration_closed" ||
+    value === "completed"
+  ) {
+    return value;
+  }
+  throw new Error("O núcleo local devolveu uma situação de concurso inválida.");
+}
+
+export function parseManualContest(value: unknown): ManualContestSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.isFavorite !== "boolean" ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu um concurso inválido.");
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    organization: parseOptionalString(value.organization, "o órgão do concurso"),
+    role: parseOptionalString(value.role, "o cargo do concurso"),
+    board: parseOptionalString(value.board, "a banca do concurso"),
+    sourceUrl: parseOptionalString(value.sourceUrl, "a fonte do concurso"),
+    status: parseContestStatus(value.status),
+    registrationStartsOn: parseOptionalString(value.registrationStartsOn, "o início das inscrições"),
+    registrationEndsOn: parseOptionalString(value.registrationEndsOn, "o encerramento das inscrições"),
+    feeDeadline: parseOptionalString(value.feeDeadline, "o prazo de pagamento"),
+    examDate: parseOptionalString(value.examDate, "a data da prova"),
+    notes: parseOptionalString(value.notes, "as observações do concurso"),
+    isFavorite: value.isFavorite,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+export function parseManualContests(value: unknown): ManualContestSummary[] {
+  if (!Array.isArray(value)) {
+    throw new Error("O núcleo local devolveu uma lista de concursos inválida.");
+  }
+  return value.map(parseManualContest);
 }
 
 function parseStudyTaskStatus(value: unknown): StudyTaskStatus {
@@ -1002,8 +1181,44 @@ export function parseStudySession(value: unknown): StudySessionSummary {
   };
 }
 
+function parseStudyReviewStatus(value: unknown): StudyReviewStatus {
+  if (value === "pending" || value === "completed") return value;
+  throw new Error("O núcleo local devolveu um status de revisão inválido.");
+}
+
+export function parseStudyReview(value: unknown): StudyReviewSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.subjectId !== "string" ||
+    typeof value.subjectName !== "string" ||
+    typeof value.sourceSessionId !== "string" ||
+    typeof value.dueDate !== "string" ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu uma revisão inválida.");
+  }
+  return {
+    id: value.id,
+    subjectId: value.subjectId,
+    subjectName: value.subjectName,
+    sourceSessionId: value.sourceSessionId,
+    dueDate: value.dueDate,
+    status: parseStudyReviewStatus(value.status),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    completedAt: parseOptionalString(value.completedAt, "a data de conclusão da revisão"),
+  };
+}
+
 export function parseDailyPlan(value: unknown): DailyPlan {
-  if (!isRecord(value) || typeof value.date !== "string" || !Array.isArray(value.tasks)) {
+  if (
+    !isRecord(value) ||
+    typeof value.date !== "string" ||
+    !Array.isArray(value.tasks) ||
+    !Array.isArray(value.reviews)
+  ) {
     throw new Error("O núcleo local devolveu um plano diário inválido.");
   }
 
@@ -1011,6 +1226,7 @@ export function parseDailyPlan(value: unknown): DailyPlan {
     date: value.date,
     tasks: value.tasks.map(parseStudyTask),
     activeSession: value.activeSession === null ? null : parseStudySession(value.activeSession),
+    reviews: value.reviews.map(parseStudyReview),
   };
 }
 
@@ -1022,6 +1238,7 @@ export function parseFinishStudySessionResult(value: unknown): FinishStudySessio
   return {
     session: parseStudySession(value.session),
     xpGranted: value.xpGranted,
+    review: value.review === null ? null : parseStudyReview(value.review),
   };
 }
 
@@ -1064,7 +1281,14 @@ export function parseStudyProgress(value: unknown): StudyProgressSummary {
     !Number.isInteger(value.completedSessions) ||
     typeof value.effectiveSeconds !== "number" ||
     !Number.isInteger(value.effectiveSeconds) ||
-    !Array.isArray(value.recentSessions)
+    !Array.isArray(value.recentSessions) ||
+    !isRecord(value.streak) ||
+    typeof value.streak.currentPlannedDays !== "number" ||
+    !Number.isInteger(value.streak.currentPlannedDays) ||
+    value.streak.currentPlannedDays < 0 ||
+    typeof value.streak.longestPlannedDays !== "number" ||
+    !Number.isInteger(value.streak.longestPlannedDays) ||
+    value.streak.longestPlannedDays < 0
   ) {
     throw new Error("O núcleo local devolveu um resumo de evolução inválido.");
   }
@@ -1073,6 +1297,11 @@ export function parseStudyProgress(value: unknown): StudyProgressSummary {
     totalXp: value.totalXp,
     completedSessions: value.completedSessions,
     effectiveSeconds: value.effectiveSeconds,
+    streak: {
+      currentPlannedDays: value.streak.currentPlannedDays,
+      longestPlannedDays: value.streak.longestPlannedDays,
+      lastStudyDay: parseOptionalString(value.streak.lastStudyDay, "o último dia de estudo"),
+    },
     recentSessions: value.recentSessions.map(parseStudyHistoryEntry),
   };
 }

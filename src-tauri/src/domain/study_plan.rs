@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -15,6 +15,39 @@ pub struct CreateSubjectInput {
     pub preparation_id: String,
     pub name: String,
     pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectStudyStatus {
+    NotStarted,
+    InProgress,
+    TheoryCompleted,
+}
+
+impl SubjectStudyStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotStarted => "not_started",
+            Self::InProgress => "in_progress",
+            Self::TheoryCompleted => "theory_completed",
+        }
+    }
+
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "not_started" => Some(Self::NotStarted),
+            "in_progress" => Some(Self::InProgress),
+            "theory_completed" => Some(Self::TheoryCompleted),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SetSubjectStudyStatusInput {
+    pub subject_id: String,
+    pub status: SubjectStudyStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +69,16 @@ pub struct SubjectSummary {
     pub parent_id: Option<String>,
     pub name: String,
     pub position: i64,
+    pub study_status: SubjectStudyStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubjectCoverageSummary {
+    pub preparation_id: String,
+    pub total_subjects: i64,
+    pub started_subjects: i64,
+    pub completed_subjects: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +86,46 @@ pub struct SubjectSummary {
 pub struct StudyPlan {
     pub preparations: Vec<PreparationSummary>,
     pub subjects: Vec<SubjectSummary>,
+    pub subject_coverage: Vec<SubjectCoverageSummary>,
+}
+
+pub fn normalize_subject_study_status_input(
+    input: SetSubjectStudyStatusInput,
+) -> Result<SetSubjectStudyStatusInput, String> {
+    Ok(SetSubjectStudyStatusInput {
+        subject_id: normalize_id(&input.subject_id, "O assunto")?,
+        status: input.status,
+    })
+}
+
+pub fn calculate_subject_coverage(
+    preparations: &[PreparationSummary],
+    subjects: &[SubjectSummary],
+) -> Vec<SubjectCoverageSummary> {
+    preparations
+        .iter()
+        .map(|preparation| {
+            let mut coverage = SubjectCoverageSummary {
+                preparation_id: preparation.id.clone(),
+                total_subjects: 0,
+                started_subjects: 0,
+                completed_subjects: 0,
+            };
+            for subject in subjects
+                .iter()
+                .filter(|subject| subject.preparation_id == preparation.id)
+            {
+                coverage.total_subjects += 1;
+                if subject.study_status != SubjectStudyStatus::NotStarted {
+                    coverage.started_subjects += 1;
+                }
+                if subject.study_status == SubjectStudyStatus::TheoryCompleted {
+                    coverage.completed_subjects += 1;
+                }
+            }
+            coverage
+        })
+        .collect()
 }
 
 pub fn normalize_preparation_input(
@@ -196,5 +279,50 @@ mod tests {
 
         assert!(normalize_preparation_input(preparation).is_err());
         assert!(normalize_subject_input(subject).is_err());
+    }
+
+    #[test]
+    fn calculates_coverage_from_all_registered_subjects_and_explicit_study_states() {
+        let preparations = vec![PreparationSummary {
+            id: "preparation-1".to_string(),
+            name: "Preparação".to_string(),
+            organization: None,
+            role: None,
+            exam_date: None,
+            is_primary: true,
+        }];
+        let subjects = vec![
+            SubjectSummary {
+                id: "subject-1".to_string(),
+                preparation_id: "preparation-1".to_string(),
+                parent_id: None,
+                name: "Direito Administrativo".to_string(),
+                position: 0,
+                study_status: SubjectStudyStatus::NotStarted,
+            },
+            SubjectSummary {
+                id: "subject-2".to_string(),
+                preparation_id: "preparation-1".to_string(),
+                parent_id: Some("subject-1".to_string()),
+                name: "Atos administrativos".to_string(),
+                position: 0,
+                study_status: SubjectStudyStatus::InProgress,
+            },
+            SubjectSummary {
+                id: "subject-3".to_string(),
+                preparation_id: "preparation-1".to_string(),
+                parent_id: Some("subject-1".to_string()),
+                name: "Poderes administrativos".to_string(),
+                position: 1,
+                study_status: SubjectStudyStatus::TheoryCompleted,
+            },
+        ];
+
+        let coverage = calculate_subject_coverage(&preparations, &subjects);
+
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].total_subjects, 3);
+        assert_eq!(coverage[0].started_subjects, 2);
+        assert_eq!(coverage[0].completed_subjects, 1);
     }
 }
