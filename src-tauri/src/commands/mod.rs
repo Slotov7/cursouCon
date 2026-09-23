@@ -1,7 +1,9 @@
+pub mod backup;
 pub mod error;
 pub mod material;
 pub mod note;
 pub mod question;
+pub mod revision;
 pub mod study;
 pub mod study_plan;
 pub mod workspace;

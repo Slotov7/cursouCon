@@ -8,27 +8,39 @@ O primeiro protótipo vertical implementa:
 
 - shell Tauri 2 com React, TypeScript, Vite e Rust;
 - criação e abertura de um espaço em uma pasta escolhida;
+- lista persistente de espaços recentes e troca segura sem sessão ativa pendente;
+- criação de backup local versionado com banco, blobs e revisões;
+- validação e restauração de backup em um novo espaço, sem substituir o original;
+- preparação de revisões portáteis com snapshot SQLite e referências verificadas aos blobs;
+- detecção de revisões divergentes sem descartar automaticamente nenhum pacote;
+- recuperação manual de uma revisão preservada na abertura de um espaço;
+- publicação explícita de uma cópia portátil em pasta externa, sem sincronização automática;
+- configuração persistente, por espaço e fora da pasta portátil, do destino externo, desativada por padrão;
 - manifesto versionado em `workspace.json`;
 - validação de formato, estrutura e permissão de escrita;
 - banco SQLite de trabalho fora da pasta portátil, em `appDataDir`;
-- migrações SQLite versionadas para preparações, assuntos, tarefas, sessões, materiais, notas, questões, tentativas e hashes de importação;
+- migrações SQLite versionadas para preparações, assuntos, tarefas, sessões, materiais, notas, questões, tentativas, hashes de importação e Caderno de Erros;
 - cadastro persistente de preparações e árvore inicial de disciplinas/assuntos;
 - criação de tarefas para uma data e plano diário local;
 - reagendamento, pulo e conclusão parcial de tarefas sem apagar seus registros;
 - importação de materiais para `blobs/<sha256>`, deduplicação e vínculo opcional a assunto;
 - criação e edição de notas Markdown vinculadas a material ou assunto;
 - início, pausa, retomada e encerramento idempotentes de sessões, com resultado parcial ou concluído;
+- Pomodoro local configurável, com pausas que suspendem a sessão e não entram no tempo estudado;
 - concessão idempotente de XP por sessão, com teto diário e regras versionadas;
 - concessão de 2 XP pela primeira tentativa diária de cada questão, limitada a 60 XP/dia nessa categoria;
 - cadastro manual de questões de múltipla escolha e certo/errado;
 - filtros locais por assunto e tipo, resolução offline e tentativas imutáveis com confiança, tempo e resultado;
 - núcleo e ponte IPC para importação JSON versionada de questões, com prévia, diagnóstico de inválidas/duplicadas e gravação transacional;
 - núcleo e ponte IPC para exportação das questões ativas em pacotes locais de `exports/`, preservando referências e hashes de anexos;
+- Caderno de Erros local persistente, com relação questão–caderno idempotente;
+- criação de cadernos manuais e vínculo persistente de questões a múltiplos cadernos;
+- criação de cadernos dinâmicos por estado da tentativa, matéria e formato;
 - tela Evolução com métricas locais e histórico recente de sessões;
 - tela Hoje, tela Plano e navegação inicial sem criar dados fictícios;
 - interface responsiva estilizada com Tailwind CSS 4 e tokens visuais locais.
 
-Leitura integrada de PDFs com retomada de página, notas Markdown, questões manuais e tentativas já estão disponíveis. Os controles visuais da troca JSON, cadernos, revisões agendadas, sequência de dias e as áreas de exploração entram em fatias seguintes.
+Leitura integrada de PDFs com retomada de página, notas Markdown, questões manuais, tentativas e cadernos locais já estão disponíveis. Revisões agendadas, sequência de dias e as áreas de exploração entram em fatias seguintes.
 
 ## Desenvolvimento
 
@@ -43,6 +55,35 @@ npm run tauri dev
 
 `npm run dev` abre apenas a interface Vite. A criação e abertura de espaços dependem do shell Tauri e do comando Rust.
 
+## Linux e Debian
+
+O bundle Debian pode ser gerado em uma distribuição Debian/Ubuntu com WebKitGTK
+4.1. No Ubuntu, instale as dependências de desenvolvimento do Tauri:
+
+```bash
+sudo apt update
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+Depois, gere somente o pacote `.deb`:
+
+```bash
+npm ci
+npm run build:deb
+```
+
+O arquivo será criado em `src-tauri/target/release/bundle/deb/`. Para instalar o
+pacote em um sistema Debian/Ubuntu compatível:
+
+```bash
+sudo apt install ./src-tauri/target/release/bundle/deb/*.deb
+```
+
+O pacote declara `libwebkit2gtk-4.1-0` e `libgtk-3-0` como dependências de
+execução. Para compatibilidade com sistemas mais antigos, prefira construir em
+Ubuntu 22.04 ou Debian 12, que são bases compatíveis com WebKitGTK 4.1.
+
 ## Organização
 
 - `src/app/`: composição da interface e navegação inicial.
@@ -56,3 +97,5 @@ npm run tauri dev
 - `src-tauri/migrations/`: esquema SQL versionado.
 
 O banco ativo não é colocado na pasta do espaço. A pasta escolhida contém a identidade e as áreas reservadas para revisões, blobs e exportações; isso evita tratar arquivos de SQLite em uso como mecanismo de sincronização.
+
+O destino externo configurado fica em `appDataDir`, associado ao identificador do espaço. Ativá-lo exige uma pasta existente fora do espaço; desativá-lo interrompe publicações configuradas, preserva o espaço local e não remove arquivos que um cliente externo já tenha transportado.

@@ -1,0 +1,44 @@
+name: Build Linux Debian package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build Debian package
+        run: npm run build:deb
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursoucon-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error

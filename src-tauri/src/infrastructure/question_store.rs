@@ -2,8 +2,9 @@ use super::{map_database_error, map_io_error, workspace_store::LocalWorkspaceSto
 use crate::application::question_service::QuestionStore;
 use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
 use crate::domain::question::{
-    AnswerQuestionInput, AnswerQuestionResult, CreateQuestionInput, ListQuestionsInput,
-    QuestionAttemptSummary, QuestionOptionSummary, QuestionSummary,
+    AnswerQuestionInput, AnswerQuestionResult, CreateNotebookInput, CreateQuestionInput,
+    ListQuestionsInput, NotebookSummary, QuestionAttemptSummary, QuestionNotebookEntrySummary,
+    QuestionOptionSummary, QuestionSummary, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     duplicate_external_id, export_item_from_summary, new_export_document, parse_question_document,
@@ -92,6 +93,84 @@ impl QuestionStore for LocalWorkspaceStore {
         Ok(summary)
     }
 
+    fn list_notebooks(&self) -> Result<Vec<NotebookSummary>, WorkspaceError> {
+        let connection = self.active_database()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT n.id, n.name, n.kind, COUNT(nq.question_id), n.filter_json,
+                        n.created_at, n.updated_at
+                 FROM notebooks n
+                 LEFT JOIN notebook_questions nq ON nq.notebook_id = n.id
+                 GROUP BY n.id, n.name, n.kind, n.filter_json, n.created_at, n.updated_at
+                 ORDER BY CASE n.kind WHEN 'error' THEN 0 ELSE 1 END, n.name COLLATE NOCASE",
+            )
+            .map_err(|error| map_database_error("preparar lista de cadernos", error))?;
+        let notebooks = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(|error| map_database_error("consultar cadernos", error))?
+            .map(|row| {
+                let (id, name, kind, question_count, filter_json, created_at, updated_at) =
+                    row.map_err(|error| map_database_error("ler caderno", error))?;
+                Ok(NotebookSummary {
+                    id,
+                    name,
+                    kind,
+                    question_count,
+                    filter: parse_notebook_filter(filter_json)?,
+                    created_at,
+                    updated_at,
+                })
+            })
+            .collect();
+        notebooks
+    }
+
+    fn create_notebook(
+        &self,
+        input: &CreateNotebookInput,
+    ) -> Result<NotebookSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar criação do caderno", error))?;
+        let notebook_id = Uuid::new_v4().to_string();
+        let filter_json = input
+            .filter
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| {
+                WorkspaceError::Serialization(format!("serializar filtro: {error}"))
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO notebooks (id, name, kind, filter_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    notebook_id.as_str(),
+                    input.name.as_str(),
+                    input.kind.as_str(),
+                    filter_json.as_deref(),
+                ],
+            )
+            .map_err(|error| map_database_error("gravar caderno", error))?;
+        let notebook = load_notebook(&transaction, &notebook_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar criação do caderno", error))?;
+        Ok(notebook)
+    }
+
     fn answer_question(
         &self,
         input: &AnswerQuestionInput,
@@ -175,6 +254,104 @@ impl QuestionStore for LocalWorkspaceStore {
             question,
             xp_granted,
         })
+    }
+
+    fn list_notebook_entries(
+        &self,
+        notebook_id: &str,
+    ) -> Result<Vec<QuestionNotebookEntrySummary>, WorkspaceError> {
+        let connection = self.active_database()?;
+        load_notebook(&connection, notebook_id)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT question_id, notebook_id, reason, observation, added_at, updated_at
+                 FROM notebook_questions
+                 WHERE notebook_id = ?1
+                 ORDER BY updated_at DESC, question_id",
+            )
+            .map_err(|error| map_database_error("preparar entradas do caderno", error))?;
+        let entries = statement
+            .query_map(params![notebook_id], |row| {
+                Ok(QuestionNotebookEntrySummary {
+                    question_id: row.get(0)?,
+                    notebook_id: row.get(1)?,
+                    reason: row.get(2)?,
+                    observation: row.get(3)?,
+                    added_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            })
+            .map_err(|error| map_database_error("consultar entradas do caderno", error))?
+            .map(|row| row.map_err(|error| map_database_error("ler entrada do caderno", error)))
+            .collect();
+        entries
+    }
+
+    fn set_notebook_entry(&self, input: &SetQuestionNotebookInput) -> Result<bool, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar alteração do caderno", error))?;
+        let question_exists: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM questions WHERE id = ?1 AND status = 'active'",
+                params![input.question_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_database_error("validar questão do caderno", error))?;
+        if question_exists.is_none() {
+            return Err(WorkspaceError::InvalidInput(
+                "A questão escolhida não existe ou não está ativa.".to_string(),
+            ));
+        }
+
+        let notebook_exists: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM notebooks WHERE id = ?1",
+                params![input.notebook_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_database_error("validar caderno", error))?;
+        if notebook_exists.is_none() {
+            return Err(WorkspaceError::InvalidInput(
+                "O caderno escolhido não existe neste espaço.".to_string(),
+            ));
+        }
+
+        if input.included {
+            transaction
+                .execute(
+                    "INSERT INTO notebook_questions
+                        (notebook_id, question_id, reason, observation)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT (notebook_id, question_id) DO UPDATE SET
+                        reason = excluded.reason,
+                        observation = excluded.observation,
+                        updated_at = CURRENT_TIMESTAMP",
+                    params![
+                        input.notebook_id.as_str(),
+                        input.question_id.as_str(),
+                        input.reason.as_deref(),
+                        input.observation.as_deref(),
+                    ],
+                )
+                .map_err(|error| map_database_error("adicionar questão ao caderno", error))?;
+        } else {
+            transaction
+                .execute(
+                    "DELETE FROM notebook_questions
+                     WHERE notebook_id = ?1 AND question_id = ?2",
+                    params![input.notebook_id.as_str(), input.question_id.as_str()],
+                )
+                .map_err(|error| map_database_error("remover questão do caderno", error))?;
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar alteração do caderno", error))?;
+        Ok(input.included)
     }
 
     fn preview_import(&self, source_path: &Path) -> Result<QuestionImportPreview, WorkspaceError> {
@@ -813,6 +990,60 @@ fn write_export_file(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceError> {
     result
 }
 
+fn load_notebook(
+    connection: &Connection,
+    notebook_id: &str,
+) -> Result<NotebookSummary, WorkspaceError> {
+    connection
+        .query_row(
+            "SELECT n.id, n.name, n.kind,
+                    (SELECT COUNT(*) FROM notebook_questions nq WHERE nq.notebook_id = n.id),
+                    n.filter_json, n.created_at, n.updated_at
+             FROM notebooks n
+             WHERE n.id = ?1",
+            params![notebook_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| map_database_error("ler caderno", error))?
+        .ok_or_else(|| WorkspaceError::InvalidInput("O caderno escolhido não existe.".to_string()))
+        .and_then(
+            |(id, name, kind, question_count, filter_json, created_at, updated_at)| {
+                Ok(NotebookSummary {
+                    id,
+                    name,
+                    kind,
+                    question_count,
+                    filter: parse_notebook_filter(filter_json)?,
+                    created_at,
+                    updated_at,
+                })
+            },
+        )
+}
+
+fn parse_notebook_filter(
+    filter_json: Option<String>,
+) -> Result<Option<crate::domain::question::NotebookFilter>, WorkspaceError> {
+    filter_json
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| {
+                WorkspaceError::Database(format!("filtro de caderno inválido: {error}"))
+            })
+        })
+        .transpose()
+}
+
 fn load_question(
     connection: &Connection,
     question_id: &str,
@@ -951,7 +1182,7 @@ mod tests {
     use crate::application::question_service::QuestionStore;
     use crate::application::study_plan_service::StudyPlanStore;
     use crate::application::workspace_service::WorkspaceStore;
-    use crate::domain::question::QuestionOptionInput;
+    use crate::domain::question::{NotebookFilter, QuestionOptionInput, ERROR_NOTEBOOK_ID};
     use crate::domain::question_transfer::{
         QuestionAttachmentReference, QuestionExportDocument, QuestionTransferItem,
         QuestionTransferOption, QUESTION_TRANSFER_KIND, QUESTION_TRANSFER_SCHEMA_VERSION,
@@ -1032,6 +1263,87 @@ mod tests {
         assert_eq!(first.xp_granted, 2);
         assert_eq!(second.xp_granted, 0);
         assert_eq!(second.question.attempts_count, 2);
+
+        assert!(store
+            .list_notebook_entries(ERROR_NOTEBOOK_ID)
+            .expect("o caderno deve iniciar vazio")
+            .is_empty());
+        assert!(store
+            .set_notebook_entry(&SetQuestionNotebookInput {
+                notebook_id: ERROR_NOTEBOOK_ID.to_string(),
+                question_id: question.id.clone(),
+                included: true,
+                reason: Some("content".to_string()),
+                observation: Some("Revisar o conceito antes da próxima sessão.".to_string()),
+            })
+            .expect("a questão deve entrar no caderno"));
+        let notebook_entries = store
+            .list_notebook_entries(ERROR_NOTEBOOK_ID)
+            .expect("o caderno deve listar a questão");
+        assert_eq!(notebook_entries.len(), 1);
+        assert_eq!(notebook_entries[0].reason.as_deref(), Some("content"));
+        assert_eq!(
+            notebook_entries[0].observation.as_deref(),
+            Some("Revisar o conceito antes da próxima sessão.")
+        );
+        assert!(!store
+            .set_notebook_entry(&SetQuestionNotebookInput {
+                notebook_id: ERROR_NOTEBOOK_ID.to_string(),
+                question_id: question.id.clone(),
+                included: false,
+                reason: None,
+                observation: None,
+            })
+            .expect("a questão deve sair do caderno"));
+        assert!(store
+            .list_notebook_entries(ERROR_NOTEBOOK_ID)
+            .expect("o caderno deve continuar disponível")
+            .is_empty());
+
+        let manual_notebook = store
+            .create_notebook(&CreateNotebookInput {
+                name: "Revisar Redes".to_string(),
+                kind: "manual".to_string(),
+                filter: None,
+            })
+            .expect("o caderno manual deve ser criado");
+        assert_eq!(manual_notebook.kind, "manual");
+        assert!(store
+            .set_notebook_entry(&SetQuestionNotebookInput {
+                notebook_id: manual_notebook.id.clone(),
+                question_id: question.id.clone(),
+                included: true,
+                reason: None,
+                observation: None,
+            })
+            .expect("a questão deve entrar no caderno manual"));
+        assert_eq!(
+            store
+                .list_notebook_entries(&manual_notebook.id)
+                .expect("o caderno manual deve listar a questão")
+                .len(),
+            1
+        );
+
+        let dynamic_notebook = store
+            .create_notebook(&CreateNotebookInput {
+                name: "Erros de Redes".to_string(),
+                kind: "dynamic".to_string(),
+                filter: Some(NotebookFilter {
+                    subject_id: question.subject_id.clone(),
+                    question_type: Some("multiple_choice".to_string()),
+                    attempt_status: "incorrect".to_string(),
+                }),
+            })
+            .expect("o caderno dinâmico deve ser criado");
+        assert_eq!(dynamic_notebook.kind, "dynamic");
+        assert_eq!(
+            dynamic_notebook
+                .filter
+                .expect("o filtro dinâmico deve ser persistido")
+                .attempt_status,
+            "incorrect"
+        );
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

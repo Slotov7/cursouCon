@@ -22,7 +22,9 @@ import {
   buttonQuietClass,
   buttonSecondaryClass,
   Eyebrow,
+  fieldClass,
   inputClass,
+  selectClass,
 } from "../../shared/ui/primitives";
 
 type TodayViewProps = {
@@ -34,41 +36,20 @@ type TodayViewProps = {
   onDataChanged: () => void;
 };
 
-const DEFAULT_DEMO_TASKS: StudyTaskSummary[] = [
-  {
-    id: "demo-t1",
-    preparationId: "prep-1",
-    subjectId: "subj-1",
-    subjectName: "Direito Constitucional",
-    title: "Controle de Constitucionalidade (Concentrado vs Difuso)",
-    objective: "Revisar ADI, ADC, ADPF e fazer 15 questões.",
-    plannedMinutes: 45,
-    scheduledFor: new Date().toISOString().split("T")[0],
-    status: "pending",
-  },
-  {
-    id: "demo-t2",
-    preparationId: "prep-1",
-    subjectId: "subj-2",
-    subjectName: "Engenharia de Software",
-    title: "Arquitetura Hexagonal, Ports & Adapters e DDD",
-    objective: "Estudo de padrões de projeto e casos de uso isolados.",
-    plannedMinutes: 60,
-    scheduledFor: new Date().toISOString().split("T")[0],
-    status: "pending",
-  },
-  {
-    id: "demo-t3",
-    preparationId: "prep-1",
-    subjectId: "subj-3",
-    subjectName: "Língua Portuguesa",
-    title: "Sintaxe da Oração, Período e Regência da Crase",
-    objective: "Bateria de questões da banca com foco em pegadinhas.",
-    plannedMinutes: 30,
-    scheduledFor: new Date().toISOString().split("T")[0],
-    status: "pending",
-  },
-];
+type PomodoroPhase = "focus" | "short_break" | "long_break";
+
+type PomodoroSettings = {
+  focusMinutes: number;
+  shortBreakMinutes: number;
+  longBreakMinutes: number;
+};
+
+const POMODORO_STORAGE_KEY = "cursoucon.pomodoro.settings";
+const DEFAULT_POMODORO_SETTINGS: PomodoroSettings = {
+  focusMinutes: 25,
+  shortBreakMinutes: 5,
+  longBreakMinutes: 15,
+};
 
 export function TodayView({
   plan,
@@ -82,19 +63,151 @@ export function TodayView({
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [pomodoroSettings, setPomodoroSettings] = useState(readPomodoroSettings);
+  const [pomodoroPhase, setPomodoroPhase] = useState<PomodoroPhase>("focus");
+  const [pomodoroSecondsLeft, setPomodoroSecondsLeft] = useState(
+    () => pomodoroSettings.focusMinutes * 60,
+  );
+  const [pomodoroRunning, setPomodoroRunning] = useState(false);
+  const [pomodoroCompletedFocusCount, setPomodoroCompletedFocusCount] = useState(0);
+  const [isPomodoroTransitioning, setIsPomodoroTransitioning] = useState(false);
+  const [pomodoroMessage, setPomodoroMessage] = useState<string | null>(null);
 
   const primaryPreparation = plan?.preparations.find((prep) => prep.isPrimary);
   const activeSession = dailyPlan?.activeSession ?? null;
 
-  // Use tasks from dailyPlan or fallback to default tasks if empty
-  const tasksToRender = dailyPlan?.tasks.length ? dailyPlan.tasks : DEFAULT_DEMO_TASKS;
+  const tasksToRender = dailyPlan?.tasks ?? [];
   const activeTask = tasksToRender.find((task) => task.id === activeSession?.taskId) ?? tasksToRender[0];
+  const completedTaskCount = tasksToRender.filter((task) => task.status === "completed").length;
+  const plannedMinutes = tasksToRender.reduce((total, task) => total + task.plannedMinutes, 0);
+  const taskProgressPercent =
+    tasksToRender.length > 0 ? Math.round((completedTaskCount / tasksToRender.length) * 100) : 0;
 
   useEffect(() => {
     if (!activeSession || activeSession.status !== "active") return;
     const intervalId = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(intervalId);
   }, [activeSession?.id, activeSession?.status]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(POMODORO_STORAGE_KEY, JSON.stringify(pomodoroSettings));
+    } catch {
+      // A restricted WebView can disable localStorage without blocking the timer.
+    }
+  }, [pomodoroSettings]);
+
+  useEffect(() => {
+    if (!pomodoroRunning) return;
+    const intervalId = window.setInterval(() => {
+      setPomodoroSecondsLeft((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [pomodoroRunning]);
+
+  useEffect(() => {
+    if (!pomodoroRunning || !activeSession) return;
+    if (pomodoroPhase === "focus" && activeSession.status !== "active") {
+      setPomodoroRunning(false);
+    }
+  }, [activeSession, pomodoroPhase, pomodoroRunning]);
+
+  useEffect(() => {
+    if (
+      !pomodoroRunning ||
+      pomodoroSecondsLeft > 0 ||
+      isPomodoroTransitioning ||
+      !activeSession
+    ) {
+      return;
+    }
+
+    setIsPomodoroTransitioning(true);
+    const transitionPhase = async () => {
+      if (pomodoroPhase === "focus") {
+        if (activeSession.status !== "active") {
+          setPomodoroRunning(false);
+          setPomodoroSecondsLeft(1);
+          setPomodoroMessage("Inicie uma sessão ativa para continuar o foco.");
+          setIsPomodoroTransitioning(false);
+          return;
+        }
+
+        try {
+          await pauseStudySession({
+            sessionId: activeSession.id,
+            effectiveSeconds: getElapsedSeconds(activeSession, Date.now()),
+          });
+        } catch (operationError: unknown) {
+          setPomodoroRunning(false);
+          setPomodoroSecondsLeft(1);
+          setActionError(getDesktopErrorMessage(operationError));
+          setIsPomodoroTransitioning(false);
+          return;
+        }
+
+        const completedFocusCount = pomodoroCompletedFocusCount + 1;
+        const nextPhase: PomodoroPhase =
+          completedFocusCount % 4 === 0 ? "long_break" : "short_break";
+        setPomodoroCompletedFocusCount(completedFocusCount);
+        setPomodoroPhase(nextPhase);
+        setPomodoroSecondsLeft(getPomodoroPhaseSeconds(nextPhase, pomodoroSettings));
+        setPomodoroMessage(
+          nextPhase === "long_break"
+            ? "Foco concluído. A sessão foi pausada e começou o intervalo longo."
+            : "Foco concluído. A sessão foi pausada e começou o intervalo curto.",
+        );
+        onDataChanged();
+      } else {
+        if (activeSession.status !== "paused") {
+          setPomodoroRunning(false);
+          setPomodoroSecondsLeft(1);
+          setPomodoroMessage("Pause a sessão antes de iniciar um intervalo.");
+          setIsPomodoroTransitioning(false);
+          return;
+        }
+
+        try {
+          await resumeStudySession({ sessionId: activeSession.id });
+        } catch (operationError: unknown) {
+          setPomodoroRunning(false);
+          setPomodoroSecondsLeft(1);
+          setActionError(getDesktopErrorMessage(operationError));
+          setIsPomodoroTransitioning(false);
+          return;
+        }
+
+        setPomodoroPhase("focus");
+        setPomodoroSecondsLeft(pomodoroSettings.focusMinutes * 60);
+        setPomodoroMessage("Intervalo concluído. O próximo foco começou.");
+        onDataChanged();
+      }
+
+      setIsPomodoroTransitioning(false);
+    };
+
+    void transitionPhase();
+  }, [
+    activeSession,
+    isPomodoroTransitioning,
+    onDataChanged,
+    pomodoroCompletedFocusCount,
+    pomodoroPhase,
+    pomodoroRunning,
+    pomodoroSecondsLeft,
+    pomodoroSettings,
+  ]);
+
+  if (isLoading && !dailyPlan) {
+    return (
+      <div className="grid min-h-[360px] place-items-center rounded-2xl border border-line bg-card p-8 text-center">
+        <div className="grid justify-items-center gap-3" aria-live="polite">
+          <div className="size-8 animate-spin rounded-full border-3 border-blue-600 border-t-transparent" />
+          <p className="text-sm font-medium text-muted">Carregando o plano de hoje...</p>
+        </div>
+      </div>
+    );
+  }
 
   const handleStart = async (task: StudyTaskSummary) => {
     setActionError(null);
@@ -112,6 +225,7 @@ export function TodayView({
 
   const handlePause = async () => {
     if (!activeSession || activeSession.status !== "active") return;
+    setPomodoroRunning(false);
     setActionError(null);
     setActionMessage(null);
     setPendingTaskId(activeSession.taskId);
@@ -137,6 +251,9 @@ export function TodayView({
     try {
       await resumeStudySession({ sessionId: activeSession.id });
       setActionMessage("Sessão retomada.");
+      if (pomodoroPhase === "focus") {
+        setPomodoroRunning(true);
+      }
       onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
@@ -147,6 +264,7 @@ export function TodayView({
 
   const handleFinish = async (taskStatus: "completed" | "partial") => {
     if (!activeSession) return;
+    setPomodoroRunning(false);
     setActionError(null);
     setActionMessage(null);
     setPendingTaskId(activeSession.taskId);
@@ -161,6 +279,10 @@ export function TodayView({
           ? `Sessão encerrada com sucesso! +${result.xpGranted} XP adicionados.`
           : "Sessão encerrada.",
       );
+      setPomodoroRunning(false);
+      setPomodoroPhase("focus");
+      setPomodoroSecondsLeft(pomodoroSettings.focusMinutes * 60);
+      setPomodoroCompletedFocusCount(0);
       onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
@@ -201,10 +323,88 @@ export function TodayView({
     }
   };
 
+  const handleStartPomodoro = () => {
+    const requiredStatus = pomodoroPhase === "focus" ? "active" : "paused";
+    if (!activeSession || activeSession.status !== requiredStatus) {
+      setActionError(
+        pomodoroPhase === "focus"
+          ? "Inicie uma sessão de estudo antes de iniciar o foco."
+          : "O intervalo só começa depois que a sessão é pausada.",
+      );
+      return;
+    }
+    if (pomodoroSecondsLeft === 0) {
+      setPomodoroSecondsLeft(getPomodoroPhaseSeconds(pomodoroPhase, pomodoroSettings));
+    }
+    setPomodoroRunning(true);
+    setPomodoroMessage(
+      pomodoroPhase === "focus" ? "Foco iniciado." : "Intervalo retomado.",
+    );
+  };
+
+  const handleResumePomodoro = async () => {
+    if (pomodoroPhase === "short_break" || pomodoroPhase === "long_break") {
+      handleStartPomodoro();
+      return;
+    }
+    await handleResume();
+  };
+
+  const handlePausePomodoro = async () => {
+    if (!pomodoroRunning) return;
+    if (pomodoroPhase === "focus" && activeSession?.status === "active") {
+      await handlePause();
+      return;
+    }
+    setPomodoroRunning(false);
+    setPomodoroMessage("Pomodoro pausado.");
+  };
+
+  const handleResetPomodoro = async () => {
+    if (pomodoroRunning && pomodoroPhase === "focus" && activeSession?.status === "active") {
+      await handlePause();
+    }
+    setPomodoroRunning(false);
+    setPomodoroPhase("focus");
+    setPomodoroSecondsLeft(pomodoroSettings.focusMinutes * 60);
+    setPomodoroCompletedFocusCount(0);
+    setPomodoroMessage("Pomodoro reiniciado.");
+  };
+
+  const handlePomodoroSettingChange = (
+    key: keyof PomodoroSettings,
+    value: number,
+  ) => {
+    const nextSettings = { ...pomodoroSettings, [key]: value };
+    setPomodoroSettings(nextSettings);
+    if (!pomodoroRunning) {
+      setPomodoroSecondsLeft(getPomodoroPhaseSeconds(pomodoroPhase, nextSettings));
+    }
+  };
+
   const isBusy = isLoading || pendingTaskId !== null;
+  const pomodoroCanRun = Boolean(
+    activeSession &&
+      (pomodoroPhase === "focus"
+        ? activeSession.status === "active"
+        : activeSession.status === "paused"),
+  );
+  const pomodoroPhaseLabel = getPomodoroPhaseLabel(pomodoroPhase);
 
   return (
     <div className="grid gap-6">
+      {error && (
+        <div
+          className="flex items-center justify-between gap-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-xs text-red-600"
+          role="alert"
+        >
+          <span>{error}</span>
+          <button className={buttonSecondaryClass} type="button" onClick={onDataChanged}>
+            Tentar novamente
+          </button>
+        </div>
+      )}
+
       {/* 1. Hero Study Banner - Clean Typography & Tactile Glass Surface */}
       <section className="glass-hero relative overflow-hidden rounded-3xl p-6 text-white shadow-xl lg:p-8 border border-white/12">
         <div className="relative z-10 grid gap-4 max-w-3xl">
@@ -251,8 +451,8 @@ export function TodayView({
           {/* Action Button Bar */}
           <div className="flex flex-wrap items-center gap-3 pt-2">
             {activeSession?.status === "paused" ? (
-              <button className={buttonPrimaryClass} type="button" onClick={handleResume} disabled={isBusy}>
-                ▶ Retomar Sessão
+              <button className={buttonPrimaryClass} type="button" onClick={handleResumePomodoro} disabled={isBusy}>
+                ▶ {pomodoroPhase === "focus" ? "Retomar Sessão" : "Continuar Intervalo"}
               </button>
             ) : activeSession?.status === "active" ? (
               <>
@@ -283,40 +483,38 @@ export function TodayView({
         </div>
       </section>
 
-      {/* 2. Quick Metrics Bar - 4 Tactile Surface Cards */}
+      {/* 2. Daily plan metrics */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Horas de Estudo Hoje</p>
-          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">1h 45m</p>
+          <p className="text-xs font-semibold text-muted">Tarefas do Dia</p>
+          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">{tasksToRender.length}</p>
           <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-paper-deep">
-            <div className="h-full w-[70%] rounded-full bg-blue-600 transition-all duration-300"></div>
+            <div
+              className="h-full rounded-full bg-blue-600 transition-all duration-300"
+              style={{ width: `${taskProgressPercent}%` }}
+            />
           </div>
+          <p className="mt-2 text-[11px] text-muted">{taskProgressPercent}% concluído</p>
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Sequência de Estudos</p>
-          <div className="mt-1 flex items-center gap-1.5">
-            <span className="font-heading text-xl font-extrabold text-ink tabular-nums">7 Dias</span>
-            <span className="text-base">🔥</span>
-          </div>
-          <p className="mt-2 text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">Ofensiva ativa</p>
+          <p className="text-xs font-semibold text-muted">Tarefas Concluídas</p>
+          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">{completedTaskCount}</p>
+          <p className="mt-2 text-[11px] text-muted font-semibold">Atualizado pelo plano local</p>
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Questões Resolvidas</p>
-          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">18 / 25</p>
-          <p className="mt-2 text-[11px] text-muted font-medium">72% de acerto global</p>
+          <p className="text-xs font-semibold text-muted">Tempo Planejado</p>
+          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">{plannedMinutes} min</p>
+          <p className="mt-2 text-[11px] text-muted font-medium">Soma das tarefas do dia</p>
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Nível de XP</p>
-          <div className="mt-1 flex items-center justify-between">
-            <span className="font-heading text-xl font-extrabold text-orange-500 tabular-nums">Nível 4</span>
-            <span className="rounded-md bg-orange-500/10 px-2 py-0.5 text-xs font-bold text-orange-600 dark:text-orange-400 tabular-nums">
-              480 XP
-            </span>
-          </div>
-          <p className="mt-2 text-[11px] text-muted">Próximo nível a 1.000 XP</p>
+          <p className="text-xs font-semibold text-muted">Sessão Atual</p>
+          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">
+            {activeSession ? formatDuration(getElapsedSeconds(activeSession, now)) : "Nenhuma"}
+          </p>
+          <p className="mt-2 text-[11px] text-muted">Tempo efetivo em andamento</p>
         </div>
       </div>
 
@@ -342,42 +540,39 @@ export function TodayView({
           {actionMessage && <p className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 font-medium">{actionMessage}</p>}
 
           <div className="mt-4 grid gap-3">
-            {tasksToRender.map((task, index) => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                index={index}
-                isActive={activeSession?.taskId === task.id}
-                isBusy={isBusy}
-                onStart={() => handleStart(task)}
-                onSkip={() => handleSkip(task)}
-                onReschedule={(date) => handleReschedule(task, date)}
-              />
-            ))}
+            {tasksToRender.length > 0 ? (
+              tasksToRender.map((task, index) => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  index={index}
+                  isActive={activeSession?.taskId === task.id}
+                  isBusy={isBusy}
+                  onStart={() => handleStart(task)}
+                  onSkip={() => handleSkip(task)}
+                  onReschedule={(date) => handleReschedule(task, date)}
+                />
+              ))
+            ) : (
+              <div className="rounded-xl border border-dashed border-line bg-paper p-8 text-center">
+                <p className="text-sm font-semibold text-ink">Nenhuma tarefa planejada para hoje.</p>
+                <p className="mt-1 text-xs text-muted">
+                  Crie uma tarefa no Plano para definir sua próxima ação de estudo.
+                </p>
+                <button
+                  type="button"
+                  onClick={onOpenPlan}
+                  className={`${buttonPrimaryClass} mt-4 text-xs`}
+                >
+                  Abrir Plano
+                </button>
+              </div>
+            )}
           </div>
         </section>
 
         {/* Right Utility Cards */}
         <div className="grid gap-4 content-start">
-          {/* Continue Reading Recent Material */}
-          <section className="rounded-2xl border border-line bg-card p-5 shadow-xs">
-            <Eyebrow>Biblioteca de Leitura</Eyebrow>
-            <h4 className="mt-1 font-heading text-base font-bold text-ink">Continuar Material Recente</h4>
-
-            <div className="mt-4 flex items-start gap-3 rounded-xl border border-line bg-paper p-3.5">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-blue-600/10 text-blue-600 font-bold text-xs">
-                PDF
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-bold text-ink">Constituicao-Federal-1988-CF88.pdf</p>
-                <p className="mt-1 text-[11px] text-muted">Direito Constitucional · Pág. 42 de 120</p>
-                <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-paper-deep">
-                  <div className="h-full w-[35%] rounded-full bg-blue-600"></div>
-                </div>
-              </div>
-            </div>
-          </section>
-
           {/* Local Storage & System Info */}
           <section className="rounded-2xl border border-line bg-card p-5 shadow-xs">
             <Eyebrow>Status do Sistema</Eyebrow>
@@ -397,6 +592,106 @@ export function TodayView({
                 <span className="font-semibold text-ink">Sem envio à nuvem</span>
               </div>
             </div>
+          </section>
+
+          <section className="rounded-2xl border border-line bg-card p-5 shadow-xs" aria-labelledby="pomodoro-title">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <Eyebrow>Ritmo de Foco</Eyebrow>
+                <h4 id="pomodoro-title" className="mt-1 font-heading text-base font-bold text-ink">
+                  Pomodoro
+                </h4>
+              </div>
+              <span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-blue-600">
+                {pomodoroPhaseLabel}
+              </span>
+            </div>
+
+            <p className="mt-4 text-center font-mono text-4xl font-extrabold tabular-nums text-ink">
+              {formatPomodoroTime(pomodoroSecondsLeft)}
+            </p>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+              <label className={fieldClass}>
+                Foco
+                <select
+                  className={`${selectClass} min-h-9 px-2 text-xs`}
+                  value={pomodoroSettings.focusMinutes}
+                  onChange={(event) =>
+                    handlePomodoroSettingChange("focusMinutes", Number(event.target.value))
+                  }
+                  disabled={pomodoroRunning || isPomodoroTransitioning}
+                >
+                  <option value={15}>15 min</option>
+                  <option value={25}>25 min</option>
+                  <option value={50}>50 min</option>
+                </select>
+              </label>
+              <label className={fieldClass}>
+                Pausa curta
+                <select
+                  className={`${selectClass} min-h-9 px-2 text-xs`}
+                  value={pomodoroSettings.shortBreakMinutes}
+                  onChange={(event) =>
+                    handlePomodoroSettingChange("shortBreakMinutes", Number(event.target.value))
+                  }
+                  disabled={pomodoroRunning || isPomodoroTransitioning}
+                >
+                  <option value={5}>5 min</option>
+                  <option value={10}>10 min</option>
+                </select>
+              </label>
+              <label className={fieldClass}>
+                Pausa longa
+                <select
+                  className={`${selectClass} min-h-9 px-2 text-xs`}
+                  value={pomodoroSettings.longBreakMinutes}
+                  onChange={(event) =>
+                    handlePomodoroSettingChange("longBreakMinutes", Number(event.target.value))
+                  }
+                  disabled={pomodoroRunning || isPomodoroTransitioning}
+                >
+                  <option value={15}>15 min</option>
+                  <option value={20}>20 min</option>
+                  <option value={30}>30 min</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {!pomodoroRunning ? (
+                <button
+                  type="button"
+                  className={`${buttonPrimaryClass} min-h-9 px-3 text-xs`}
+                  onClick={handleStartPomodoro}
+                  disabled={!pomodoroCanRun || isPomodoroTransitioning}
+                >
+                  {pomodoroPhase === "focus" ? "Iniciar Foco" : "Iniciar Intervalo"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={`${buttonSecondaryClass} min-h-9 px-3 text-xs`}
+                  onClick={() => void handlePausePomodoro()}
+                  disabled={isPomodoroTransitioning}
+                >
+                  Pausar Pomodoro
+                </button>
+              )}
+              <button
+                type="button"
+                className={`${buttonQuietClass} min-h-9 px-3 text-xs`}
+                onClick={() => void handleResetPomodoro()}
+                disabled={isPomodoroTransitioning}
+              >
+                Reiniciar
+              </button>
+            </div>
+
+            <p className="mt-3 text-[11px] leading-relaxed text-muted">
+              {pomodoroMessage ||
+                "O intervalo pausa a sessão automaticamente e não entra no tempo estudado."}
+            </p>
           </section>
         </div>
       </div>
@@ -530,6 +825,52 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return `${minutes.toString().padStart(2, "0")}m ${remainingSeconds.toString().padStart(2, "0")}s`;
+}
+
+function formatPomodoroTime(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${remainingSeconds
+    .toString()
+    .padStart(2, "0")}`;
+}
+
+function getPomodoroPhaseLabel(phase: PomodoroPhase): string {
+  if (phase === "focus") return "Foco";
+  return phase === "short_break" ? "Pausa curta" : "Pausa longa";
+}
+
+function getPomodoroPhaseSeconds(
+  phase: PomodoroPhase,
+  settings: PomodoroSettings,
+): number {
+  if (phase === "focus") return settings.focusMinutes * 60;
+  return (phase === "short_break" ? settings.shortBreakMinutes : settings.longBreakMinutes) * 60;
+}
+
+function readPomodoroSettings(): PomodoroSettings {
+  try {
+    const stored = window.localStorage.getItem(POMODORO_STORAGE_KEY);
+    if (!stored) return DEFAULT_POMODORO_SETTINGS;
+    const parsed: unknown = JSON.parse(stored);
+    if (!isPomodoroSettings(parsed)) return DEFAULT_POMODORO_SETTINGS;
+    return parsed;
+  } catch {
+    return DEFAULT_POMODORO_SETTINGS;
+  }
+}
+
+function isPomodoroSettings(value: unknown): value is PomodoroSettings {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.focusMinutes === "number" &&
+    [15, 25, 50].includes(record.focusMinutes) &&
+    typeof record.shortBreakMinutes === "number" &&
+    [5, 10].includes(record.shortBreakMinutes) &&
+    typeof record.longBreakMinutes === "number" &&
+    [15, 20, 30].includes(record.longBreakMinutes)
+  );
 }
 
 function formatToday(): string {

@@ -1,7 +1,9 @@
+pub mod backup_store;
 pub mod database;
 pub mod material_store;
 pub mod note_store;
 pub mod question_store;
+pub mod revision_store;
 pub mod study_plan_store;
 pub mod study_store;
 pub mod workspace_store;

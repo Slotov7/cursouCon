@@ -30,6 +30,7 @@ pub trait WorkspaceStore {
     fn create_workspace(&self, path: &Path, name: &str) -> Result<WorkspaceRecord, WorkspaceError>;
     fn open_workspace(&self, path: &Path) -> Result<WorkspaceRecord, WorkspaceError>;
     fn active_workspace(&self) -> Result<Option<WorkspaceRecord>, WorkspaceError>;
+    fn recent_workspaces(&self) -> Result<Vec<WorkspaceRecord>, WorkspaceError>;
 }
 
 pub struct WorkspaceService<S> {
@@ -60,6 +61,14 @@ impl<S: WorkspaceStore> WorkspaceService<S> {
             .map(|record| record.summary())
             .transpose()
     }
+
+    pub fn recent(&self) -> Result<Vec<WorkspaceSummary>, WorkspaceError> {
+        self.store
+            .recent_workspaces()?
+            .into_iter()
+            .map(|record| record.summary())
+            .collect()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -88,6 +97,10 @@ pub enum WorkspaceError {
     Serialization(String),
     #[error("O espaço é inválido: {0}")]
     InvalidWorkspace(String),
+    #[error("O backup é inválido: {0}")]
+    InvalidBackup(String),
+    #[error("Há revisões divergentes que exigem escolha: {0}")]
+    RevisionConflict(String),
     #[error("Falha ao recuperar o espaço ativo: {0}")]
     ActiveWorkspace(String),
 }
@@ -107,6 +120,8 @@ impl WorkspaceError {
             Self::Database(_) => "database_error",
             Self::Serialization(_) => "serialization_error",
             Self::InvalidWorkspace(_) => "invalid_workspace",
+            Self::InvalidBackup(_) => "invalid_backup",
+            Self::RevisionConflict(_) => "revision_conflict",
             Self::ActiveWorkspace(_) => "active_workspace_error",
         }
     }

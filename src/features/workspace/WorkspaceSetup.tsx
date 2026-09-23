@@ -2,10 +2,12 @@ import { useState } from "react";
 import {
   createWorkspace,
   getDesktopErrorMessage,
+  getWorkspaceRevisions,
   openWorkspace,
   pickWorkspaceDirectory,
+  restoreWorkspaceRevision,
 } from "../../shared/desktop/commands";
-import type { WorkspaceSummary } from "../../shared/desktop/contracts";
+import type { RevisionSummary, WorkspaceSummary } from "../../shared/desktop/contracts";
 import {
   BrandLockup,
   buttonPrimaryClass,
@@ -25,16 +27,21 @@ type WorkspaceSetupProps = {
   onWorkspaceReady: (workspace: WorkspaceSummary) => void;
 };
 
-type PendingAction = "idle" | "picking" | "creating" | "opening";
+type PendingAction = "idle" | "picking" | "creating" | "opening" | "restoringRevision";
 
 export function WorkspaceSetup({ initialError, theme, onToggleTheme, onWorkspaceReady }: WorkspaceSetupProps) {
   const [workspaceName, setWorkspaceName] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [pendingAction, setPendingAction] = useState<PendingAction>("idle");
   const [error, setError] = useState<string | null>(initialError);
+  const [revisionRecoveryVisible, setRevisionRecoveryVisible] = useState(false);
+  const [availableRevisions, setAvailableRevisions] = useState<RevisionSummary[]>([]);
+  const [isLoadingRevisions, setIsLoadingRevisions] = useState(false);
 
   const chooseDirectory = async () => {
     setError(null);
+    setRevisionRecoveryVisible(false);
+    setAvailableRevisions([]);
     setPendingAction("picking");
 
     try {
@@ -72,6 +79,25 @@ export function WorkspaceSetup({ initialError, theme, onToggleTheme, onWorkspace
     }
   };
 
+  const handleRestoreRevision = async (revisionId: string) => {
+    if (!workspacePath) {
+      return;
+    }
+    setError(null);
+    setPendingAction("restoringRevision");
+    try {
+      const restoredWorkspace = await restoreWorkspaceRevision({
+        workspacePath,
+        revisionId,
+      });
+      onWorkspaceReady(restoredWorkspace);
+    } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingAction("idle");
+    }
+  };
+
   const handleOpen = async () => {
     setError(null);
     setPendingAction("opening");
@@ -80,7 +106,18 @@ export function WorkspaceSetup({ initialError, theme, onToggleTheme, onWorkspace
       const openedWorkspace = await openWorkspace(workspacePath);
       onWorkspaceReady(openedWorkspace);
     } catch (operationError: unknown) {
-      setError(getDesktopErrorMessage(operationError));
+      const openError = getDesktopErrorMessage(operationError);
+      setError(openError);
+      setRevisionRecoveryVisible(true);
+      setAvailableRevisions([]);
+      setIsLoadingRevisions(true);
+      try {
+        setAvailableRevisions(await getWorkspaceRevisions(workspacePath));
+      } catch (revisionError: unknown) {
+        setError(`${openError} ${getDesktopErrorMessage(revisionError)}`);
+      } finally {
+        setIsLoadingRevisions(false);
+      }
       setPendingAction("idle");
     }
   };
@@ -166,6 +203,40 @@ export function WorkspaceSetup({ initialError, theme, onToggleTheme, onWorkspace
             </p>
           ) : null}
 
+          {revisionRecoveryVisible ? (
+            <section className="grid gap-3 rounded-xl border border-orange-500/30 bg-orange-500/5 p-4" aria-labelledby="setup-revision-title">
+              <div>
+                <h3 id="setup-revision-title" className="font-heading font-bold text-ink">Escolher revisão preservada</h3>
+                <p className="mt-1 text-xs leading-relaxed text-muted">
+                  A pasta contém revisões que não podem ser escolhidas automaticamente. Selecione uma para recuperar o espaço sem apagar as outras.
+                </p>
+              </div>
+              {isLoadingRevisions ? (
+                <p className="text-xs text-muted" role="status">Validando revisões...</p>
+              ) : availableRevisions.length > 0 ? (
+                <div className="grid gap-2">
+                  {availableRevisions.map((revision) => (
+                    <button
+                      key={revision.revisionId}
+                      type="button"
+                      className="grid gap-1 rounded-xl border border-line bg-paper/80 px-3 py-2 text-left transition-colors hover:border-orange-500/60 hover:bg-card disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() => handleRestoreRevision(revision.revisionId)}
+                      disabled={isBusy}
+                    >
+                      <span className="flex items-center justify-between gap-3 text-sm font-semibold text-ink">
+                        <span className="truncate">Revisão {revision.revisionId.slice(0, 8)}</span>
+                        <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-muted">{revision.blobCount} blobs</span>
+                      </span>
+                      <span className="text-[11px] font-normal text-muted">{formatRevisionTimestamp(revision.createdAtEpochSeconds)}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-muted">Nenhuma revisão válida está disponível para recuperação.</p>
+              )}
+            </section>
+          ) : null}
+
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <button className={`${buttonPrimaryClass} shadow-md`} type="button" onClick={handleCreate} disabled={isBusy}>
               {pendingAction === "creating" ? "Criando..." : "Criar Novo Espaço"}
@@ -182,4 +253,11 @@ export function WorkspaceSetup({ initialError, theme, onToggleTheme, onWorkspace
       </section>
     </main>
   );
+}
+
+function formatRevisionTimestamp(epochSeconds: number): string {
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(epochSeconds * 1000));
 }

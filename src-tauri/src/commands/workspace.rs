@@ -61,3 +61,9 @@ pub fn get_active_workspace(app: AppHandle) -> Result<Option<WorkspaceSummary>, 
     let service = workspace_service(&app)?;
     service.active().map_err(CommandError::from)
 }
+
+#[tauri::command]
+pub fn get_recent_workspaces(app: AppHandle) -> Result<Vec<WorkspaceSummary>, CommandError> {
+    let service = workspace_service(&app)?;
+    service.recent().map_err(CommandError::from)
+}

@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   parseAnswerQuestionResult,
+  parseBackupSummary,
   parseDailyPlan,
   parseFinishStudySessionResult,
   parseMaterial,
@@ -13,7 +14,12 @@ import {
   parseQuestionExportResult,
   parseQuestionImportPreview,
   parseQuestionImportResult,
+  parseQuestionNotebookEntries,
+  parseNotebooks,
+  parseNotebook,
   parseQuestions,
+  parseRevisionSummary,
+  parseSyncDestinationSettings,
   parseStudyPlan,
   parseStudyProgress,
   parseStudySession,
@@ -21,9 +27,13 @@ import {
   parseWorkspaceSummary,
   type AnswerQuestionRequest,
   type AnswerQuestionResult,
+  type BackupSummary,
   type CreatePreparationRequest,
+  type CreateBackupRequest,
   type CreateQuestionRequest,
+  type CreateNotebookRequest,
   type CreateStudyTaskRequest,
+  type ConfigureSyncDestinationRequest,
   type CreateSubjectRequest,
   type DailyPlan,
   type FinishStudySessionRequest,
@@ -38,8 +48,15 @@ import {
   type QuestionExportResult,
   type QuestionImportPreview,
   type QuestionImportResult,
+  type QuestionNotebookEntry,
+  type RevisionSummary,
+  type RestoreWorkspaceRevisionRequest,
+  type NotebookSummary,
+  type PublishWorkspaceRevisionRequest,
+  type SetQuestionNotebookRequest,
   type RescheduleStudyTaskRequest,
   type ResumeStudySessionRequest,
+  type RestoreBackupRequest,
   type SaveNoteRequest,
   type SkipStudyTaskRequest,
   type StartStudySessionRequest,
@@ -47,6 +64,7 @@ import {
   type StudyProgressSummary,
   type StudySessionSummary,
   type StudyTaskSummary,
+  type SyncDestinationSettings,
   type UpdateMaterialPageRequest,
   type WorkspaceRequest,
   type WorkspaceSummary,
@@ -66,6 +84,11 @@ let mockWorkspace: WorkspaceSummary = {
   formatVersion: 1,
   path: "C:/Estudos/ConcursoSenado",
   storageStatus: "local",
+};
+
+let mockSyncDestinationSettings: SyncDestinationSettings = {
+  enabled: false,
+  destinationPath: null,
 };
 
 let mockStudyPlan: StudyPlan = {
@@ -134,6 +157,20 @@ let mockTasks: StudyTaskSummary[] = [
 
 let mockActiveSession: StudySessionSummary | null = null;
 let mockXp = 480;
+let mockNotebookEntries: Record<string, QuestionNotebookEntry[]> = {
+  "notebook-errors": [],
+};
+let mockNotebooks: NotebookSummary[] = [
+  {
+    id: "notebook-errors",
+    name: "Caderno de Erros",
+    kind: "error",
+    questionCount: 0,
+    filter: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
+];
 
 // ---------------------------------------------------------------------------
 // IPC Core Wrappers
@@ -143,6 +180,15 @@ export async function getActiveWorkspace(): Promise<WorkspaceSummary | null> {
   if (!isTauri()) return mockWorkspace;
   const response = await invoke<unknown>("get_active_workspace");
   return parseOptionalWorkspaceSummary(response);
+}
+
+export async function getRecentWorkspaces(): Promise<WorkspaceSummary[]> {
+  if (!isTauri()) return [mockWorkspace];
+  const response = await invoke<unknown>("get_recent_workspaces");
+  if (!Array.isArray(response)) {
+    throw new Error("O núcleo local devolveu uma lista de espaços inválida.");
+  }
+  return response.map(parseWorkspaceSummary);
 }
 
 export async function createWorkspace(request: WorkspaceRequest): Promise<WorkspaceSummary> {
@@ -177,6 +223,134 @@ export async function openWorkspace(workspacePath: string): Promise<WorkspaceSum
   return parseWorkspaceSummary(response);
 }
 
+export async function createWorkspaceBackup(
+  request: CreateBackupRequest,
+): Promise<BackupSummary> {
+  if (!isTauri()) {
+    return {
+      path: `${request.destinationParentPath}/ConcursoSenado-backup-demo`,
+      workspaceName: mockWorkspace.name,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+    };
+  }
+  const response = await invoke<unknown>("create_workspace_backup", { request });
+  return parseBackupSummary(response);
+}
+
+export async function createWorkspaceRevision(): Promise<RevisionSummary> {
+  if (!isTauri()) {
+    return {
+      revisionId: `revision-${Date.now()}`,
+      path: `${mockWorkspace.path}/revisions/revision-demo`,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      blobCount: 0,
+    };
+  }
+  const response = await invoke<unknown>("create_workspace_revision");
+  return parseRevisionSummary(response);
+}
+
+export async function publishWorkspaceRevision(
+  request: PublishWorkspaceRevisionRequest,
+): Promise<RevisionSummary> {
+  if (!isTauri()) {
+    return {
+      revisionId: `revision-${Date.now()}`,
+      path: `${request.destinationParentPath}/ConcursoSenado-revision-demo`,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      blobCount: 0,
+    };
+  }
+  const response = await invoke<unknown>("publish_workspace_revision", { request });
+  return parseRevisionSummary(response);
+}
+
+export async function publishConfiguredWorkspaceRevision(): Promise<RevisionSummary> {
+  if (!isTauri()) {
+    return {
+      revisionId: `revision-${Date.now()}`,
+      path: `${mockSyncDestinationSettings.destinationPath}/ConcursoSenado-revision-demo`,
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      blobCount: 0,
+    };
+  }
+  const response = await invoke<unknown>("publish_configured_workspace_revision");
+  return parseRevisionSummary(response);
+}
+
+export async function getSyncDestinationSettings(): Promise<SyncDestinationSettings> {
+  if (!isTauri()) {
+    return mockSyncDestinationSettings;
+  }
+  const response = await invoke<unknown>("get_sync_destination_settings");
+  return parseSyncDestinationSettings(response);
+}
+
+export async function configureSyncDestination(
+  request: ConfigureSyncDestinationRequest,
+): Promise<SyncDestinationSettings> {
+  if (!isTauri()) {
+    mockSyncDestinationSettings = {
+      enabled: request.enabled,
+      destinationPath: request.destinationParentPath,
+    };
+    return mockSyncDestinationSettings;
+  }
+  const response = await invoke<unknown>("configure_sync_destination", { request });
+  return parseSyncDestinationSettings(response);
+}
+
+export async function getWorkspaceRevisions(workspacePath: string): Promise<RevisionSummary[]> {
+  if (!isTauri()) {
+    return [
+      {
+        revisionId: "revision-demo",
+        path: `${workspacePath}/revisions/revision-demo`,
+        createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+        blobCount: 0,
+      },
+    ];
+  }
+  const response = await invoke<unknown>("get_workspace_revisions", {
+    request: { workspacePath },
+  });
+  if (!Array.isArray(response)) {
+    throw new Error("O núcleo local devolveu uma lista de revisões inválida.");
+  }
+  return response.map(parseRevisionSummary);
+}
+
+export async function restoreWorkspaceRevision(
+  request: RestoreWorkspaceRevisionRequest,
+): Promise<WorkspaceSummary> {
+  if (!isTauri()) {
+    mockWorkspace = {
+      ...mockWorkspace,
+      workspaceId: `ws-revision-${Date.now()}`,
+      path: request.workspacePath,
+    };
+    return mockWorkspace;
+  }
+  const response = await invoke<unknown>("restore_workspace_revision", { request });
+  return parseWorkspaceSummary(response);
+}
+
+export async function restoreWorkspaceBackup(
+  request: RestoreBackupRequest,
+): Promise<WorkspaceSummary> {
+  if (!isTauri()) {
+    mockWorkspace = {
+      ...mockWorkspace,
+      workspaceId: `ws-restored-${Date.now()}`,
+      name: `${mockWorkspace.name} (restaurado)`,
+      path: `${request.destinationParentPath}/ConcursoSenado-restaurado`,
+    };
+    return mockWorkspace;
+  }
+  const response = await invoke<unknown>("restore_workspace_backup", { request });
+  return parseWorkspaceSummary(response);
+}
+
 export async function pickWorkspaceDirectory(): Promise<string | null> {
   if (!isTauri()) {
     return "C:/Estudos/ConcursoSenado2026";
@@ -185,6 +359,18 @@ export async function pickWorkspaceDirectory(): Promise<string | null> {
     directory: true,
     multiple: false,
     title: "Escolha a pasta do espaço de estudos",
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function pickDirectory(title: string): Promise<string | null> {
+  if (!isTauri()) {
+    return "C:/Estudos/CursouCon";
+  }
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title,
   });
   return typeof selected === "string" ? selected : null;
 }
@@ -367,6 +553,78 @@ export async function getQuestions(request: GetQuestionsRequest): Promise<Questi
   return parseQuestions(response);
 }
 
+export async function getNotebooks(): Promise<NotebookSummary[]> {
+  if (!isTauri()) {
+    return mockNotebooks.map((notebook) => ({
+      ...notebook,
+      questionCount: mockNotebookEntries[notebook.id]?.length ?? 0,
+    }));
+  }
+  const response = await invoke<unknown>("get_notebooks");
+  return parseNotebooks(response);
+}
+
+export async function createNotebook(request: CreateNotebookRequest): Promise<NotebookSummary> {
+  if (!isTauri()) {
+    const now = new Date().toISOString();
+    const notebook: NotebookSummary = {
+      id: `notebook-${Date.now()}`,
+      name: request.name.trim(),
+      kind: "manual",
+      questionCount: 0,
+      filter: request.filter,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mockNotebooks = [...mockNotebooks, notebook];
+    mockNotebookEntries[notebook.id] = [];
+    return notebook;
+  }
+  const response = await invoke<unknown>("create_notebook", { request });
+  return parseNotebook(response);
+}
+
+export async function getNotebookEntries(notebookId: string): Promise<QuestionNotebookEntry[]> {
+  if (!isTauri()) return mockNotebookEntries[notebookId] ?? [];
+  const response = await invoke<unknown>("get_notebook_entries", {
+    request: { notebookId },
+  });
+  return parseQuestionNotebookEntries(response);
+}
+
+export async function setNotebookEntry(
+  request: SetQuestionNotebookRequest,
+): Promise<boolean> {
+  if (!isTauri()) {
+    const now = new Date().toISOString();
+    const entries = mockNotebookEntries[request.notebookId] ?? [];
+    if (request.included) {
+      const current = entries.find((entry) => entry.questionId === request.questionId);
+      const nextEntry: QuestionNotebookEntry = {
+        questionId: request.questionId,
+        notebookId: request.notebookId,
+        reason: request.reason,
+        observation: request.observation,
+        addedAt: current?.addedAt ?? now,
+        updatedAt: now,
+      };
+      mockNotebookEntries[request.notebookId] = current
+        ? entries.map((entry) => (entry.questionId === request.questionId ? nextEntry : entry))
+        : [...entries, nextEntry];
+    } else {
+      mockNotebookEntries[request.notebookId] = entries.filter(
+        (entry) => entry.questionId !== request.questionId,
+      );
+    }
+    return request.included;
+  }
+  const response = await invoke<unknown>("set_notebook_entry", { request });
+  if (typeof response !== "boolean") {
+    throw new Error("O núcleo local devolveu um resultado de caderno inválido.");
+  }
+  return response;
+}
+
 export async function pickQuestionImportFile(): Promise<string | null> {
   if (!isTauri()) return null;
   const selected = await open({
@@ -440,22 +698,34 @@ export async function answerQuestion(request: AnswerQuestionRequest): Promise<An
     const mockQuestion: QuestionSummary = {
       id: request.questionId,
       questionType: "multiple_choice",
-      statementMarkdown: "Questão respondida no modo de teste.",
-      options: [{ key: "C", text: "Opção C" }],
-      answerKey: "C",
-      explanationMarkdown: "Gabarito C.",
+      statementMarkdown: "Questão respondida no modo de pré-visualização.",
+      options: [
+        { key: "A", text: "Alternativa de pré-visualização A" },
+        { key: "B", text: "Alternativa de pré-visualização B" },
+      ],
+      answerKey: "A",
+      explanationMarkdown: "Gabarito disponível apenas no modo de pré-visualização.",
       sourceName: null,
-      board: "Cebraspe",
-      organization: "STF",
-      role: "Analista",
-      examYear: 2025,
-      subjectId: "subj-1",
-      subjectName: "Direito Constitucional",
+      board: null,
+      organization: null,
+      role: null,
+      examYear: null,
+      subjectId: null,
+      subjectName: null,
       status: "active",
       attemptsCount: 1,
-      firstAttemptResult: "correct",
-      lastAttemptResult: "correct",
+      firstAttemptResult:
+        request.selectedKey === null ? "blank" : request.selectedKey === "A" ? "correct" : "incorrect",
+      lastAttemptResult:
+        request.selectedKey === null ? "blank" : request.selectedKey === "A" ? "correct" : "incorrect",
     };
+
+    const result =
+      request.selectedKey === null
+        ? "blank"
+        : request.selectedKey === mockQuestion.answerKey
+        ? "correct"
+        : "incorrect";
 
     return {
       attempt: {
@@ -464,12 +734,12 @@ export async function answerQuestion(request: AnswerQuestionRequest): Promise<An
         selectedKey: request.selectedKey,
         confidence: request.confidence,
         elapsedSeconds: request.elapsedSeconds,
-        answerKeyAtAttempt: "C",
-        result: "correct",
+        answerKeyAtAttempt: mockQuestion.answerKey,
+        result,
         answeredAt: new Date().toISOString(),
       },
       question: mockQuestion,
-      xpGranted: 2,
+      xpGranted: result === "correct" ? 2 : 0,
     };
   }
   const response = await invoke<unknown>("answer_question", { request });

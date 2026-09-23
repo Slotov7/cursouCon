@@ -11,6 +11,47 @@ export type WorkspaceRequest = {
   name: string;
 };
 
+export type BackupSummary = {
+  path: string;
+  workspaceName: string;
+  createdAtEpochSeconds: number;
+};
+
+export type RevisionSummary = {
+  revisionId: string;
+  path: string;
+  createdAtEpochSeconds: number;
+  blobCount: number;
+};
+
+export type RestoreWorkspaceRevisionRequest = {
+  workspacePath: string;
+  revisionId: string;
+};
+
+export type PublishWorkspaceRevisionRequest = {
+  destinationParentPath: string;
+};
+
+export type SyncDestinationSettings = {
+  enabled: boolean;
+  destinationPath: string | null;
+};
+
+export type ConfigureSyncDestinationRequest = {
+  enabled: boolean;
+  destinationParentPath: string | null;
+};
+
+export type CreateBackupRequest = {
+  destinationParentPath: string;
+};
+
+export type RestoreBackupRequest = {
+  backupPath: string;
+  destinationParentPath: string;
+};
+
 export type PreparationSummary = {
   id: string;
   name: string;
@@ -133,6 +174,32 @@ export type NoteSummary = {
 export type QuestionType = "multiple_choice" | "true_false";
 export type QuestionConfidence = "certain" | "doubt" | "guess";
 export type QuestionResult = "correct" | "incorrect" | "blank" | "pending";
+export const ERROR_NOTEBOOK_ID = "notebook-errors";
+
+export type NotebookKind = "error" | "manual" | "dynamic";
+export type NotebookAttemptStatus = "incorrect" | "unanswered" | "correct";
+
+export type NotebookFilter = {
+  subjectId: string | null;
+  questionType: QuestionType | null;
+  attemptStatus: NotebookAttemptStatus;
+};
+
+export type NotebookSummary = {
+  id: string;
+  name: string;
+  kind: NotebookKind;
+  questionCount: number;
+  filter: NotebookFilter | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateNotebookRequest = {
+  name: string;
+  kind: Exclude<NotebookKind, "error">;
+  filter: NotebookFilter | null;
+};
 
 export type QuestionOptionSummary = {
   key: string;
@@ -174,6 +241,29 @@ export type AnswerQuestionResult = {
   attempt: QuestionAttemptSummary;
   question: QuestionSummary;
   xpGranted: number;
+};
+
+export type QuestionNotebookReason =
+  | "content"
+  | "interpretation"
+  | "distraction"
+  | "forgetfulness";
+
+export type QuestionNotebookEntry = {
+  questionId: string;
+  notebookId: string;
+  reason: QuestionNotebookReason | null;
+  observation: string | null;
+  addedAt: string;
+  updatedAt: string;
+};
+
+export type SetQuestionNotebookRequest = {
+  notebookId: string;
+  questionId: string;
+  included: boolean;
+  reason: QuestionNotebookReason | null;
+  observation: string | null;
 };
 
 export type QuestionImportIssue = {
@@ -322,6 +412,63 @@ export function parseWorkspaceSummary(value: unknown): WorkspaceSummary {
     formatVersion: value.formatVersion,
     path: value.path,
     storageStatus: "local",
+  };
+}
+
+export function parseBackupSummary(value: unknown): BackupSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== "string" ||
+    typeof value.workspaceName !== "string" ||
+    typeof value.createdAtEpochSeconds !== "number" ||
+    !Number.isInteger(value.createdAtEpochSeconds) ||
+    value.createdAtEpochSeconds < 0
+  ) {
+    throw new Error("O núcleo local devolveu um resumo de backup inválido.");
+  }
+
+  return {
+    path: value.path,
+    workspaceName: value.workspaceName,
+    createdAtEpochSeconds: value.createdAtEpochSeconds,
+  };
+}
+
+export function parseRevisionSummary(value: unknown): RevisionSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.revisionId !== "string" ||
+    typeof value.path !== "string" ||
+    typeof value.createdAtEpochSeconds !== "number" ||
+    !Number.isInteger(value.createdAtEpochSeconds) ||
+    value.createdAtEpochSeconds < 0 ||
+    typeof value.blobCount !== "number" ||
+    !Number.isInteger(value.blobCount) ||
+    value.blobCount < 0
+  ) {
+    throw new Error("O núcleo local devolveu um resumo de revisão inválido.");
+  }
+
+  return {
+    revisionId: value.revisionId,
+    path: value.path,
+    createdAtEpochSeconds: value.createdAtEpochSeconds,
+    blobCount: value.blobCount,
+  };
+}
+
+export function parseSyncDestinationSettings(value: unknown): SyncDestinationSettings {
+  if (
+    !isRecord(value) ||
+    typeof value.enabled !== "boolean" ||
+    (value.destinationPath !== null && typeof value.destinationPath !== "string")
+  ) {
+    throw new Error("O núcleo local devolveu uma configuração de destino inválida.");
+  }
+
+  return {
+    enabled: value.enabled,
+    destinationPath: value.destinationPath,
   };
 }
 
@@ -605,6 +752,102 @@ export function parseAnswerQuestionResult(value: unknown): AnswerQuestionResult 
     question: parseQuestion(value.question),
     xpGranted: value.xpGranted,
   };
+}
+
+function parseNotebookKind(value: unknown): NotebookKind {
+  if (value === "error" || value === "manual" || value === "dynamic") {
+    return value;
+  }
+  throw new Error("O núcleo local devolveu um tipo de caderno inválido.");
+}
+
+function parseNotebookFilter(value: unknown): NotebookFilter | null {
+  if (value === null) return null;
+  if (
+    !isRecord(value) ||
+    (value.attemptStatus !== "incorrect" &&
+      value.attemptStatus !== "unanswered" &&
+      value.attemptStatus !== "correct")
+  ) {
+    throw new Error("O núcleo local devolveu um filtro de caderno inválido.");
+  }
+  return {
+    subjectId: parseOptionalString(value.subjectId, "o assunto do filtro"),
+    questionType:
+      value.questionType === null ? null : parseQuestionType(value.questionType),
+    attemptStatus: value.attemptStatus,
+  };
+}
+
+export function parseNotebook(value: unknown): NotebookSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.questionCount !== "number" ||
+    !Number.isInteger(value.questionCount) ||
+    value.questionCount < 0 ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu um caderno inválido.");
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    kind: parseNotebookKind(value.kind),
+    questionCount: value.questionCount,
+    filter: parseNotebookFilter(value.filter),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+export function parseNotebooks(value: unknown): NotebookSummary[] {
+  if (!Array.isArray(value)) {
+    throw new Error("O núcleo local devolveu uma lista de cadernos inválida.");
+  }
+  return value.map(parseNotebook);
+}
+
+function parseQuestionNotebookReason(value: unknown): QuestionNotebookReason | null {
+  if (value === null) return null;
+  if (
+    value === "content" ||
+    value === "interpretation" ||
+    value === "distraction" ||
+    value === "forgetfulness"
+  ) {
+    return value;
+  }
+  throw new Error("O núcleo local devolveu um motivo de caderno inválido.");
+}
+
+function parseQuestionNotebookEntry(value: unknown): QuestionNotebookEntry {
+  if (
+    !isRecord(value) ||
+    typeof value.questionId !== "string" ||
+    typeof value.notebookId !== "string" ||
+    typeof value.addedAt !== "string" ||
+    typeof value.updatedAt !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu uma entrada de caderno inválida.");
+  }
+  return {
+    questionId: value.questionId,
+    notebookId: value.notebookId,
+    reason: parseQuestionNotebookReason(value.reason),
+    observation: parseOptionalString(value.observation, "a observação do caderno"),
+    addedAt: value.addedAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+export function parseQuestionNotebookEntries(value: unknown): QuestionNotebookEntry[] {
+  if (!Array.isArray(value)) {
+    throw new Error("O núcleo local devolveu uma lista de caderno inválida.");
+  }
+  return value.map(parseQuestionNotebookEntry);
 }
 
 function parseQuestionImportIssue(value: unknown): QuestionImportIssue {

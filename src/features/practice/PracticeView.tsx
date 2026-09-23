@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   answerQuestion,
+  createNotebook,
   createQuestion,
   exportQuestions,
   getDesktopErrorMessage,
+  getNotebookEntries,
+  getNotebooks,
   getQuestions,
   importQuestions,
   pickQuestionImportFile,
   previewQuestionImport,
+  setNotebookEntry,
 } from "../../shared/desktop/commands";
+import { ERROR_NOTEBOOK_ID } from "../../shared/desktop/contracts";
 import type {
   AnswerQuestionResult,
   CreateQuestionRequest,
@@ -16,8 +21,13 @@ import type {
   QuestionExportResult,
   QuestionImportPreview,
   QuestionImportResult,
+  QuestionNotebookEntry,
+  QuestionNotebookReason,
   QuestionSummary,
   QuestionType,
+  NotebookAttemptStatus,
+  NotebookFilter,
+  NotebookSummary,
   StudyPlan,
 } from "../../shared/desktop/contracts";
 import {
@@ -37,97 +47,33 @@ type PracticeViewProps = {
   refreshKey: number;
 };
 
-type StatusFilter = "all" | "notebook" | "unsolved" | "correct";
+type StatusFilter = "all" | "flagged" | "unsolved" | "correct";
 
-const SAMPLE_DEMO_QUESTIONS: QuestionSummary[] = [
-  {
-    id: "q-demo-101",
-    questionType: "multiple_choice",
-    statementMarkdown:
-      "A respeito dos direitos e deveres individuais e coletivos previstos na Constituição Federal de 1988, assinale a opção correta conforme a jurisprudência do STF:",
-    options: [
-      { key: "A", text: "É plena a liberdade de associação para fins lícitos, exigindo autorização estatal prévia." },
-      { key: "B", text: "A casa é asilo inviolável do indivíduo, podendo nela penetrar durante a noite por determinação judicial." },
-      { key: "C", text: "A criação de associações e cooperativas independe de autorização, sendo vedada a interferência estatal em seu funcionamento." },
-      { key: "D", text: "As associações só podem ser dissolvidas compulsoriamente por decisão administrativa." },
-    ],
-    answerKey: "C",
-    explanationMarkdown:
-      "Gabarito: C. Conforme art. 5º, XVIII da CF/88: 'a criação de associações e, na forma da lei, a de cooperativas independem de autorização, sendo vedada a interferência estatal em seu funcionamento.'",
-    sourceName: "Concurso STF",
-    board: "Cebraspe",
-    organization: "STF",
-    role: "Analista Judiciário",
-    examYear: 2025,
-    subjectId: "subj-1",
-    subjectName: "Direito Constitucional",
-    status: "active",
-    attemptsCount: 2,
-    firstAttemptResult: "correct",
-    lastAttemptResult: "correct",
-  },
-  {
-    id: "q-demo-102",
-    questionType: "multiple_choice",
-    statementMarkdown:
-      "Em relação ao padrão Domain-Driven Design (DDD) e Arquitetura Hexagonal (Ports and Adapters), assinale a afirmativa correta:",
-    options: [
-      { key: "A", text: "A camada de domínio deve importar bibliotecas de banco de dados SQL diretamente." },
-      { key: "B", text: "Portas de entrada (Inbound Ports) definem contratos de uso invocados pela interface de usuário ou controladores API." },
-      { key: "C", text: "Os adaptadores de infraestrutura devem conter a regra de negócio central da aplicação." },
-      { key: "D", text: "Um Bounded Context compartilha todas as entidades com outros contextos livremente." },
-    ],
-    answerKey: "B",
-    explanationMarkdown:
-      "Gabarito: B. Na Arquitetura Hexagonal, as Inbound Ports definem interfaces de casos de uso expostas para acionamento por drivers (UI, APIs REST).",
-    sourceName: "Concurso TRT",
-    board: "FCC",
-    organization: "TRT",
-    role: "Analista de TI",
-    examYear: 2025,
-    subjectId: "subj-2",
-    subjectName: "Engenharia de Software",
-    status: "active",
-    attemptsCount: 1,
-    firstAttemptResult: "correct",
-    lastAttemptResult: "correct",
-  },
-  {
-    id: "q-demo-103",
-    questionType: "true_false",
-    statementMarkdown:
-      "Julgue o item a seguir: Na administração pública direta e indireta de qualquer dos Poderes da União, dos Estados, do Distrito Federal e dos Municípios, a publicidade dos atos, programas, obras, serviços e campanhas dos órgãos públicos deverá ter caráter educativo, informativo ou de orientação social, dela não podendo constar nomes, símbolos ou imagens que caracterizem promoção pessoal de autoridades ou servidores públicos.",
-    options: [
-      { key: "C", text: "Certo" },
-      { key: "E", text: "Errado" },
-    ],
-    answerKey: "C",
-    explanationMarkdown:
-      "Gabarito: Certo. Reprodução exata do art. 37, § 1º da Constituição Federal de 1988, que consagra o Princípio da Impessoalidade na publicidade dos atos governamentais.",
-    sourceName: "Concurso TCU",
-    board: "Cebraspe",
-    organization: "TCU",
-    role: "Auditor Federal de Controle Externo",
-    examYear: 2025,
-    subjectId: "subj-1",
-    subjectName: "Direito Constitucional",
-    status: "active",
-    attemptsCount: 1,
-    firstAttemptResult: "incorrect",
-    lastAttemptResult: "incorrect",
-  },
-];
+function formatAnswerKey(key: string | null): string {
+  if (!key) return "Não informado";
+  if (key === "true") return "Certo";
+  if (key === "false") return "Errado";
+  return key;
+}
 
 export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
-  const [questions, setQuestions] = useState<QuestionSummary[]>(SAMPLE_DEMO_QUESTIONS);
-  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>("q-demo-101");
+  const [questions, setQuestions] = useState<QuestionSummary[]>([]);
+  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
   const [subjectFilter, setSubjectFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState<"" | QuestionType>("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [notebookIdMap, setNotebookIdMap] = useState<Record<string, boolean>>({
-    "q-demo-103": true,
-  });
+
+  const [notebooks, setNotebooks] = useState<NotebookSummary[]>([]);
+  const [activeNotebookId, setActiveNotebookId] = useState(ERROR_NOTEBOOK_ID);
+  const [notebookEntries, setNotebookEntries] = useState<QuestionNotebookEntry[]>([]);
+  const [notebookPendingQuestionId, setNotebookPendingQuestionId] = useState<string | null>(null);
+  const [isNotebookEditorOpen, setIsNotebookEditorOpen] = useState(false);
+  const [notebookNameInput, setNotebookNameInput] = useState("");
+  const [notebookKindInput, setNotebookKindInput] = useState<"manual" | "dynamic">("manual");
+  const [dynamicAttemptStatus, setDynamicAttemptStatus] =
+    useState<NotebookAttemptStatus>("incorrect");
+  const [isCreatingNotebook, setIsCreatingNotebook] = useState(false);
 
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -140,15 +86,114 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
-  const isQuestionInNotebook = (q: QuestionSummary) => {
-    return notebookIdMap[q.id] ?? (q.lastAttemptResult === "incorrect");
+  const activeNotebook = notebooks.find((notebook) => notebook.id === activeNotebookId) ?? null;
+  const activeNotebookName = activeNotebook?.name ?? "Caderno";
+
+  const notebookQuestionIds = useMemo(
+    () => new Set(notebookEntries.map((entry) => entry.questionId)),
+    [notebookEntries],
+  );
+  const notebookEntryByQuestionId = useMemo(
+    () => new Map(notebookEntries.map((entry) => [entry.questionId, entry])),
+    [notebookEntries],
+  );
+
+  const isQuestionFlagged = (q: QuestionSummary) =>
+    activeNotebook?.kind !== "dynamic" && notebookQuestionIds.has(q.id);
+
+  const persistNotebookEntry = async ({
+    questionId,
+    included,
+    reason,
+    observation,
+    successMessage,
+  }: {
+    questionId: string;
+    included: boolean;
+    reason: QuestionNotebookReason | null;
+    observation: string | null;
+    successMessage: string;
+  }) => {
+    setNotebookPendingQuestionId(questionId);
+    setError(null);
+    try {
+      await setNotebookEntry({
+        notebookId: activeNotebookId,
+        questionId,
+        included,
+        reason,
+        observation,
+      });
+      const now = new Date().toISOString();
+      const hadEntry = notebookQuestionIds.has(questionId);
+      setNotebooks((previous) =>
+        previous.map((notebook) =>
+          notebook.id !== activeNotebookId
+            ? notebook
+            : {
+                ...notebook,
+                questionCount: Math.max(
+                  0,
+                  notebook.questionCount + (included && !hadEntry ? 1 : !included && hadEntry ? -1 : 0),
+                ),
+                updatedAt: now,
+              },
+        ),
+      );
+      setNotebookEntries((previous) => {
+        if (!included) {
+          return previous.filter((entry) => entry.questionId !== questionId);
+        }
+        const current = previous.find((entry) => entry.questionId === questionId);
+        const updatedEntry: QuestionNotebookEntry = {
+          questionId,
+          notebookId: activeNotebookId,
+          reason,
+          observation,
+          addedAt: current?.addedAt ?? now,
+          updatedAt: now,
+        };
+        return current
+          ? previous.map((entry) => (entry.questionId === questionId ? updatedEntry : entry))
+          : [updatedEntry, ...previous];
+      });
+      setMessage(successMessage);
+    } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setNotebookPendingQuestionId(null);
+    }
   };
 
-  const handleToggleNotebook = (questionId: string) => {
-    setNotebookIdMap((prev) => {
-      const q = questions.find((item) => item.id === questionId);
-      const current = prev[questionId] ?? (q?.lastAttemptResult === "incorrect");
-      return { ...prev, [questionId]: !current };
+  const handleToggleFlag = async (questionId: string) => {
+    if (activeNotebook?.kind === "dynamic") {
+      setMessage("Este caderno é dinâmico; suas questões vêm do filtro salvo.");
+      return;
+    }
+    const currentlyIncluded = notebookQuestionIds.has(questionId);
+    const currentEntry = notebookEntryByQuestionId.get(questionId);
+    await persistNotebookEntry({
+      questionId,
+      included: !currentlyIncluded,
+      reason: currentEntry?.reason ?? null,
+      observation: currentEntry?.observation ?? null,
+      successMessage: currentlyIncluded
+        ? `Questão removida de ${activeNotebookName}.`
+        : `Questão adicionada a ${activeNotebookName}.`,
+    });
+  };
+
+  const handleSaveNotebookDetails = async (
+    questionId: string,
+    reason: QuestionNotebookReason | null,
+    observation: string | null,
+  ) => {
+    await persistNotebookEntry({
+      questionId,
+      included: true,
+      reason,
+      observation,
+      successMessage: `Anotação de ${activeNotebookName} salva.`,
     });
   };
 
@@ -159,14 +204,18 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
       subjectId: subjectFilter || null,
       questionType: typeFilter || null,
       status: "active",
-      limit: 200,
+      limit: 100,
       offset: 0,
     })
       .then((loadedQuestions) => {
-        if (!cancelled && loadedQuestions.length > 0) {
+        if (!cancelled) {
           setQuestions(loadedQuestions);
-          if (!selectedQuestionId || !loadedQuestions.some((q) => q.id === selectedQuestionId)) {
-            setSelectedQuestionId(loadedQuestions[0].id);
+          if (loadedQuestions.length > 0) {
+            setSelectedQuestionId((curr) =>
+              curr && loadedQuestions.some((q) => q.id === curr) ? curr : loadedQuestions[0].id
+            );
+          } else {
+            setSelectedQuestionId(null);
           }
         }
       })
@@ -190,9 +239,71 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
     return loadQuestions();
   }, [refreshKey, subjectFilter, typeFilter]);
 
-  // Client-side filtering across status, subject, type, and keyword search
+  useEffect(() => {
+    let cancelled = false;
+    getNotebooks()
+      .then((loadedNotebooks) => {
+        if (!cancelled) {
+          setNotebooks(loadedNotebooks);
+          setActiveNotebookId((currentId) =>
+            loadedNotebooks.some((notebook) => notebook.id === currentId)
+              ? currentId
+              : loadedNotebooks[0]?.id ?? ERROR_NOTEBOOK_ID,
+          );
+        }
+      })
+      .catch((operationError: unknown) => {
+        if (!cancelled) {
+          setError(getDesktopErrorMessage(operationError));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setNotebookEntries([]);
+    getNotebookEntries(activeNotebookId)
+      .then((entries) => {
+        if (!cancelled) {
+          setNotebookEntries(entries);
+        }
+      })
+      .catch((operationError: unknown) => {
+        if (!cancelled) {
+          setError(getDesktopErrorMessage(operationError));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey, activeNotebookId]);
+
+  // Filtering across status, subject, type, and keyword search
   const filteredQuestions = useMemo(() => {
     return questions.filter((q) => {
+      const dynamicFilter = activeNotebook?.kind === "dynamic" ? activeNotebook.filter : null;
+      if (dynamicFilter) {
+        if (dynamicFilter.subjectId && q.subjectId !== dynamicFilter.subjectId) {
+          return false;
+        }
+        if (dynamicFilter.questionType && q.questionType !== dynamicFilter.questionType) {
+          return false;
+        }
+        if (dynamicFilter.attemptStatus === "incorrect" && q.lastAttemptResult !== "incorrect") {
+          return false;
+        }
+        if (dynamicFilter.attemptStatus === "correct" && q.lastAttemptResult !== "correct") {
+          return false;
+        }
+        if (dynamicFilter.attemptStatus === "unanswered" && (q.attemptsCount ?? 0) > 0) {
+          return false;
+        }
+      }
       if (subjectFilter && q.subjectId !== subjectFilter) {
         return false;
       }
@@ -200,8 +311,8 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
         return false;
       }
 
-      if (statusFilter === "notebook") {
-        if (!isQuestionInNotebook(q)) return false;
+      if (statusFilter === "flagged") {
+        if (activeNotebook?.kind !== "dynamic" && !isQuestionFlagged(q)) return false;
       } else if (statusFilter === "unsolved") {
         if ((q.attemptsCount ?? 0) > 0) return false;
       } else if (statusFilter === "correct") {
@@ -222,13 +333,20 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
 
       return true;
     });
-  }, [questions, subjectFilter, typeFilter, statusFilter, searchQuery, notebookIdMap]);
+  }, [
+    questions,
+    subjectFilter,
+    typeFilter,
+    statusFilter,
+    searchQuery,
+    notebookQuestionIds,
+    activeNotebook,
+  ]);
 
-  const currentIndex = filteredQuestions.findIndex((q) => q.id === selectedQuestionId);
-  const selectedQuestion =
-    currentIndex >= 0
-      ? filteredQuestions[currentIndex]
-      : filteredQuestions[0] ?? null;
+  const selectedQuestionIndex = filteredQuestions.findIndex((q) => q.id === selectedQuestionId);
+  const currentIndex =
+    selectedQuestionIndex >= 0 ? selectedQuestionIndex : filteredQuestions.length > 0 ? 0 : -1;
+  const selectedQuestion = filteredQuestions[currentIndex] ?? null;
 
   const hasPrevious = currentIndex > 0;
   const hasNext = currentIndex >= 0 && currentIndex < filteredQuestions.length - 1;
@@ -258,7 +376,49 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
     setQuestions((prev) =>
       prev.map((q) => (q.id === res.question.id ? res.question : q))
     );
-    setMessage("Tentativa registrada com sucesso no histórico local.");
+    setMessage(
+      res.xpGranted > 0
+        ? `Tentativa registrada com sucesso! +${res.xpGranted} XP adicionados.`
+        : "Tentativa registrada no histórico local."
+    );
+  };
+
+  const handleCreateNotebook = async () => {
+    const name = notebookNameInput.trim();
+    if (!name) {
+      setError("Informe um nome para o caderno.");
+      return;
+    }
+
+    setIsCreatingNotebook(true);
+    setError(null);
+    try {
+      const filter: NotebookFilter | null =
+        notebookKindInput === "dynamic"
+          ? {
+              subjectId: subjectFilter || null,
+              questionType: typeFilter || null,
+              attemptStatus: dynamicAttemptStatus,
+            }
+          : null;
+      const createdNotebook = await createNotebook({
+        name,
+        kind: notebookKindInput,
+        filter,
+      });
+      setNotebooks((previous) => [...previous, createdNotebook]);
+      setActiveNotebookId(createdNotebook.id);
+      setStatusFilter("all");
+      setNotebookEntries([]);
+      setNotebookNameInput("");
+      setNotebookKindInput("manual");
+      setIsNotebookEditorOpen(false);
+      setMessage(`Caderno "${createdNotebook.name}" criado.`);
+    } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setIsCreatingNotebook(false);
+    }
   };
 
   const handleStartImport = async () => {
@@ -331,10 +491,10 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
 
           <div>
             <h2 className="font-heading text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
-              Treino de Questões & Caderno de Erros
+              Treino de Questões & Revisão
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
-              Resolução de questões com cronometragem local, grau de confiança, gabarito fundamentado e caderno de erros automático.
+              Resolva questões offline, registre sua confiança e revise erros sem perder o histórico de tentativas.
             </p>
           </div>
 
@@ -352,7 +512,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               onClick={handleStartImport}
               className={buttonOutlineLightClass}
             >
-              📥 Importar JSON
+              Importar JSON
             </button>
             <button
               type="button"
@@ -360,7 +520,14 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               disabled={isExporting}
               className={buttonOutlineLightClass}
             >
-              {isExporting ? "Exportando..." : "📤 Exportar JSON"}
+              {isExporting ? "Exportando..." : "Exportar JSON"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsNotebookEditorOpen(true)}
+              className={buttonOutlineLightClass}
+            >
+              + Novo Caderno
             </button>
           </div>
         </div>
@@ -481,6 +648,95 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
         </div>
       )}
 
+      {isNotebookEditorOpen && (
+        <section
+          className="glass-card rounded-2xl border border-amber-500/30 p-6 shadow-xl"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-notebook-title"
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-line pb-3">
+            <div>
+              <Eyebrow>Novo caderno local</Eyebrow>
+              <h3 id="new-notebook-title" className="mt-1 font-heading text-lg font-bold text-ink">
+                Organize questões por objetivo
+              </h3>
+            </div>
+            <button
+              type="button"
+              className="text-xs font-semibold text-muted hover:text-ink"
+              onClick={() => setIsNotebookEditorOpen(false)}
+              disabled={isCreatingNotebook}
+            >
+              Fechar
+            </button>
+          </div>
+          <form
+            className="mt-4 grid gap-4 sm:grid-cols-2 sm:items-end"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleCreateNotebook();
+            }}
+          >
+            <label className={fieldClass}>
+              Nome do caderno
+              <input
+                className={inputClass}
+                value={notebookNameInput}
+                onChange={(event) => setNotebookNameInput(event.target.value)}
+                placeholder="Ex.: Revisar Direito Constitucional"
+                maxLength={120}
+                autoFocus
+                disabled={isCreatingNotebook}
+              />
+            </label>
+            <label className={fieldClass}>
+              Tipo de caderno
+              <select
+                className={selectClass}
+                value={notebookKindInput}
+                onChange={(event) =>
+                  setNotebookKindInput(event.target.value as "manual" | "dynamic")
+                }
+                disabled={isCreatingNotebook}
+              >
+                <option value="manual">Manual: eu escolho as questões</option>
+                <option value="dynamic">Dinâmico: usa um filtro salvo</option>
+              </select>
+            </label>
+            {notebookKindInput === "dynamic" && (
+              <label className={fieldClass}>
+                Estado acompanhado
+                <select
+                  className={selectClass}
+                  value={dynamicAttemptStatus}
+                  onChange={(event) =>
+                    setDynamicAttemptStatus(event.target.value as NotebookAttemptStatus)
+                  }
+                  disabled={isCreatingNotebook}
+                >
+                  <option value="incorrect">Última tentativa errada</option>
+                  <option value="unanswered">Ainda inéditas</option>
+                  <option value="correct">Última tentativa certa</option>
+                </select>
+              </label>
+            )}
+            {notebookKindInput === "dynamic" && (
+              <p className="text-xs leading-relaxed text-muted sm:col-span-2">
+                O filtro usará a matéria e o formato atualmente selecionados, quando houver.
+              </p>
+            )}
+            <button
+              type="submit"
+              className={`${buttonPrimaryClass} sm:col-span-2 sm:justify-self-end`}
+              disabled={isCreatingNotebook}
+            >
+              {isCreatingNotebook ? "Criando..." : "Criar Caderno"}
+            </button>
+          </form>
+        </section>
+      )}
+
       {/* Manual Editor Modal */}
       {isEditorOpen && (
         <QuestionEditor
@@ -530,14 +786,15 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
             </button>
             <button
               type="button"
-              onClick={() => setStatusFilter("notebook")}
+              onClick={() => setStatusFilter("flagged")}
               className={`rounded-lg py-1.5 text-xs font-semibold transition-all ${
-                statusFilter === "notebook"
+                statusFilter === "flagged"
                   ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold shadow-xs"
                   : "text-muted hover:text-ink"
               }`}
-            >
-              ★ Erros
+               title={`Filtra as questões persistidas em ${activeNotebookName}`}
+             >
+               {activeNotebookName}
             </button>
             <button
               type="button"
@@ -560,6 +817,33 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               }`}
             >
               ✓ Acertos
+            </button>
+          </div>
+
+          <div className="mb-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <label className={fieldClass}>
+              Caderno ativo
+              <select
+                className={selectClass}
+                value={activeNotebookId}
+                onChange={(event) => {
+                  setActiveNotebookId(event.target.value);
+                  setStatusFilter("all");
+                }}
+              >
+                {notebooks.map((notebook) => (
+                  <option key={notebook.id} value={notebook.id}>
+                    {notebook.name} {notebook.kind === "dynamic" ? "(filtro)" : `(${notebook.questionCount})`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className={`${buttonSecondaryClass} min-h-11 px-3 text-xs`}
+              onClick={() => setIsNotebookEditorOpen(true)}
+            >
+              + Novo
             </button>
           </div>
 
@@ -591,21 +875,55 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
 
           {/* Questions Scrollable List */}
           <div className="grid gap-2 max-h-[520px] overflow-y-auto pr-1">
-            {filteredQuestions.length === 0 ? (
+            {isLoading ? (
+              <div className="py-12 text-center text-xs text-muted">
+                Carregando banco de questões...
+              </div>
+            ) : filteredQuestions.length === 0 ? (
               <div className="rounded-xl border border-dashed border-line p-6 text-center text-muted">
-                <p className="text-xs font-medium">Nenhuma questão encontrada com estes filtros.</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchQuery("");
-                    setStatusFilter("all");
-                    setSubjectFilter("");
-                    setTypeFilter("");
-                  }}
-                  className="mt-2 text-xs font-bold text-blue-600 hover:underline cursor-pointer"
-                >
-                  Limpar todos os filtros
-                </button>
+                <p className="text-xs font-semibold text-ink">
+                  {questions.length === 0
+                    ? "Nenhuma questão cadastrada ainda."
+                    : "Nenhuma questão encontrada com estes filtros."}
+                </p>
+                <p className="mt-1 text-[11px]">
+                  {questions.length === 0
+                    ? "Importe um lote JSON oficial ou cadastre sua primeira questão."
+                    : "Tente redefinir os critérios de busca."}
+                </p>
+                <div className="mt-3 flex justify-center gap-2">
+                  {questions.length === 0 ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditorOpen(true)}
+                        className={`${buttonPrimaryClass} text-xs px-3 py-1.5`}
+                      >
+                        + Nova Questão
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleStartImport}
+                        className={`${buttonSecondaryClass} text-xs px-3 py-1.5`}
+                      >
+                        Importar JSON
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery("");
+                        setStatusFilter("all");
+                        setSubjectFilter("");
+                        setTypeFilter("");
+                      }}
+                      className="text-xs font-bold text-blue-600 hover:underline cursor-pointer"
+                    >
+                      Limpar todos os filtros
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
               filteredQuestions.map((q, idx) => {
@@ -613,6 +931,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                 const hasAnswered = (q.attemptsCount ?? 0) > 0;
                 const isCorrect = q.lastAttemptResult === "correct";
                 const isIncorrect = q.lastAttemptResult === "incorrect";
+                const isFlagged = isQuestionFlagged(q);
 
                 return (
                   <button
@@ -630,9 +949,14 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                   >
                     <div className="flex items-center justify-between gap-2 text-[10px] font-bold uppercase">
                       <span className="text-blue-600 font-extrabold truncate">
-                        {idx + 1}. {q.board || "Cebraspe"} ({q.examYear || 2025})
+                        {idx + 1}. {q.board || "Geral"} {q.examYear ? `(${q.examYear})` : ""}
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0">
+                        {isFlagged && (
+                          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-300 font-bold">
+                            ★
+                          </span>
+                        )}
                         {isCorrect && (
                           <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-700 dark:text-emerald-300 font-bold">
                             ✓ Acertou
@@ -677,9 +1001,16 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               currentIndex={currentIndex >= 0 ? currentIndex + 1 : 1}
               totalCount={filteredQuestions.length}
               hasPrevious={hasPrevious}
-              hasNext={hasNext}
-              isSavedNotebook={isQuestionInNotebook(selectedQuestion)}
-              onToggleNotebook={() => handleToggleNotebook(selectedQuestion.id)}
+               hasNext={hasNext}
+               isSavedNotebook={isQuestionFlagged(selectedQuestion)}
+               notebookName={activeNotebookName}
+               isNotebookDynamic={activeNotebook?.kind === "dynamic"}
+               onToggleNotebook={() => handleToggleFlag(selectedQuestion.id)}
+               isNotebookPending={notebookPendingQuestionId === selectedQuestion.id}
+               notebookEntry={notebookEntryByQuestionId.get(selectedQuestion.id) ?? null}
+               onSaveNotebookDetails={(reason, observation) =>
+                 handleSaveNotebookDetails(selectedQuestion.id, reason, observation)
+               }
               onPrevious={handlePreviousQuestion}
               onNext={handleNextQuestion}
               onAnswered={handleQuestionAnswered}
@@ -705,7 +1036,15 @@ type QuestionRunnerProps = {
   hasPrevious: boolean;
   hasNext: boolean;
   isSavedNotebook: boolean;
-  onToggleNotebook: () => void;
+  notebookName: string;
+  isNotebookDynamic: boolean;
+  isNotebookPending: boolean;
+  notebookEntry: QuestionNotebookEntry | null;
+  onToggleNotebook: () => void | Promise<void>;
+  onSaveNotebookDetails: (
+    reason: QuestionNotebookReason | null,
+    observation: string | null,
+  ) => void | Promise<void>;
   onPrevious: () => void;
   onNext: () => void;
   onAnswered: (result: AnswerQuestionResult) => void;
@@ -718,39 +1057,54 @@ function QuestionRunner({
   hasPrevious,
   hasNext,
   isSavedNotebook,
+  notebookName,
+  isNotebookDynamic,
+  isNotebookPending,
+  notebookEntry,
   onToggleNotebook,
+  onSaveNotebookDetails,
   onPrevious,
   onNext,
   onAnswered,
 }: QuestionRunnerProps) {
   const startedAtRef = useRef(Date.now());
-  const [selectedKey, setSelectedKey] = useState("");
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [confidence, setConfidence] = useState<QuestionConfidence>("certain");
   const [result, setResult] = useState<AnswerQuestionResult | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [runnerError, setRunnerError] = useState<string | null>(null);
+  const [notebookReason, setNotebookReason] = useState<QuestionNotebookReason | null>(null);
+  const [notebookObservation, setNotebookObservation] = useState("");
 
   useEffect(() => {
     startedAtRef.current = Date.now();
-    setSelectedKey("");
+    setSelectedKey(null);
     setConfidence("certain");
     setResult(null);
-  }, [question.id]);
+    setRunnerError(null);
+    setNotebookReason(notebookEntry?.reason ?? null);
+    setNotebookObservation(notebookEntry?.observation ?? "");
+  }, [question.id, notebookName, notebookEntry?.notebookId, notebookEntry?.reason, notebookEntry?.observation]);
 
-  const handleAnswer = async () => {
-    if (!selectedKey) return;
+  const handleAnswer = async (keyOverride?: string | null) => {
+    const keyToSubmit = keyOverride !== undefined ? keyOverride : selectedKey;
+    if (keyToSubmit === null) {
+      setSelectedKey(null);
+    }
     setIsSubmitting(true);
+    setRunnerError(null);
     try {
       const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAtRef.current) / 1000));
       const answered = await answerQuestion({
         questionId: question.id,
-        selectedKey: selectedKey || null,
+        selectedKey: keyToSubmit,
         confidence,
         elapsedSeconds,
       });
       setResult(answered);
       onAnswered(answered);
     } catch (err: unknown) {
-      console.error(err);
+      setRunnerError(getDesktopErrorMessage(err));
     } finally {
       setIsSubmitting(false);
     }
@@ -758,12 +1112,16 @@ function QuestionRunner({
 
   const handleRetry = () => {
     startedAtRef.current = Date.now();
-    setSelectedKey("");
+    setSelectedKey(null);
     setConfidence("certain");
     setResult(null);
+    setRunnerError(null);
   };
 
-  const isCorrect = selectedKey === (result?.question.answerKey || question.answerKey);
+  const isBlank = result ? result.attempt.result === "blank" : selectedKey === null;
+  const isCorrect = result?.attempt.result === "correct";
+  const isPending = result?.attempt.result === "pending";
+  const answerKeyAtAttempt = result ? result.attempt.answerKeyAtAttempt : question.answerKey;
 
   return (
     <article className="rounded-2xl border border-line bg-card p-6 shadow-xs grid gap-5">
@@ -798,30 +1156,112 @@ function QuestionRunner({
           </button>
         </div>
 
-        {/* Notebook bookmark button */}
+        {/* Notebook flag button */}
         <button
           type="button"
           onClick={onToggleNotebook}
+          disabled={isNotebookPending || isNotebookDynamic}
           className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all duration-150 active:scale-[0.97] cursor-pointer ${
             isSavedNotebook
               ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 font-bold"
               : "border border-line text-muted hover:bg-paper"
           }`}
+           title={
+             isNotebookDynamic
+               ? "Este caderno é atualizado pelo filtro salvo"
+               : `Adicionar ou remover esta questão de ${notebookName}`
+           }
         >
-          {isSavedNotebook ? "★ No Caderno de Erros" : "☆ Salvar no Caderno"}
+          {isNotebookDynamic
+            ? "Filtro automático"
+            : isNotebookPending
+            ? "Salvando..."
+            : isSavedNotebook
+            ? `No ${notebookName}`
+            : `Adicionar ao ${notebookName}`}
         </button>
       </div>
 
+      {runnerError && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3.5 text-xs text-red-600">
+          {runnerError}
+        </div>
+      )}
+
+      {isSavedNotebook && !isNotebookDynamic && (
+        <section className="grid gap-3 rounded-xl border border-amber-500/25 bg-amber-500/5 p-4" aria-labelledby="notebook-details-title">
+          <div>
+            <h3 id="notebook-details-title" className="text-xs font-bold text-ink">
+              Detalhes em {notebookName}
+            </h3>
+            <p className="mt-1 text-[11px] text-muted">
+              O motivo e a observação ficam salvos localmente junto da marcação.
+            </p>
+          </div>
+          <label className={fieldClass}>
+            Motivo <span className="font-normal text-muted">(opcional)</span>
+            <select
+              className={selectClass}
+              value={notebookReason ?? ""}
+              onChange={(event) =>
+                setNotebookReason(
+                  event.target.value === ""
+                    ? null
+                    : (event.target.value as QuestionNotebookReason),
+                )
+              }
+              disabled={isNotebookPending}
+            >
+              <option value="">Ainda não classificado</option>
+              <option value="content">Conteúdo</option>
+              <option value="interpretation">Interpretação</option>
+              <option value="distraction">Distração</option>
+              <option value="forgetfulness">Esquecimento</option>
+            </select>
+          </label>
+          <label className={fieldClass}>
+            Observação <span className="font-normal text-muted">(opcional)</span>
+            <textarea
+              className={`${textareaClass} min-h-[76px]`}
+              value={notebookObservation}
+              maxLength={5000}
+              onChange={(event) => setNotebookObservation(event.target.value)}
+              placeholder="Anote o que revisar ou o motivo da dúvida..."
+              disabled={isNotebookPending}
+            />
+          </label>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              className={`${buttonSecondaryClass} min-h-9 px-3 text-xs`}
+              onClick={() =>
+                void onSaveNotebookDetails(
+                  notebookReason,
+                  notebookObservation.trim() || null,
+                )
+              }
+              disabled={isNotebookPending}
+            >
+              {isNotebookPending ? "Salvando..." : "Salvar anotação"}
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* Meta tags badge bar */}
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="rounded-md bg-blue-600/10 px-2.5 py-1 font-extrabold text-blue-600">
-          {question.board || "Cebraspe"}
-        </span>
-        <span className="rounded-md border border-line bg-paper px-2.5 py-1 font-semibold text-ink">
-          {question.organization || "STF"} ({question.examYear || 2025})
-        </span>
+        {question.board && (
+          <span className="rounded-md bg-blue-600/10 px-2.5 py-1 font-extrabold text-blue-600">
+            {question.board}
+          </span>
+        )}
+        {question.organization && (
+          <span className="rounded-md border border-line bg-paper px-2.5 py-1 font-semibold text-ink">
+            {question.organization} {question.examYear ? `(${question.examYear})` : ""}
+          </span>
+        )}
         <span className="rounded-md border border-line bg-paper px-2.5 py-1 font-medium text-muted">
-          {question.subjectName || "Direito Constitucional"}
+          {question.subjectName || "Geral"}
         </span>
         {question.role && (
           <span className="rounded-md border border-line bg-paper px-2.5 py-1 font-normal text-muted">
@@ -839,7 +1279,9 @@ function QuestionRunner({
       <div className="grid gap-2.5 pt-2">
         {question.options.map((option) => {
           const isSelected = selectedKey === option.key;
-          const isCorrectKey = option.key === (question.answerKey || "C");
+          const isCorrectKey = answerKeyAtAttempt !== null && option.key === answerKeyAtAttempt;
+          const displayKey =
+            option.key === "true" ? "C" : option.key === "false" ? "E" : option.key;
 
           let optionStyle =
             "border-line bg-paper/80 text-ink hover:border-blue-500/40 hover:bg-paper shadow-xs";
@@ -847,6 +1289,9 @@ function QuestionRunner({
             if (isCorrectKey) {
               optionStyle =
                 "border-emerald-500 bg-emerald-500/10 text-emerald-950 dark:text-emerald-200 font-semibold shadow-xs ring-1 ring-emerald-500/40";
+            } else if (isSelected && answerKeyAtAttempt === null) {
+              optionStyle =
+                "border-blue-500 bg-blue-500/10 text-blue-950 dark:text-blue-200 ring-1 ring-blue-500/40";
             } else if (isSelected && !isCorrectKey) {
               optionStyle =
                 "border-red-500 bg-red-500/10 text-red-950 dark:text-red-200 ring-1 ring-red-500/40";
@@ -875,7 +1320,7 @@ function QuestionRunner({
                     : "bg-paper-deep text-muted border border-line"
                 }`}
               >
-                {option.key}
+                {displayKey}
               </span>
               <span className="flex-1 leading-relaxed text-pretty text-[13px]">
                 {option.text}
@@ -893,9 +1338,9 @@ function QuestionRunner({
               Grau de Certeza na Resposta:
             </span>
             <span className="text-[11px] text-muted">
-              {confidence === "certain" && "🎯 Certeza fundamentada"}
-              {confidence === "doubt" && "🤔 Em dúvida entre opções"}
-              {confidence === "guess" && "🎲 Palpite / Chute"}
+              {confidence === "certain" && "Certeza fundamentada"}
+              {confidence === "doubt" && "Em dúvida entre opções"}
+              {confidence === "guess" && "Palpite / chute"}
             </span>
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -908,7 +1353,7 @@ function QuestionRunner({
                   : "border-line bg-paper/60 text-muted hover:bg-paper"
               }`}
             >
-              <span>🎯 Certeza</span>
+              <span>Certeza</span>
             </button>
             <button
               type="button"
@@ -919,7 +1364,7 @@ function QuestionRunner({
                   : "border-line bg-paper/60 text-muted hover:bg-paper"
               }`}
             >
-              <span>🤔 Dúvida</span>
+              <span>Dúvida</span>
             </button>
             <button
               type="button"
@@ -930,7 +1375,7 @@ function QuestionRunner({
                   : "border-line bg-paper/60 text-muted hover:bg-paper"
               }`}
             >
-              <span>🎲 Chute</span>
+              <span>Chute</span>
             </button>
           </div>
         </div>
@@ -939,34 +1384,65 @@ function QuestionRunner({
       {/* Answer Button & Resolution Feedback */}
       <div className="flex items-center justify-between border-t border-line pt-4">
         {!result ? (
-          <button
-            type="button"
-            onClick={handleAnswer}
-            disabled={!selectedKey || isSubmitting}
-            className={`${buttonPrimaryClass} ${
-              !selectedKey ? "opacity-50 cursor-not-allowed" : ""
-            }`}
-          >
-            {isSubmitting ? "Gravando resposta..." : "Responder Questão"}
-          </button>
+          <div className="flex flex-wrap items-center justify-between gap-3 w-full">
+            <button
+              type="button"
+              onClick={() => handleAnswer(null)}
+              disabled={isSubmitting}
+              className={buttonQuietClass}
+              title="Registrar resposta em branco (estratégia para evitar penalidade de banca)"
+            >
+              Deixar em Branco
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleAnswer(selectedKey)}
+              disabled={!selectedKey || isSubmitting}
+              className={`${buttonPrimaryClass} ${
+                !selectedKey ? "opacity-50 cursor-not-allowed" : ""
+              }`}
+            >
+              {isSubmitting ? "Gravando resposta..." : "Responder Questão"}
+            </button>
+          </div>
         ) : (
           <div className="grid gap-3 w-full">
             {/* Banner of correctness */}
             <div
               className={`flex flex-wrap items-center justify-between gap-2 rounded-xl px-4 py-3 text-xs font-bold ${
-                isCorrect
+                isBlank
+                  ? "bg-paper-deep text-muted border border-line"
+                  : isPending
+                  ? "bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/30"
+                  : isCorrect
                   ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30"
                   : "bg-red-500/15 text-red-700 dark:text-red-400 border border-red-500/30"
               }`}
             >
               <div className="flex items-center gap-2">
-                <span>{isCorrect ? "✓ Resposta Correta! +15 XP" : "✕ Resposta Incorreta"}</span>
-                <span className="text-[11px] font-normal opacity-80">
-                  (respondida com {confidence === "certain" ? "certeza" : confidence === "doubt" ? "dúvida" : "chute"})
+                <span>
+                  {isBlank
+                    ? "Questão deixada em branco"
+                    : isPending
+                    ? "Resposta registrada; gabarito pendente"
+                    : isCorrect
+                    ? "Resposta correta"
+                    : "Resposta incorreta"}
                 </span>
+                <span className="font-mono text-[11px] font-normal opacity-90">
+                  {result.xpGranted > 0
+                    ? `+${result.xpGranted} XP`
+                    : "(0 XP - repetição ou limite atingido)"}
+                </span>
+                {!isBlank && (
+                  <span className="text-[11px] font-normal opacity-80">
+                    ({confidence === "certain" ? "certeza" : confidence === "doubt" ? "dúvida" : "chute"})
+                  </span>
+                )}
               </div>
               <span className="text-[11px] font-semibold">
-                Gabarito: <strong>{result.question.answerKey || question.answerKey}</strong>
+                Gabarito Oficial: <strong>{formatAnswerKey(answerKeyAtAttempt)}</strong>
               </span>
             </div>
 
@@ -1019,17 +1495,17 @@ function QuestionEditor({
   const [statement, setStatement] = useState("");
   const [questionType, setQuestionType] = useState<QuestionType>("multiple_choice");
   const [subjectId, setSubjectId] = useState("");
-  const [board, setBoard] = useState("Cebraspe");
-  const [organization, setOrganization] = useState("Órgão Público");
-  const [role, setRole] = useState("Analista");
-  const [year, setYear] = useState("2025");
-  const [answerKey, setAnswerKey] = useState("A");
+  const [board, setBoard] = useState("");
+  const [organization, setOrganization] = useState("");
+  const [role, setRole] = useState("");
+  const [year, setYear] = useState("");
+  const [answerKey, setAnswerKey] = useState("");
   const [explanation, setExplanation] = useState("");
 
-  const [optA, setOptA] = useState("Alternativa A");
-  const [optB, setOptB] = useState("Alternativa B");
-  const [optC, setOptC] = useState("Alternativa C");
-  const [optD, setOptD] = useState("Alternativa D");
+  const [optA, setOptA] = useState("");
+  const [optB, setOptB] = useState("");
+  const [optC, setOptC] = useState("");
+  const [optD, setOptD] = useState("");
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -1040,33 +1516,43 @@ function QuestionEditor({
       return;
     }
 
-    setFormError(null);
-    setIsSubmitting(true);
-
     const options =
       questionType === "true_false"
         ? [
-            { key: "C", text: "Certo" },
-            { key: "E", text: "Errado" },
+            { key: "true", text: "Certo" },
+            { key: "false", text: "Errado" },
           ]
         : [
-            { key: "A", text: optA.trim() || "Alternativa A" },
-            { key: "B", text: optB.trim() || "Alternativa B" },
-            { key: "C", text: optC.trim() || "Alternativa C" },
-            { key: "D", text: optD.trim() || "Alternativa D" },
-          ];
+            { key: "A", text: optA.trim() },
+            { key: "B", text: optB.trim() },
+            { key: "C", text: optC.trim() },
+            { key: "D", text: optD.trim() },
+          ].filter((option) => option.text.length > 0);
+
+    if (questionType === "multiple_choice" && options.length < 2) {
+      setFormError("Informe pelo menos duas alternativas com texto.");
+      return;
+    }
+
+    if (answerKey && !options.some((option) => option.key === answerKey)) {
+      setFormError("O gabarito selecionado precisa ter uma alternativa preenchida.");
+      return;
+    }
+
+    setFormError(null);
+    setIsSubmitting(true);
 
     const request: CreateQuestionRequest = {
       questionType,
       statementMarkdown: statement.trim(),
       options,
-      answerKey: questionType === "true_false" ? (answerKey === "E" ? "E" : "C") : answerKey,
+      answerKey: answerKey || null,
       explanationMarkdown: explanation.trim() || null,
       sourceName: "Cadastro Manual",
       board: board.trim() || null,
       organization: organization.trim() || null,
       role: role.trim() || null,
-      examYear: Number(year) || 2025,
+      examYear: year ? Number(year) : null,
       subjectId: subjectId || null,
     };
 
@@ -1112,11 +1598,7 @@ function QuestionEditor({
               onChange={(e) => {
                 const t = e.target.value as QuestionType;
                 setQuestionType(t);
-                if (t === "true_false") {
-                  setAnswerKey("C");
-                } else {
-                  setAnswerKey("A");
-                }
+                setAnswerKey("");
               }}
             >
               <option value="multiple_choice">Múltipla Escolha (A-D)</option>
@@ -1141,16 +1623,17 @@ function QuestionEditor({
           </label>
 
           <label className={fieldClass}>
-            Gabarito Correto
+            Gabarito Oficial
             <select
               className={selectClass}
               value={answerKey}
               onChange={(e) => setAnswerKey(e.target.value)}
             >
+              <option value="">Ainda não informado</option>
               {questionType === "true_false" ? (
                 <>
-                  <option value="C">Certo (C)</option>
-                  <option value="E">Errado (E)</option>
+                  <option value="true">Certo (C)</option>
+                  <option value="false">Errado (E)</option>
                 </>
               ) : (
                 <>
@@ -1166,7 +1649,7 @@ function QuestionEditor({
 
         <div className="grid gap-4 sm:grid-cols-4">
           <label className={fieldClass}>
-            Banca
+            Banca <span className="text-muted font-normal">(opcional)</span>
             <input
               type="text"
               className={inputClass}
@@ -1177,7 +1660,7 @@ function QuestionEditor({
           </label>
 
           <label className={fieldClass}>
-            Órgão
+            Órgão <span className="text-muted font-normal">(opcional)</span>
             <input
               type="text"
               className={inputClass}
@@ -1188,7 +1671,7 @@ function QuestionEditor({
           </label>
 
           <label className={fieldClass}>
-            Cargo
+            Cargo <span className="text-muted font-normal">(opcional)</span>
             <input
               type="text"
               className={inputClass}
@@ -1199,11 +1682,11 @@ function QuestionEditor({
           </label>
 
           <label className={fieldClass}>
-            Ano
+            Ano <span className="text-muted font-normal">(opcional)</span>
             <input
               type="number"
               className={inputClass}
-              placeholder="2025"
+              placeholder="Ex.: 2025"
               value={year}
               onChange={(e) => setYear(e.target.value)}
             />
@@ -1217,7 +1700,7 @@ function QuestionEditor({
             rows={4}
             value={statement}
             onChange={(e) => setStatement(e.target.value)}
-            placeholder="Digite o texto do enunciado ou caso prático..."
+            placeholder="Digite o texto do enunciado ou caso prático da questão..."
           />
         </label>
 
@@ -1284,7 +1767,7 @@ function QuestionEditor({
             rows={2}
             value={explanation}
             onChange={(e) => setExplanation(e.target.value)}
-            placeholder="Artigo de lei, jurisprudência do STF/STJ ou explicação doutrinária..."
+            placeholder="Artigo de lei, jurisprudência ou fundamentação da banca..."
           />
         </label>
 

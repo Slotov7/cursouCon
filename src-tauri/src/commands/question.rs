@@ -2,8 +2,9 @@ use crate::application::question_service::QuestionService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::question::{
-    AnswerQuestionInput, AnswerQuestionResult, CreateQuestionInput, ListQuestionsInput,
-    QuestionOptionInput, QuestionSummary,
+    AnswerQuestionInput, AnswerQuestionResult, CreateNotebookInput, CreateQuestionInput,
+    ListQuestionsInput, NotebookFilter, NotebookSummary, QuestionNotebookEntrySummary,
+    QuestionOptionInput, QuestionSummary, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     QuestionExportResult, QuestionImportPreview, QuestionImportResult,
@@ -52,6 +53,30 @@ pub struct AnswerQuestionRequest {
     pub selected_key: Option<String>,
     pub confidence: String,
     pub elapsed_seconds: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateNotebookRequest {
+    pub name: String,
+    pub kind: String,
+    pub filter: Option<NotebookFilter>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListNotebookEntriesRequest {
+    pub notebook_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetQuestionNotebookRequest {
+    pub notebook_id: String,
+    pub question_id: String,
+    pub included: bool,
+    pub reason: Option<String>,
+    pub observation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +151,57 @@ pub fn answer_question(
             selected_key: request.selected_key,
             confidence: request.confidence,
             elapsed_seconds: request.elapsed_seconds,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_notebooks(app: AppHandle) -> Result<Vec<NotebookSummary>, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .list_notebooks()
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn create_notebook(
+    app: AppHandle,
+    request: CreateNotebookRequest,
+) -> Result<NotebookSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .create_notebook(CreateNotebookInput {
+            name: request.name,
+            kind: request.kind,
+            filter: request.filter,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_notebook_entries(
+    app: AppHandle,
+    request: ListNotebookEntriesRequest,
+) -> Result<Vec<QuestionNotebookEntrySummary>, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .list_notebook_entries(request.notebook_id)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn set_notebook_entry(
+    app: AppHandle,
+    request: SetQuestionNotebookRequest,
+) -> Result<bool, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .set_notebook_entry(SetQuestionNotebookInput {
+            notebook_id: request.notebook_id,
+            question_id: request.question_id,
+            included: request.included,
+            reason: request.reason,
+            observation: request.observation,
         })
         .map_err(CommandError::from)
 }

@@ -28,37 +28,6 @@ type PlanViewProps = {
 
 type ActiveModal = "none" | "preparation" | "subject" | "task";
 
-// Sample topics per subject for visual Edital breakdown
-const DEMO_SUBJECT_TOPICS: Record<string, { id: string; title: string; completed: boolean }[]> = {
-  "Direito Constitucional": [
-    { id: "t1", title: "Direitos e Garantias Fundamentais (Art. 5º)", completed: true },
-    { id: "t2", title: "Organização do Estado e Entes Federativos", completed: true },
-    { id: "t3", title: "Controle de Constitucionalidade (Concentrado e Difuso)", completed: false },
-    { id: "t4", title: "Poder Executivo e Atribuições do Presidente", completed: false },
-  ],
-  "Engenharia de Software": [
-    { id: "t5", title: "Engenharia de Requisitos & Casos de Uso", completed: true },
-    { id: "t6", title: "Arquitetura Hexagonal, Ports & Adapters e DDD", completed: true },
-    { id: "t7", title: "Microsserviços, Mensageria e Event Sourcing", completed: true },
-    { id: "t8", title: "Metodologias Ágeis (Scrum, Kanban, Extreme Programming)", completed: false },
-  ],
-  "Língua Portuguesa": [
-    { id: "t9", title: "Interpretação e Compreensão de Textos", completed: true },
-    { id: "t10", title: "Sintaxe da Oração e do Período Composto", completed: false },
-    { id: "t11", title: "Regência Verbal, Nominal e Emprego da Crase", completed: false },
-  ],
-  "Bancos de Dados & SQL": [
-    { id: "t12", title: "Modelo Relacional, Entidades e Normalização (1FN a 3FN)", completed: true },
-    { id: "t13", title: "Linguagem SQL (Queries DDL, DML, Joins e Aggregations)", completed: true },
-    { id: "t14", title: "Transações, Propriedades ACID e Índices B-Tree", completed: false },
-  ],
-  "Direito Administrativo": [
-    { id: "t15", title: "Princípios Expressos e Implícitos da Adm. Pública (LIMPE)", completed: true },
-    { id: "t16", title: "Atos Administrativos: Atributos, Anulação e Revogação", completed: false },
-    { id: "t17", title: "Licitações e Contratos Administrativos (Lei 14.133/21)", completed: false },
-  ],
-};
-
 export function PlanView({
   plan,
   isLoading,
@@ -68,7 +37,6 @@ export function PlanView({
 }: PlanViewProps) {
   const [selectedPreparationId, setSelectedPreparationId] = useState("");
   const [activeModal, setActiveModal] = useState<ActiveModal>("none");
-  const [completedTopicMap, setCompletedTopicMap] = useState<Record<string, boolean>>({});
 
   // Preparation form state
   const [preparationName, setPreparationName] = useState("");
@@ -99,6 +67,8 @@ export function PlanView({
   const subjects = currentPlan.subjects.filter(
     (subj) => !selectedPreparation || subj.preparationId === selectedPreparation.id,
   );
+  const examDateLabel = formatExamDate(selectedPreparation?.examDate ?? null);
+  const examCountdownLabel = formatExamCountdown(selectedPreparation?.examDate ?? null);
 
   const handlePreparationSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -187,13 +157,6 @@ export function PlanView({
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const toggleTopic = (topicId: string, initialCompleted: boolean) => {
-    setCompletedTopicMap((prev) => ({
-      ...prev,
-      [topicId]: prev[topicId] !== undefined ? !prev[topicId] : !initialCompleted,
-    }));
   };
 
   if (isLoading && !plan) {
@@ -292,21 +255,17 @@ export function PlanView({
       {/* 2. Edital Metrics Bar */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:gap-4">
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Progresso do Edital</p>
-          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">64% Concluído</p>
-          <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-paper-deep">
-            <div className="h-full w-[64%] rounded-full bg-blue-600 transition-all duration-300"></div>
-          </div>
+          <p className="text-xs font-semibold text-muted">Cobertura do Edital</p>
+          <p className="mt-1 font-heading text-xl font-extrabold text-ink">Ainda não calculada</p>
+          <p className="mt-2 text-[11px] font-medium text-muted">
+            Cadastre tópicos para acompanhar a cobertura real.
+          </p>
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
           <p className="text-xs font-semibold text-muted">Previsão da Prova</p>
-          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">
-            {primaryPreparation?.examDate || "15 Nov 2026"}
-          </p>
-          <p className="mt-2 text-[11px] font-medium text-orange-600 dark:text-orange-400">
-            Faltam ~54 dias para o grande dia
-          </p>
+          <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">{examDateLabel}</p>
+          <p className="mt-2 text-[11px] font-medium text-orange-600 dark:text-orange-400">{examCountdownLabel}</p>
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
@@ -571,100 +530,54 @@ export function PlanView({
           </div>
         ) : (
           <div className="grid gap-4 lg:grid-cols-2">
-            {subjects.map((subj, idx) => {
-              const topics = DEMO_SUBJECT_TOPICS[subj.name] || [
-                { id: `t-def-1-${subj.id}`, title: `Introdução e Conceitos Fundamentais de ${subj.name}`, completed: true },
-                { id: `t-def-2-${subj.id}`, title: `Legislação, Jurisprudência e Súmulas de ${subj.name}`, completed: false },
-                { id: `t-def-3-${subj.id}`, title: `Resolução de Questões Avançadas de ${subj.name}`, completed: false },
-              ];
-
-              const completedCount = topics.filter((t) =>
-                completedTopicMap[t.id] !== undefined ? completedTopicMap[t.id] : t.completed,
-              ).length;
-              const percent = Math.round((completedCount / topics.length) * 100);
-
-              return (
-                <div
-                  key={subj.id}
-                  className="flex flex-col justify-between rounded-2xl border border-line bg-card p-5 shadow-xs transition-all hover:border-blue-500/40"
-                >
-                  <div>
-                    {/* Header info */}
-                    <div className="flex items-start justify-between gap-3 border-b border-line pb-3">
-                      <div>
-                        <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-muted">
-                          Disciplina 0{idx + 1}
-                        </span>
-                        <h4 className="font-heading text-lg font-bold text-ink mt-0.5">{subj.name}</h4>
-                      </div>
-
-                      <div className="grid text-right">
-                        <span className="font-heading text-base font-extrabold text-blue-600">{percent}%</span>
-                        <span className="text-[10px] text-muted">do edital</span>
-                      </div>
+            {subjects.map((subj, idx) => (
+              <div
+                key={subj.id}
+                className="flex flex-col justify-between rounded-2xl border border-line bg-card p-5 shadow-xs transition-all hover:border-blue-500/40"
+              >
+                <div>
+                  {/* Header info */}
+                  <div className="flex items-start justify-between gap-3 border-b border-line pb-3">
+                    <div>
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-muted">
+                        Disciplina 0{idx + 1}
+                      </span>
+                      <h4 className="font-heading text-lg font-bold text-ink mt-0.5">{subj.name}</h4>
                     </div>
 
-                    {/* Progress bar */}
-                    <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-paper-deep">
-                      <div
-                        className="h-full rounded-full bg-blue-600 transition-all duration-300"
-                        style={{ width: `${percent}%` }}
-                      ></div>
-                    </div>
-
-                    {/* Topics Checklist */}
-                    <div className="mt-4 grid gap-2">
-                      <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted">
-                        Tópicos do Edital:
-                      </p>
-                      {topics.map((topic) => {
-                        const isDone =
-                          completedTopicMap[topic.id] !== undefined
-                            ? completedTopicMap[topic.id]
-                            : topic.completed;
-
-                        return (
-                          <label
-                            key={topic.id}
-                            className={`flex cursor-pointer items-start gap-2.5 rounded-lg border p-2.5 text-xs transition-all ${
-                              isDone
-                                ? "border-emerald-500/20 bg-emerald-500/5 text-ink line-through opacity-75"
-                                : "border-line bg-paper text-ink hover:bg-paper-deep"
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isDone}
-                              onChange={() => toggleTopic(topic.id, topic.completed)}
-                              className="mt-0.5 size-4 accent-emerald-600 shrink-0"
-                            />
-                            <span className="leading-snug">{topic.title}</span>
-                          </label>
-                        );
-                      })}
+                    <div className="grid text-right">
+                      <span className="font-heading text-base font-extrabold text-blue-600">
+                        {subj.parentId ? "Subassunto" : "Disciplina"}
+                      </span>
+                      <span className="text-[10px] text-muted">registrada</span>
                     </div>
                   </div>
 
-                  {/* Card Footer Actions */}
-                  <div className="mt-5 flex items-center justify-between border-t border-line pt-3">
-                    <span className="text-xs font-semibold text-muted">
-                      {completedCount} de {topics.length} tópicos concluídos
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setTaskSubjectId(subj.id);
-                        setTaskTitle(`Estudo focado de ${subj.name}`);
-                        setActiveModal("task");
-                      }}
-                      className={`${buttonSecondaryClass} px-3 py-1 text-xs`}
-                    >
-                      + Estudar Matéria
-                    </button>
+                  <div className="mt-4 rounded-xl border border-dashed border-line bg-paper/60 p-4">
+                    <p className="text-xs font-semibold text-ink">Tópicos ainda não cadastrados</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                      A disciplina está no plano, mas a árvore de assuntos ainda não foi informada.
+                    </p>
                   </div>
                 </div>
-              );
-            })}
+
+                {/* Card Footer Actions */}
+                <div className="mt-5 flex items-center justify-between border-t border-line pt-3">
+                  <span className="text-xs font-semibold text-muted">Pronta para receber tópicos</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTaskSubjectId(subj.id);
+                      setTaskTitle(`Estudo focado de ${subj.name}`);
+                      setActiveModal("task");
+                    }}
+                    className={`${buttonSecondaryClass} px-3 py-1 text-xs`}
+                  >
+                    + Estudar Matéria
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </section>
@@ -678,4 +591,35 @@ function getLocalDateKey(): string {
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function parseLocalDate(dateKey: string | null): Date | null {
+  if (!dateKey) return null;
+
+  const date = new Date(`${dateKey}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatExamDate(dateKey: string | null): string {
+  const date = parseLocalDate(dateKey);
+  if (!date) return "Não definida";
+
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatExamCountdown(dateKey: string | null): string {
+  const examDate = parseLocalDate(dateKey);
+  if (!examDate) return "Informe uma data para acompanhar o prazo";
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const daysUntilExam = Math.ceil((examDate.getTime() - today.getTime()) / 86_400_000);
+
+  if (daysUntilExam < 0) return "A data informada já passou";
+  if (daysUntilExam === 0) return "A prova é hoje";
+  return `Faltam ${daysUntilExam} dias`;
 }

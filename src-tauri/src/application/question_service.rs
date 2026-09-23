@@ -1,8 +1,10 @@
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::question::{
-    normalize_answer_question_input, normalize_create_question_input,
-    normalize_list_questions_input, AnswerQuestionInput, AnswerQuestionResult, CreateQuestionInput,
-    ListQuestionsInput, QuestionSummary,
+    normalize_answer_question_input, normalize_create_notebook_input,
+    normalize_create_question_input, normalize_list_questions_input, normalize_notebook_id,
+    normalize_set_question_notebook_input, AnswerQuestionInput, AnswerQuestionResult,
+    CreateNotebookInput, CreateQuestionInput, ListQuestionsInput, NotebookSummary,
+    QuestionNotebookEntrySummary, QuestionSummary, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     QuestionExportResult, QuestionImportPreview, QuestionImportResult,
@@ -22,6 +24,16 @@ pub trait QuestionStore {
         &self,
         input: &AnswerQuestionInput,
     ) -> Result<AnswerQuestionResult, WorkspaceError>;
+    fn list_notebooks(&self) -> Result<Vec<NotebookSummary>, WorkspaceError>;
+    fn create_notebook(
+        &self,
+        input: &CreateNotebookInput,
+    ) -> Result<NotebookSummary, WorkspaceError>;
+    fn list_notebook_entries(
+        &self,
+        notebook_id: &str,
+    ) -> Result<Vec<QuestionNotebookEntrySummary>, WorkspaceError>;
+    fn set_notebook_entry(&self, input: &SetQuestionNotebookInput) -> Result<bool, WorkspaceError>;
     fn preview_import(&self, source_path: &Path) -> Result<QuestionImportPreview, WorkspaceError>;
     fn import_questions(
         &self,
@@ -50,6 +62,37 @@ impl<S: QuestionStore> QuestionService<S> {
         let normalized =
             normalize_create_question_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.create_question(&normalized)
+    }
+
+    pub fn list_notebooks(&self) -> Result<Vec<NotebookSummary>, WorkspaceError> {
+        self.store.list_notebooks()
+    }
+
+    pub fn create_notebook(
+        &self,
+        input: CreateNotebookInput,
+    ) -> Result<NotebookSummary, WorkspaceError> {
+        let normalized =
+            normalize_create_notebook_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.create_notebook(&normalized)
+    }
+
+    pub fn list_notebook_entries(
+        &self,
+        notebook_id: String,
+    ) -> Result<Vec<QuestionNotebookEntrySummary>, WorkspaceError> {
+        let normalized =
+            normalize_notebook_id(&notebook_id).map_err(WorkspaceError::InvalidInput)?;
+        self.store.list_notebook_entries(&normalized)
+    }
+
+    pub fn set_notebook_entry(
+        &self,
+        input: SetQuestionNotebookInput,
+    ) -> Result<bool, WorkspaceError> {
+        let normalized =
+            normalize_set_question_notebook_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.set_notebook_entry(&normalized)
     }
 
     pub fn answer(

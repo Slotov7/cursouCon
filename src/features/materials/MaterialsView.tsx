@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   getDesktopErrorMessage,
   getMaterials,
@@ -8,6 +8,7 @@ import {
 } from "../../shared/desktop/commands";
 import type { MaterialSummary, StudyPlan } from "../../shared/desktop/contracts";
 import {
+  buttonOutlineLightClass,
   buttonPrimaryClass,
   buttonQuietClass,
   buttonSecondaryClass,
@@ -29,6 +30,9 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
   const [materials, setMaterials] = useState<MaterialSummary[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
   const [subjectId, setSubjectId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [subjectFilter, setSubjectFilter] = useState("");
+
   const [isLoading, setIsLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<"idle" | "picking" | "importing" | "opening">("idle");
   const [readerMaterial, setReaderMaterial] = useState<MaterialSummary | null>(null);
@@ -62,6 +66,23 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
       cancelled = true;
     };
   }, [refreshKey]);
+
+  const filteredMaterials = useMemo(() => {
+    return materials.filter((m) => {
+      if (subjectFilter && !m.subjects.some((s) => s.id === subjectFilter)) {
+        return false;
+      }
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase().trim();
+        const matchName = m.originalName.toLowerCase().includes(query);
+        const matchSubject = m.subjects.some((s) => s.name.toLowerCase().includes(query));
+        if (!matchName && !matchSubject) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [materials, subjectFilter, searchQuery]);
 
   const chooseFile = async () => {
     setError(null);
@@ -109,19 +130,19 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
     }
   };
 
-  const handleOpen = async (material: MaterialSummary) => {
+  const handleOpenIntegrated = (material: MaterialSummary) => {
     setError(null);
     setMessage(null);
+    setReaderMaterial(material);
+  };
 
-    if (material.mimeType === "application/pdf" || material.originalName.endsWith(".pdf")) {
-      setReaderMaterial(material);
-      return;
-    }
-
+  const handleOpenExternal = async (material: MaterialSummary) => {
+    setError(null);
+    setMessage(null);
     setPendingAction("opening");
     try {
       await openMaterial({ materialId: material.id });
-      setMessage(`${material.originalName} foi aberto no leitor padrão.`);
+      setMessage(`${material.originalName} foi aberto no visualizador do sistema.`);
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -147,10 +168,10 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
         <div className="relative z-10 grid gap-4 max-w-3xl">
           <div className="flex flex-wrap items-center gap-3">
             <span className="rounded-full bg-blue-500/20 border border-blue-400/30 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 backdrop-blur-xs">
-              Biblioteca & Anotações
+              Biblioteca & Caderno
             </span>
             <span className="text-xs font-medium text-slate-300/85">
-              {materials.length} arquivos salvos no espaço
+              {materials.length} documentos salvos no espaço
             </span>
           </div>
 
@@ -159,7 +180,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
               Materiais de Estudo & Apostilas PDF
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
-              Visualize seus PDFs com leitor integrado e faça anotações sincronizadas à sua sessão de estudo local.
+              Leitura focada com marcador de página persistente, abertura no leitor embutido e bloco de notas integrado ao ciclo de estudos.
             </p>
           </div>
 
@@ -169,14 +190,29 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
               onClick={() => setIsImportingModalOpen(true)}
               className={buttonPrimaryClass}
             >
-              + Importar PDF
+              + Importar Novo PDF
             </button>
           </div>
         </div>
       </section>
 
-      {error && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600">{error}</p>}
-      {message && <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 font-medium">{message}</p>}
+      {error && (
+        <div className="flex items-center justify-between rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError(null)} className="font-bold hover:underline">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {message && (
+        <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 font-medium">
+          <span>{message}</span>
+          <button type="button" onClick={() => setMessage(null)} className="font-bold hover:underline">
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* PDF Reader Overlay Modal if active */}
       {readerMaterial && (
@@ -191,9 +227,12 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
 
       {/* Import Modal */}
       {isImportingModalOpen && (
-        <div className="rounded-2xl border border-blue-500/30 bg-card p-6 shadow-lg animate-fade-in max-w-xl">
+        <div className="glass-card rounded-2xl p-6 shadow-xl ring-1 ring-black/5 dark:ring-white/10 animate-fade-in border border-blue-500/30 max-w-xl">
           <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
-            <h3 className="font-heading text-lg font-bold text-ink">Importar Material PDF</h3>
+            <div>
+              <Eyebrow>Biblioteca Local</Eyebrow>
+              <h3 className="font-heading text-lg font-bold text-ink">Importar Material PDF</h3>
+            </div>
             <button
               type="button"
               onClick={() => setIsImportingModalOpen(false)}
@@ -208,9 +247,9 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
               Arquivo no Computador
               <div className="flex gap-2">
                 <input
-                  className={`${inputClass} flex-1`}
+                  className={`${inputClass} flex-1 text-xs`}
                   type="text"
-                  placeholder="Selecione um PDF ou documento"
+                  placeholder="Nenhum arquivo selecionado"
                   value={selectedPath}
                   readOnly
                 />
@@ -220,7 +259,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
                   disabled={isBusy}
                   className={`${buttonSecondaryClass} shrink-0 px-3 py-2 text-xs`}
                 >
-                  {pendingAction === "picking" ? "Abrindo..." : "Escolher Arquivo"}
+                  {pendingAction === "picking" ? "Abrindo..." : "Selecionar..."}
                 </button>
               </div>
             </label>
@@ -257,7 +296,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
                 disabled={isBusy || !selectedPath}
                 className={buttonPrimaryClass}
               >
-                {pendingAction === "importing" ? "Importando..." : "Confirmar Importação"}
+                {pendingAction === "importing" ? "Copiando para o espaço..." : "Confirmar Importação"}
               </button>
             </div>
           </div>
@@ -265,56 +304,112 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
       )}
 
       {/* 2. Main Content Grid - Library & Notes Panel */}
-      <div className="grid gap-6 xl:grid-cols-[minmax(320px,1fr)_minmax(0,1.2fr)]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(330px,1fr)_minmax(0,1.2fr)]">
         {/* PDF Library List */}
-        <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs">
+        <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs flex flex-col">
           <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
             <div>
               <Eyebrow>Sua Biblioteca</Eyebrow>
               <h3 className="font-heading text-lg font-bold text-ink">Arquivos & Apostilas</h3>
             </div>
-            <span className="text-xs font-semibold text-muted">{materials.length} itens</span>
+            <span className="font-mono text-xs font-bold text-muted bg-paper-deep px-2.5 py-1 rounded-lg">
+              {filteredMaterials.length} de {materials.length}
+            </span>
+          </div>
+
+          {/* Search & Subject Filter in Library */}
+          <div className="grid gap-2.5 mb-4">
+            <input
+              type="text"
+              className={inputClass}
+              placeholder="Buscar apostila por título ou matéria..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+
+            <select
+              className={selectClass}
+              value={subjectFilter}
+              onChange={(e) => setSubjectFilter(e.target.value)}
+            >
+              <option value="">Todas as matérias</option>
+              {(plan?.subjects ?? []).map((subj) => (
+                <option key={subj.id} value={subj.id}>
+                  {subj.name}
+                </option>
+              ))}
+            </select>
           </div>
 
           {isLoading ? (
-            <p className="text-sm text-muted py-6">Carregando biblioteca local...</p>
-          ) : materials.length === 0 ? (
-            <div className="rounded-xl border border-line bg-paper p-6 text-center">
-              <p className="text-sm text-muted">Nenhum arquivo importado ainda.</p>
+            <div className="flex justify-center items-center py-12 text-sm text-muted">
+              <div className="size-6 animate-spin rounded-full border-2 border-blue-600 border-t-transparent mr-2" />
+              Carregando materiais locais...
+            </div>
+          ) : filteredMaterials.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-line bg-paper p-8 text-center text-xs text-muted">
+              <p className="font-bold text-ink">Nenhum material encontrado.</p>
+              <p className="mt-1">
+                {materials.length === 0
+                  ? "Importe seu primeiro PDF de teoria ou resumo para começar a leitura."
+                  : "Nenhum PDF corresponde aos filtros de busca atuais."}
+              </p>
               <button
                 type="button"
-                onClick={() => setIsImportingModalOpen(true)}
+                onClick={() => {
+                  if (materials.length === 0) {
+                    setIsImportingModalOpen(true);
+                  } else {
+                    setSearchQuery("");
+                    setSubjectFilter("");
+                  }
+                }}
                 className={`${buttonPrimaryClass} mt-4 text-xs`}
               >
-                + Importar Primeiro PDF
+                {materials.length === 0 ? "+ Importar Primeiro PDF" : "Limpar Filtros"}
               </button>
             </div>
           ) : (
-            <div className="grid gap-3">
-              {materials.map((item) => (
+            <div className="grid gap-3 max-h-[540px] overflow-y-auto pr-1">
+              {filteredMaterials.map((item) => (
                 <div
                   key={item.id}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-line bg-paper p-4 transition-all hover:border-blue-500/40"
+                  className="flex flex-col gap-3 rounded-xl border border-line bg-paper/80 p-4 transition-all duration-150 ease-out hover:border-blue-500/40 hover:bg-paper shadow-xs"
                 >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-blue-600/10 text-blue-600 font-bold text-xs">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-red-500/10 text-red-600 font-extrabold text-xs border border-red-500/20 font-mono">
                       PDF
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <h4 className="truncate font-bold text-xs text-ink">{item.originalName}</h4>
-                      <p className="mt-0.5 text-[11px] text-muted">
-                        {item.subjects[0]?.name || "Geral"} · Pág. {item.currentPage}
-                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
+                        <span className="rounded bg-paper-deep px-1.5 py-0.5 font-medium border border-line">
+                          {item.subjects[0]?.name || "Geral"}
+                        </span>
+                        <span className="font-mono tabular-nums">
+                          Página {item.currentPage} · {formatBytes(item.byteSize)}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleOpen(item)}
-                    className={`${buttonPrimaryClass} text-xs px-3 py-1.5 shrink-0`}
-                  >
-                    ▶ Abrir
-                  </button>
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-line">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenExternal(item)}
+                      className={`${buttonQuietClass} text-xs px-2.5 py-1`}
+                      title="Abrir com o visualizador padrão do Windows/Linux"
+                    >
+                      ↗ Externo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenIntegrated(item)}
+                      className={`${buttonPrimaryClass} text-xs px-3.5 py-1`}
+                    >
+                      ▶ Ler no App
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -328,4 +423,11 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
       </div>
     </div>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }

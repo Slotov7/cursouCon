@@ -8,6 +8,7 @@ import { ProgressView } from "../features/progress/ProgressView";
 import { TodayView } from "../features/today/TodayView";
 import { PracticeView } from "../features/practice/PracticeView";
 import { WorkspaceSetup } from "../features/workspace/WorkspaceSetup";
+import { WorkspaceDataActions } from "../features/workspace/WorkspaceDataActions";
 import { CommandPalette } from "../shared/ui/CommandPalette";
 
 import {
@@ -95,6 +96,10 @@ export function App() {
       theme={theme}
       onToggleTheme={toggleTheme}
       onNavigate={setActiveView}
+      onWorkspaceRestored={(restoredWorkspace) => {
+        setWorkspace(restoredWorkspace);
+        setActiveView("today");
+      }}
     />
   );
 }
@@ -116,9 +121,17 @@ type AppShellProps = {
   theme: "light" | "dark";
   onToggleTheme: () => void;
   onNavigate: (view: ViewId) => void;
+  onWorkspaceRestored: (workspace: WorkspaceSummary) => void;
 };
 
-function AppShell({ activeView, workspace, theme, onToggleTheme, onNavigate }: AppShellProps) {
+function AppShell({
+  activeView,
+  workspace,
+  theme,
+  onToggleTheme,
+  onNavigate,
+  onWorkspaceRestored,
+}: AppShellProps) {
   const [studyPlan, setStudyPlan] = useState<StudyPlan | null>(null);
   const [dailyPlan, setDailyPlan] = useState<DailyPlan | null>(null);
   const [studyDataError, setStudyDataError] = useState<string | null>(null);
@@ -279,11 +292,21 @@ function AppShell({ activeView, workspace, theme, onToggleTheme, onNavigate }: A
           {/* Quick Header Badges & Actions */}
           <div className="flex items-center gap-3">
             {isSessionActive && (
-              <div className="flex items-center gap-2 rounded-full border border-orange-500/30 bg-orange-500/10 px-3 py-1 text-xs font-bold text-orange-600 dark:text-orange-400 animate-pulse">
-                <span className="size-2 rounded-full bg-orange-500"></span>
-                <span>Sessão em Andamento</span>
-              </div>
+              <button
+                type="button"
+                onClick={() => onNavigate("today")}
+                className="flex items-center gap-2 rounded-full border border-orange-500/30 bg-orange-500/10 px-3 py-1 text-xs font-bold text-orange-600 dark:text-orange-400 hover:bg-orange-500/20 active:scale-[0.97] transition-all cursor-pointer"
+                title="Voltar para a sessão de estudos em andamento"
+              >
+                <span className="size-2 rounded-full bg-orange-500 animate-pulse"></span>
+                <span>Sessão em Andamento →</span>
+              </button>
             )}
+
+            <WorkspaceDataActions
+              workspace={workspace}
+              onWorkspaceRestored={onWorkspaceRestored}
+            />
 
             <button
               type="button"

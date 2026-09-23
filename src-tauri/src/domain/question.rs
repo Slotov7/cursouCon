@@ -1,5 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub const ERROR_NOTEBOOK_ID: &str = "notebook-errors";
 
 #[derive(Debug, Clone)]
 pub struct QuestionOptionInput {
@@ -87,6 +89,53 @@ pub struct AnswerQuestionResult {
     pub attempt: QuestionAttemptSummary,
     pub question: QuestionSummary,
     pub xp_granted: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateNotebookInput {
+    pub name: String,
+    pub kind: String,
+    pub filter: Option<NotebookFilter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotebookFilter {
+    pub subject_id: Option<String>,
+    pub question_type: Option<String>,
+    pub attempt_status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotebookSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub question_count: i64,
+    pub filter: Option<NotebookFilter>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionNotebookEntrySummary {
+    pub question_id: String,
+    pub notebook_id: String,
+    pub reason: Option<String>,
+    pub observation: Option<String>,
+    pub added_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SetQuestionNotebookInput {
+    pub notebook_id: String,
+    pub question_id: String,
+    pub included: bool,
+    pub reason: Option<String>,
+    pub observation: Option<String>,
 }
 
 pub fn normalize_create_question_input(
@@ -182,6 +231,78 @@ pub fn normalize_answer_question_input(
     })
 }
 
+pub fn normalize_set_question_notebook_input(
+    input: SetQuestionNotebookInput,
+) -> Result<SetQuestionNotebookInput, String> {
+    let reason = input
+        .reason
+        .map(|value| normalize_notebook_reason(&value))
+        .transpose()?;
+    let observation = input
+        .observation
+        .map(normalize_notebook_observation)
+        .transpose()?
+        .flatten();
+
+    Ok(SetQuestionNotebookInput {
+        notebook_id: normalize_notebook_id(&input.notebook_id)?,
+        question_id: normalize_id(&input.question_id, "A questão")?,
+        included: input.included,
+        reason,
+        observation,
+    })
+}
+
+pub fn normalize_create_notebook_input(
+    input: CreateNotebookInput,
+) -> Result<CreateNotebookInput, String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("O nome do caderno é obrigatório.".to_string());
+    }
+    if name.chars().count() > 120 || name.chars().any(char::is_control) {
+        return Err("O nome do caderno é inválido ou longo demais.".to_string());
+    }
+    let kind = match input.kind.trim() {
+        "manual" | "dynamic" => input.kind.trim().to_string(),
+        _ => return Err("O tipo do caderno não é válido.".to_string()),
+    };
+    let filter = if kind == "manual" {
+        if input.filter.is_some() {
+            return Err("Cadernos manuais não aceitam filtros salvos.".to_string());
+        }
+        None
+    } else {
+        match input.filter {
+            Some(filter) => Some(normalize_notebook_filter(filter)?),
+            None => return Err("Um caderno dinâmico precisa de um filtro.".to_string()),
+        }
+    };
+    Ok(CreateNotebookInput {
+        name: name.to_string(),
+        kind,
+        filter,
+    })
+}
+
+fn normalize_notebook_filter(filter: NotebookFilter) -> Result<NotebookFilter, String> {
+    let attempt_status = match filter.attempt_status.trim() {
+        "incorrect" | "unanswered" | "correct" => filter.attempt_status.trim().to_string(),
+        _ => return Err("O estado do filtro dinâmico não é válido.".to_string()),
+    };
+    Ok(NotebookFilter {
+        subject_id: filter
+            .subject_id
+            .map(|value| normalize_id(&value, "O assunto do filtro"))
+            .transpose()?,
+        question_type: filter
+            .question_type
+            .map(|value| normalize_question_type(&value))
+            .transpose()?,
+        attempt_status,
+    })
+}
+
 fn normalize_question_type(value: &str) -> Result<String, String> {
     match value.trim() {
         "multiple_choice" | "true_false" => Ok(value.trim().to_string()),
@@ -250,6 +371,40 @@ fn normalize_selected_key(value: &str) -> Result<String, String> {
         "A" | "B" | "C" | "D" | "E" | "true" | "false" => Ok(key.to_string()),
         _ => Err("A resposta escolhida não é válida.".to_string()),
     }
+}
+
+fn normalize_notebook_reason(value: &str) -> Result<String, String> {
+    match value.trim() {
+        "content" | "interpretation" | "distraction" | "forgetfulness" => {
+            Ok(value.trim().to_string())
+        }
+        _ => Err("O motivo do caderno de erros não é válido.".to_string()),
+    }
+}
+
+pub fn normalize_notebook_id(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed == ERROR_NOTEBOOK_ID {
+        return Ok(trimmed.to_string());
+    }
+    Uuid::parse_str(trimmed)
+        .map(|parsed| parsed.to_string())
+        .map_err(|_| "O caderno escolhido não é válido.".to_string())
+}
+
+fn normalize_notebook_observation(value: String) -> Result<Option<String>, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > 5_000
+        || trimmed
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err("A observação do caderno é inválida ou longa demais.".to_string());
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 fn normalize_status(value: &str) -> Result<String, String> {
