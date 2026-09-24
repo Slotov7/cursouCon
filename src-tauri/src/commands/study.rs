@@ -2,7 +2,8 @@ use crate::application::study_service::StudyService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study::{
-    normalize_task_completion, CompleteStudyReviewInput, CreateStudyTaskInput, DailyPlan,
+    normalize_task_completion, AcceptStudyCycleActionInput, AcceptStudyCycleActionResult,
+    CompleteStudyReviewInput, CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan,
     FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput,
     RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
     SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary, StudyReviewSummary,
@@ -15,6 +16,15 @@ use tauri::AppHandle;
 #[serde(rename_all = "camelCase")]
 pub struct DailyPlanRequest {
     pub date: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptStudyCycleActionRequest {
+    pub preparation_id: String,
+    pub cycle_position: i64,
+    pub cycle_step: i64,
+    pub scheduled_for: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +126,22 @@ pub fn create_study_task(
 
     StudyService::new(store)
         .create_task(input)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn accept_study_cycle_action(
+    app: AppHandle,
+    request: AcceptStudyCycleActionRequest,
+) -> Result<AcceptStudyCycleActionResult, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .accept_cycle_action(AcceptStudyCycleActionInput {
+            preparation_id: request.preparation_id,
+            cycle_position: request.cycle_position,
+            cycle_step: request.cycle_step,
+            scheduled_for: request.scheduled_for,
+        })
         .map_err(CommandError::from)
 }
 
@@ -223,7 +249,7 @@ pub fn reschedule_study_review(
 pub fn complete_study_review(
     app: AppHandle,
     request: CompleteStudyReviewRequest,
-) -> Result<StudyReviewSummary, CommandError> {
+) -> Result<CompleteStudyReviewResult, CommandError> {
     let store = local_workspace_store(&app)?;
     StudyService::new(store)
         .complete_review(CompleteStudyReviewInput {

@@ -736,12 +736,11 @@ mod tests {
         let inside_workspace = workspace_path.join("exports");
         let rejected = reopened_store.configure_sync_destination(true, Some(&inside_workspace));
         assert!(matches!(rejected, Err(WorkspaceError::InvalidInput(_))));
-        assert_eq!(
-            reopened_store
+        assert!(
+            !reopened_store
                 .sync_destination_settings()
                 .expect("a configuração anterior deve permanecer válida")
-                .enabled,
-            false
+                .enabled
         );
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

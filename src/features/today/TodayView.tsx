@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  acceptStudyCycleAction,
   finishStudySession,
   getDesktopErrorMessage,
   pauseStudySession,
@@ -12,6 +13,7 @@ import type {
   DailyPlan,
   StudyPlan,
   StudySessionSummary,
+  StudyCycleSuggestion,
   StudyTaskSummary,
   StudyTaskStatus,
 } from "../../shared/desktop/contracts";
@@ -63,6 +65,7 @@ export function TodayView({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
+  const [isAcceptingCycleAction, setIsAcceptingCycleAction] = useState(false);
   const [reviewOn, setReviewOn] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [pomodoroSettings, setPomodoroSettings] = useState(readPomodoroSettings);
@@ -77,13 +80,17 @@ export function TodayView({
 
   const primaryPreparation = plan?.preparations.find((prep) => prep.isPrimary);
   const activeSession = dailyPlan?.activeSession ?? null;
+  const cycleSuggestion = dailyPlan?.cycleSuggestion ?? null;
 
   useEffect(() => {
     setReviewOn("");
   }, [activeSession?.id]);
 
   const tasksToRender = dailyPlan?.tasks ?? [];
-  const activeTask = tasksToRender.find((task) => task.id === activeSession?.taskId) ?? tasksToRender[0];
+  const activeTask =
+    tasksToRender.find((task) => task.id === activeSession?.taskId) ??
+    tasksToRender.find((task) => task.status === "pending" || task.status === "partial") ??
+    null;
   const completedTaskCount = tasksToRender.filter((task) => task.status === "completed").length;
   const plannedMinutes = tasksToRender.reduce((total, task) => total + task.plannedMinutes, 0);
   const taskProgressPercent =
@@ -226,6 +233,27 @@ export function TodayView({
       setActionError(getDesktopErrorMessage(operationError));
     } finally {
       setPendingTaskId(null);
+    }
+  };
+
+  const handleAcceptCycleAction = async () => {
+    if (!cycleSuggestion || !dailyPlan) return;
+    setActionError(null);
+    setActionMessage(null);
+    setIsAcceptingCycleAction(true);
+    try {
+      const result = await acceptStudyCycleAction({
+        preparationId: cycleSuggestion.preparationId,
+        cyclePosition: cycleSuggestion.cyclePosition,
+        cycleStep: cycleSuggestion.cycleStep,
+        scheduledFor: dailyPlan.date,
+      });
+      setActionMessage(`Ação adicionada ao plano: ${result.task.title}.`);
+      onDataChanged();
+    } catch (operationError: unknown) {
+      setActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setIsAcceptingCycleAction(false);
     }
   };
 
@@ -394,7 +422,7 @@ export function TodayView({
     }
   };
 
-  const isBusy = isLoading || pendingTaskId !== null;
+  const isBusy = isLoading || pendingTaskId !== null || isAcceptingCycleAction;
   const pomodoroCanRun = Boolean(
     activeSession &&
       (pomodoroPhase === "focus"
@@ -441,7 +469,7 @@ export function TodayView({
           {/* Main Title */}
           <div>
             <h2 className="font-heading text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
-              {activeTask?.title || "Plano de Estudos de Hoje"}
+              {activeTask?.title || (cycleSuggestion ? `Próxima ação: ${cycleSuggestion.subjectName}` : "Plano de Estudos de Hoje")}
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
               {activeTask?.objective || "Selecione uma matéria da sua fila de hoje para iniciar a sessão de estudos com o cronômetro local."}
@@ -480,9 +508,11 @@ export function TodayView({
                 className={buttonPrimaryClass}
                 type="button"
                 onClick={() => activeTask && handleStart(activeTask)}
-                disabled={isBusy}
+                disabled={isBusy || !activeTask}
               >
-                ▶ Iniciar Sessão ({activeTask?.plannedMinutes || 45} min)
+                {activeTask
+                  ? `▶ Iniciar Sessão (${activeTask.plannedMinutes} min)`
+                  : "Nenhuma tarefa para iniciar"}
               </button>
             )}
 
@@ -574,6 +604,13 @@ export function TodayView({
           {actionMessage && <p className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 font-medium">{actionMessage}</p>}
 
           <div className="mt-4 grid gap-3">
+            {cycleSuggestion && (
+              <CycleSuggestionCard
+                suggestion={cycleSuggestion}
+                isBusy={isBusy}
+                onAccept={() => void handleAcceptCycleAction()}
+              />
+            )}
             {tasksToRender.length > 0 ? (
               tasksToRender.map((task, index) => (
                 <TaskCard
@@ -851,6 +888,39 @@ function TaskCard({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function CycleSuggestionCard({
+  suggestion,
+  isBusy,
+  onAccept,
+}: {
+  suggestion: StudyCycleSuggestion;
+  isBusy: boolean;
+  onAccept: () => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-blue-500/30 bg-blue-500/5 p-4 shadow-xs">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Próximo bloco do ciclo</p>
+          <h4 className="mt-1 font-heading text-base font-bold text-ink">{suggestion.subjectName}</h4>
+          <p className="mt-1 text-xs text-muted">{suggestion.plannedMinutes} minutos · posição {suggestion.cyclePosition + 1}</p>
+        </div>
+        <button
+          type="button"
+          className={`${buttonPrimaryClass} px-3 py-1.5 text-xs`}
+          onClick={onAccept}
+          disabled={isBusy}
+        >
+          {isBusy ? "Adicionando..." : "Adicionar ao plano de hoje"}
+        </button>
+      </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-muted">
+        O aceite cria uma tarefa local e avança o ciclo uma única vez. Você ainda poderá reagendar ou pular a tarefa.
+      </p>
     </div>
   );
 }

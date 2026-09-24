@@ -1,13 +1,15 @@
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study::{
-    normalize_complete_study_review_input, normalize_finish_session_input,
-    normalize_pause_session_input, normalize_reschedule_study_review_input,
-    normalize_reschedule_task_input, normalize_resume_session_input, normalize_skip_task_input,
-    normalize_start_session_input, normalize_study_task_input, CompleteStudyReviewInput,
-    CreateStudyTaskInput, DailyPlan, FinishStudySessionInput, FinishStudySessionResult,
-    PauseStudySessionInput, RescheduleStudyReviewInput, RescheduleStudyTaskInput,
-    ResumeStudySessionInput, SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary,
-    StudyReviewSummary, StudySessionSummary, StudyTaskSummary,
+    normalize_accept_study_cycle_action_input, normalize_complete_study_review_input,
+    normalize_finish_session_input, normalize_pause_session_input,
+    normalize_reschedule_study_review_input, normalize_reschedule_task_input,
+    normalize_resume_session_input, normalize_skip_task_input, normalize_start_session_input,
+    normalize_study_task_input, AcceptStudyCycleActionInput, AcceptStudyCycleActionResult,
+    CompleteStudyReviewInput, CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan,
+    FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput,
+    RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
+    SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary, StudyReviewSummary,
+    StudySessionSummary, StudyTaskSummary,
 };
 use crate::domain::study_plan::normalize_date;
 
@@ -17,6 +19,10 @@ pub trait StudyStore {
         &self,
         input: &CreateStudyTaskInput,
     ) -> Result<StudyTaskSummary, WorkspaceError>;
+    fn accept_study_cycle_action(
+        &self,
+        input: &AcceptStudyCycleActionInput,
+    ) -> Result<AcceptStudyCycleActionResult, WorkspaceError>;
     fn reschedule_study_task(
         &self,
         input: &RescheduleStudyTaskInput,
@@ -48,7 +54,7 @@ pub trait StudyStore {
     fn complete_study_review(
         &self,
         input: &CompleteStudyReviewInput,
-    ) -> Result<StudyReviewSummary, WorkspaceError>;
+    ) -> Result<CompleteStudyReviewResult, WorkspaceError>;
     fn study_progress(&self, as_of_date: &str) -> Result<StudyProgressSummary, WorkspaceError>;
 }
 
@@ -81,6 +87,15 @@ impl<S: StudyStore> StudyService<S> {
         let normalized =
             normalize_start_session_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.start_study_session(&normalized)
+    }
+
+    pub fn accept_cycle_action(
+        &self,
+        input: AcceptStudyCycleActionInput,
+    ) -> Result<AcceptStudyCycleActionResult, WorkspaceError> {
+        let normalized = normalize_accept_study_cycle_action_input(input)
+            .map_err(WorkspaceError::InvalidInput)?;
+        self.store.accept_study_cycle_action(&normalized)
     }
 
     pub fn reschedule_task(
@@ -118,7 +133,7 @@ impl<S: StudyStore> StudyService<S> {
     pub fn complete_review(
         &self,
         input: CompleteStudyReviewInput,
-    ) -> Result<StudyReviewSummary, WorkspaceError> {
+    ) -> Result<CompleteStudyReviewResult, WorkspaceError> {
         let normalized =
             normalize_complete_study_review_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.complete_study_review(&normalized)

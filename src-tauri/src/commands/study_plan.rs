@@ -2,8 +2,10 @@ use crate::application::study_plan_service::StudyPlanService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study_plan::{
-    CreatePreparationInput, CreateSubjectInput, PreparationSummary, SetSubjectStudyStatusInput,
-    StudyPlan, SubjectStudyStatus, SubjectSummary,
+    CreatePreparationInput, CreateSubjectInput, PreparationSummary, SaveStudyPlanningInput,
+    SetSubjectStudyStatusInput, StudyCycleSlotInput, StudyDayAvailability, StudyPlan,
+    StudyPlanningSummary, SubjectPriorityInput, SubjectStudyStatus, SubjectSummary,
+    DEFAULT_REVIEW_RESERVE_PERCENT,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -32,6 +34,50 @@ pub struct CreateSubjectRequest {
 pub struct SetSubjectStudyStatusRequest {
     pub subject_id: String,
     pub status: SubjectStudyStatus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyDayAvailabilityRequest {
+    pub weekday: u8,
+    pub available_minutes: i64,
+    pub is_rest: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubjectPriorityRequest {
+    pub subject_id: String,
+    pub priority: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyCycleSlotRequest {
+    pub subject_id: String,
+    pub planned_minutes: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveStudyPlanningRequest {
+    pub preparation_id: String,
+    pub availability: Vec<StudyDayAvailabilityRequest>,
+    pub subject_priorities: Vec<SubjectPriorityRequest>,
+    #[serde(default = "default_review_reserve_percent")]
+    pub review_reserve_percent: i64,
+    #[serde(default)]
+    pub cycle_slots: Option<Vec<StudyCycleSlotRequest>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyPlanningPreparationRequest {
+    pub preparation_id: String,
+}
+
+fn default_review_reserve_percent() -> i64 {
+    DEFAULT_REVIEW_RESERVE_PERCENT
 }
 
 #[tauri::command]
@@ -89,5 +135,69 @@ pub fn set_subject_study_status(
             subject_id: request.subject_id,
             status: request.status,
         })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_study_planning(
+    app: AppHandle,
+    request: StudyPlanningPreparationRequest,
+) -> Result<StudyPlanningSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyPlanService::new(store)
+        .planning(&request.preparation_id)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn save_study_planning(
+    app: AppHandle,
+    request: SaveStudyPlanningRequest,
+) -> Result<StudyPlanningSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    let input = SaveStudyPlanningInput {
+        preparation_id: request.preparation_id,
+        availability: request
+            .availability
+            .into_iter()
+            .map(|day| StudyDayAvailability {
+                weekday: day.weekday,
+                available_minutes: day.available_minutes,
+                is_rest: day.is_rest,
+            })
+            .collect(),
+        subject_priorities: request
+            .subject_priorities
+            .into_iter()
+            .map(|subject| SubjectPriorityInput {
+                subject_id: subject.subject_id,
+                priority: subject.priority,
+            })
+            .collect(),
+        review_reserve_percent: request.review_reserve_percent,
+        cycle_slots: request.cycle_slots.map(|slots| {
+            slots
+                .into_iter()
+                .map(|slot| StudyCycleSlotInput {
+                    subject_id: slot.subject_id,
+                    planned_minutes: slot.planned_minutes,
+                })
+                .collect()
+        }),
+    };
+
+    StudyPlanService::new(store)
+        .save_planning(input)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn advance_study_cycle(
+    app: AppHandle,
+    request: StudyPlanningPreparationRequest,
+) -> Result<StudyPlanningSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyPlanService::new(store)
+        .advance_cycle(&request.preparation_id)
         .map_err(CommandError::from)
 }

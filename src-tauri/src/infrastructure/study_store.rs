@@ -2,13 +2,15 @@ use super::{map_database_error, workspace_store::LocalWorkspaceStore};
 use crate::application::study_service::StudyStore;
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study::{
-    calculate_session_xp, calculate_study_streak, parse_session_status, parse_task_status,
-    CompleteStudyReviewInput, CreateStudyTaskInput, DailyPlan, FinishStudySessionInput,
-    FinishStudySessionResult, PauseStudySessionInput, PlannedStudyDay, RescheduleStudyReviewInput,
-    RescheduleStudyTaskInput, ResumeStudySessionInput, SkipStudyTaskInput, StartStudySessionInput,
-    StudyHistoryEntry, StudyProgressSummary, StudyReviewStatus, StudyReviewSummary,
-    StudySessionStatus, StudySessionSummary, StudyTaskStatus, StudyTaskSummary, TaskCompletion,
-    XP_RULES_VERSION,
+    calculate_review_xp, calculate_session_xp, calculate_study_streak, parse_session_status,
+    parse_task_status, AcceptStudyCycleActionInput, AcceptStudyCycleActionResult,
+    CompleteStudyReviewInput, CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan,
+    FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput, PlannedStudyDay,
+    RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
+    SkipStudyTaskInput, StartStudySessionInput, StudyCycleSuggestion, StudyHistoryEntry,
+    StudyProgressSummary, StudyReviewStatus, StudyReviewSummary, StudySessionStatus,
+    StudySessionSummary, StudyTaskStatus, StudyTaskSummary, TaskCompletion,
+    REVIEW_XP_RULES_VERSION, XP_RULES_VERSION,
 };
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
@@ -62,12 +64,14 @@ impl StudyStore for LocalWorkspaceStore {
         let tasks = load_daily_tasks(&connection, date)?;
         let active_session = load_active_session(&connection)?;
         let reviews = load_due_reviews(&connection, date)?;
+        let cycle_suggestion = load_cycle_suggestion(&connection)?;
 
         Ok(DailyPlan {
             date: date.to_string(),
             tasks,
             active_session,
             reviews,
+            cycle_suggestion,
         })
     }
 
@@ -122,6 +126,125 @@ impl StudyStore for LocalWorkspaceStore {
             .commit()
             .map_err(|error| map_database_error("confirmar tarefa", error))?;
         Ok(summary)
+    }
+
+    fn accept_study_cycle_action(
+        &self,
+        input: &AcceptStudyCycleActionInput,
+    ) -> Result<AcceptStudyCycleActionResult, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar aceite da ação do ciclo", error))?;
+        ensure_preparation_exists(&transaction, &input.preparation_id)?;
+
+        let (cycle_position, cycle_step): (i64, i64) = transaction
+            .query_row(
+                "SELECT cycle_position, cycle_step
+                 FROM study_planning_settings
+                 WHERE preparation_id = ?1",
+                params![input.preparation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| map_database_error("ler posição atual do ciclo", error))?
+            .ok_or_else(|| {
+                WorkspaceError::InvalidInput(
+                    "Salve o ciclo antes de aceitar uma próxima ação.".to_string(),
+                )
+            })?;
+        let slot_count: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM study_cycle_slots slots
+                  JOIN subjects ON subjects.id = slots.subject_id
+                     AND subjects.preparation_id = slots.preparation_id
+                     AND subjects.archived_at IS NULL
+                 WHERE slots.preparation_id = ?1",
+                params![input.preparation_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| map_database_error("contar ações do ciclo", error))?;
+        if slot_count == 0 {
+            return Err(WorkspaceError::InvalidInput(
+                "O ciclo não possui uma próxima ação disponível.".to_string(),
+            ));
+        }
+        let normalized_position = cycle_position.rem_euclid(slot_count);
+        if input.cycle_position != normalized_position || input.cycle_step != cycle_step {
+            return Err(WorkspaceError::InvalidInput(
+                "A próxima ação mudou; atualize o plano de hoje e tente novamente.".to_string(),
+            ));
+        }
+
+        let (subject_id, subject_name, planned_minutes): (String, String, i64) = transaction
+            .query_row(
+                "SELECT slots.subject_id, subjects.name, slots.planned_minutes
+                 FROM study_cycle_slots slots
+                  JOIN subjects ON subjects.id = slots.subject_id
+                     AND subjects.preparation_id = slots.preparation_id
+                     AND subjects.archived_at IS NULL
+                 WHERE slots.preparation_id = ?1 AND slots.position = ?2",
+                params![input.preparation_id, normalized_position],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| map_database_error("localizar próxima ação do ciclo", error))?
+            .ok_or_else(|| {
+                WorkspaceError::Database(
+                    "a posição atual do ciclo não possui uma ação correspondente".to_string(),
+                )
+            })?;
+
+        let task_id = Uuid::new_v4().to_string();
+        transaction
+            .execute(
+                "INSERT INTO study_tasks
+                    (id, preparation_id, subject_id, title, objective, planned_minutes, scheduled_for, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending')",
+                params![
+                    task_id.as_str(),
+                    input.preparation_id.as_str(),
+                    subject_id.as_str(),
+                    format!("Estudo focado de {subject_name}"),
+                    "Bloco aceito a partir do ciclo de estudos.",
+                    planned_minutes,
+                    input.scheduled_for.as_str(),
+                ],
+            )
+            .map_err(|error| map_database_error("gravar tarefa do ciclo", error))?;
+        let task = load_task(&transaction, &task_id)?;
+        let next_cycle_position = (normalized_position + 1).rem_euclid(slot_count);
+        let advanced = transaction
+            .execute(
+                "UPDATE study_planning_settings
+                 SET cycle_position = ?1, cycle_step = ?2, updated_at = CURRENT_TIMESTAMP
+                 WHERE preparation_id = ?3
+                   AND cycle_position = ?4
+                   AND cycle_step = ?5",
+                params![
+                    next_cycle_position,
+                    cycle_step + 1,
+                    input.preparation_id,
+                    cycle_position,
+                    cycle_step
+                ],
+            )
+            .map_err(|error| map_database_error("avançar ciclo após aceite", error))?;
+        if advanced != 1 {
+            return Err(WorkspaceError::InvalidInput(
+                "A próxima ação mudou; atualize o plano de hoje e tente novamente.".to_string(),
+            ));
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar ação do ciclo", error))?;
+        Ok(AcceptStudyCycleActionResult {
+            task,
+            next_cycle_position,
+            next_cycle_step: cycle_step + 1,
+        })
     }
 
     fn reschedule_study_task(
@@ -413,7 +536,7 @@ impl StudyStore for LocalWorkspaceStore {
     fn complete_study_review(
         &self,
         input: &CompleteStudyReviewInput,
-    ) -> Result<StudyReviewSummary, WorkspaceError> {
+    ) -> Result<CompleteStudyReviewResult, WorkspaceError> {
         let mut connection = self.active_database()?;
         let transaction = connection
             .transaction()
@@ -423,10 +546,13 @@ impl StudyStore for LocalWorkspaceStore {
             transaction
                 .commit()
                 .map_err(|error| map_database_error("confirmar revisão concluída", error))?;
-            return Ok(current);
+            return Ok(CompleteStudyReviewResult {
+                review: current,
+                xp_granted: 0,
+            });
         }
 
-        transaction
+        let changed = transaction
             .execute(
                 "UPDATE study_reviews
                  SET status = 'completed', completed_at = CURRENT_TIMESTAMP,
@@ -435,11 +561,30 @@ impl StudyStore for LocalWorkspaceStore {
                 params![input.review_id],
             )
             .map_err(|error| map_database_error("concluir revisão", error))?;
+        if changed == 0 {
+            let current = load_study_review(&transaction, &input.review_id)?;
+            transaction
+                .commit()
+                .map_err(|error| map_database_error("confirmar revisão já concluída", error))?;
+            if current.status == StudyReviewStatus::Completed {
+                return Ok(CompleteStudyReviewResult {
+                    review: current,
+                    xp_granted: 0,
+                });
+            }
+            return Err(WorkspaceError::Database(
+                "a revisão não pôde ser concluída".to_string(),
+            ));
+        }
         let completed = load_study_review(&transaction, &input.review_id)?;
+        let xp_granted = grant_review_xp(&transaction, &completed)?;
         transaction
             .commit()
             .map_err(|error| map_database_error("confirmar conclusão da revisão", error))?;
-        Ok(completed)
+        Ok(CompleteStudyReviewResult {
+            review: completed,
+            xp_granted,
+        })
     }
 
     fn study_progress(&self, as_of_date: &str) -> Result<StudyProgressSummary, WorkspaceError> {
@@ -503,6 +648,38 @@ fn grant_session_xp(
             ],
         )
         .map_err(|error| map_database_error("gravar XP da sessão", error))?;
+
+    Ok(xp_granted)
+}
+
+fn grant_review_xp(
+    transaction: &rusqlite::Transaction<'_>,
+    review: &StudyReviewSummary,
+) -> Result<i64, WorkspaceError> {
+    let granted_today: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(SUM(points), 0)
+             FROM xp_events
+             WHERE source_type = 'study_review'
+               AND date(created_at) = date('now')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| map_database_error("calcular XP das revisões do dia", error))?;
+    let xp_granted = calculate_review_xp(granted_today);
+
+    transaction
+        .execute(
+            "INSERT INTO xp_events (id, source_type, source_id, points, rules_version)
+             VALUES (?1, 'study_review', ?2, ?3, ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                review.id.as_str(),
+                xp_granted,
+                REVIEW_XP_RULES_VERSION,
+            ],
+        )
+        .map_err(|error| map_database_error("gravar XP da revisão", error))?;
 
     Ok(xp_granted)
 }
@@ -680,6 +857,40 @@ fn ensure_task_has_no_open_session(
     }
 
     Ok(())
+}
+
+fn load_cycle_suggestion(
+    connection: &rusqlite::Connection,
+) -> Result<Option<StudyCycleSuggestion>, WorkspaceError> {
+    connection
+        .query_row(
+            "SELECT planning.preparation_id, planning.cycle_position, planning.cycle_step,
+                    slots.subject_id, subjects.name, slots.planned_minutes
+             FROM study_planning_settings planning
+             JOIN preparations ON preparations.id = planning.preparation_id
+                AND preparations.archived_at IS NULL
+             JOIN study_cycle_slots slots
+                ON slots.preparation_id = planning.preparation_id
+               AND slots.position = planning.cycle_position
+              JOIN subjects ON subjects.id = slots.subject_id
+                 AND subjects.preparation_id = slots.preparation_id
+                 AND subjects.archived_at IS NULL
+             ORDER BY preparations.is_primary DESC, preparations.name COLLATE NOCASE
+             LIMIT 1",
+            [],
+            |row| {
+                Ok(StudyCycleSuggestion {
+                    preparation_id: row.get(0)?,
+                    cycle_position: row.get(1)?,
+                    cycle_step: row.get(2)?,
+                    subject_id: row.get(3)?,
+                    subject_name: row.get(4)?,
+                    planned_minutes: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| map_database_error("consultar próxima ação do ciclo", error))
 }
 
 fn load_daily_tasks(
@@ -1049,7 +1260,11 @@ mod tests {
     use super::*;
     use crate::application::study_plan_service::StudyPlanStore;
     use crate::application::workspace_service::WorkspaceStore;
-    use crate::domain::study_plan::{CreatePreparationInput, CreateSubjectInput};
+    use crate::domain::study_plan::{
+        default_study_availability, CreatePreparationInput, CreateSubjectInput,
+        SaveStudyPlanningInput, StudyCycleSlotInput, SubjectPriorityInput,
+        DEFAULT_REVIEW_RESERVE_PERCENT,
+    };
     use std::fs;
 
     #[test]
@@ -1260,10 +1475,25 @@ mod tests {
         assert_eq!(repeated_finish.xp_granted, 0);
         assert_eq!(rescheduled.id, review.id);
         assert_eq!(rescheduled.due_date, "2032-04-10");
-        assert_eq!(completed.status, StudyReviewStatus::Completed);
-        assert!(completed.completed_at.is_some());
-        assert_eq!(completed.id, repeated_completion.id);
+        assert_eq!(completed.review.status, StudyReviewStatus::Completed);
+        assert!(completed.review.completed_at.is_some());
+        assert_eq!(completed.review.id, repeated_completion.review.id);
+        assert_eq!(completed.xp_granted, 5);
+        assert_eq!(repeated_completion.xp_granted, 0);
         assert!(after_completion.reviews.is_empty());
+        let connection = store
+            .active_database()
+            .expect("o banco ativo deve poder ser consultado");
+        let (review_event_count, review_points): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(points), 0)
+                 FROM xp_events WHERE source_type = 'study_review'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("o XP da revisão deve ser persistido uma vez");
+        assert_eq!(review_event_count, 1);
+        assert_eq!(review_points, 5);
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);
@@ -1419,6 +1649,96 @@ mod tests {
         assert!(old_plan.tasks.is_empty());
         assert_eq!(new_plan.tasks.len(), 1);
         assert_eq!(new_plan.tasks[0].title, "Reagendar revisão");
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn accepts_cycle_action_once_and_rejects_a_stale_repeat() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-cycle-action-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-cycle-action-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Ação do ciclo")
+            .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Direito Constitucional".to_string(),
+                parent_id: None,
+            })
+            .expect("o assunto deve ser criado");
+        store
+            .save_study_planning(&SaveStudyPlanningInput {
+                preparation_id: preparation.id.clone(),
+                availability: default_study_availability(),
+                subject_priorities: vec![SubjectPriorityInput {
+                    subject_id: subject.id.clone(),
+                    priority: 1,
+                }],
+                review_reserve_percent: DEFAULT_REVIEW_RESERVE_PERCENT,
+                cycle_slots: Some(vec![StudyCycleSlotInput {
+                    subject_id: subject.id.clone(),
+                    planned_minutes: 30,
+                }]),
+            })
+            .expect("o ciclo deve ser salvo");
+
+        let before = store
+            .daily_plan("2032-06-01")
+            .expect("o plano antes do aceite deve ser lido");
+        let suggestion = before
+            .cycle_suggestion
+            .expect("o ciclo deve oferecer uma próxima ação");
+        let accepted = store
+            .accept_study_cycle_action(&AcceptStudyCycleActionInput {
+                preparation_id: suggestion.preparation_id.clone(),
+                cycle_position: suggestion.cycle_position,
+                cycle_step: suggestion.cycle_step,
+                scheduled_for: "2032-06-01".to_string(),
+            })
+            .expect("a ação deve virar uma tarefa");
+        let repeated = store.accept_study_cycle_action(&AcceptStudyCycleActionInput {
+            preparation_id: suggestion.preparation_id,
+            cycle_position: suggestion.cycle_position,
+            cycle_step: suggestion.cycle_step,
+            scheduled_for: "2032-06-01".to_string(),
+        });
+        let after = store
+            .daily_plan("2032-06-01")
+            .expect("o plano após o aceite deve ser lido");
+
+        assert_eq!(
+            accepted.task.subject_id.as_deref(),
+            Some(subject.id.as_str())
+        );
+        assert_eq!(accepted.next_cycle_position, 0);
+        assert_eq!(accepted.next_cycle_step, 1);
+        assert!(repeated.is_err());
+        assert_eq!(after.tasks.len(), 1);
+        assert_eq!(
+            after
+                .cycle_suggestion
+                .as_ref()
+                .map(|item| item.cycle_position),
+            Some(0)
+        );
+        assert_eq!(
+            after.cycle_suggestion.as_ref().map(|item| item.cycle_step),
+            Some(1)
+        );
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

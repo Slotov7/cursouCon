@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use uuid::Uuid;
+
+pub const STUDY_CYCLE_BLOCK_MINUTES: i64 = 30;
+pub const DEFAULT_REVIEW_RESERVE_PERCENT: i64 = 20;
+pub const MAX_CYCLE_SLOTS: usize = 500;
 
 #[derive(Debug, Clone)]
 pub struct CreatePreparationInput {
@@ -69,7 +74,76 @@ pub struct SubjectSummary {
     pub parent_id: Option<String>,
     pub name: String,
     pub position: i64,
+    pub priority: i64,
     pub study_status: SubjectStudyStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyDayAvailability {
+    pub weekday: u8,
+    pub available_minutes: i64,
+    pub is_rest: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubjectPriorityInput {
+    pub subject_id: String,
+    pub priority: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubjectPrioritySummary {
+    pub subject_id: String,
+    pub priority: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StudyCycleSlotInput {
+    pub subject_id: String,
+    pub planned_minutes: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StudyCycleSubject {
+    pub subject_id: String,
+    pub priority: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SaveStudyPlanningInput {
+    pub preparation_id: String,
+    pub availability: Vec<StudyDayAvailability>,
+    pub subject_priorities: Vec<SubjectPriorityInput>,
+    pub review_reserve_percent: i64,
+    pub cycle_slots: Option<Vec<StudyCycleSlotInput>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyCycleSlotSummary {
+    pub position: i64,
+    pub subject_id: String,
+    pub subject_name: String,
+    pub priority: i64,
+    pub planned_minutes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyPlanningSummary {
+    pub preparation_id: String,
+    pub availability: Vec<StudyDayAvailability>,
+    pub subject_priorities: Vec<SubjectPrioritySummary>,
+    pub weekly_available_minutes: i64,
+    pub weekly_study_minutes: i64,
+    pub review_reserve_percent: i64,
+    pub cycle_position: i64,
+    pub cycle_step: i64,
+    pub cycle_slots: Vec<StudyCycleSlotSummary>,
+    pub warning: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +170,229 @@ pub fn normalize_subject_study_status_input(
         subject_id: normalize_id(&input.subject_id, "O assunto")?,
         status: input.status,
     })
+}
+
+pub fn normalize_preparation_id(value: &str) -> Result<String, String> {
+    normalize_id(value, "A preparação")
+}
+
+pub fn normalize_study_planning_input(
+    input: SaveStudyPlanningInput,
+) -> Result<SaveStudyPlanningInput, String> {
+    let mut availability = input.availability;
+    if availability.len() != 7 {
+        return Err("A disponibilidade deve informar os sete dias da semana.".to_string());
+    }
+
+    let mut weekdays = HashSet::new();
+    for day in &availability {
+        if day.weekday > 6 || !weekdays.insert(day.weekday) {
+            return Err("A disponibilidade possui dias repetidos ou inválidos.".to_string());
+        }
+        if !(0..=1_440).contains(&day.available_minutes) {
+            return Err("Cada dia deve ter entre 0 e 1.440 minutos disponíveis.".to_string());
+        }
+        if day.is_rest && day.available_minutes != 0 {
+            return Err("Um dia de descanso não pode ter minutos disponíveis.".to_string());
+        }
+    }
+    availability.sort_by_key(|day| day.weekday);
+
+    let mut subject_ids = HashSet::new();
+    let subject_priorities = input
+        .subject_priorities
+        .into_iter()
+        .map(|subject| {
+            if !(1..=5).contains(&subject.priority) {
+                return Err("A prioridade deve estar entre 1 e 5.".to_string());
+            }
+            let subject_id = normalize_id(&subject.subject_id, "O assunto")?;
+            if !subject_ids.insert(subject_id.clone()) {
+                return Err("A prioridade de um assunto foi informada mais de uma vez.".to_string());
+            }
+            Ok(SubjectPriorityInput {
+                subject_id,
+                priority: subject.priority,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    if !(0..=80).contains(&input.review_reserve_percent) {
+        return Err("A reserva para revisões deve estar entre 0% e 80%.".to_string());
+    }
+    let cycle_slots = input
+        .cycle_slots
+        .map(|slots| {
+            if slots.is_empty() {
+                return Err("O ciclo editado precisa ter ao menos um bloco.".to_string());
+            }
+            if slots.len() > MAX_CYCLE_SLOTS {
+                return Err(format!(
+                    "O ciclo pode ter no máximo {MAX_CYCLE_SLOTS} blocos."
+                ));
+            }
+            slots
+                .into_iter()
+                .map(|slot| {
+                    if !(5..=1_440).contains(&slot.planned_minutes) {
+                        return Err("Cada bloco deve ter entre 5 e 1.440 minutos.".to_string());
+                    }
+                    Ok(StudyCycleSlotInput {
+                        subject_id: normalize_id(&slot.subject_id, "O assunto do ciclo")?,
+                        planned_minutes: slot.planned_minutes,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
+
+    Ok(SaveStudyPlanningInput {
+        preparation_id: normalize_preparation_id(&input.preparation_id)?,
+        availability,
+        subject_priorities,
+        review_reserve_percent: input.review_reserve_percent,
+        cycle_slots,
+    })
+}
+
+pub fn default_study_availability() -> Vec<StudyDayAvailability> {
+    (0_u8..=6)
+        .map(|weekday| StudyDayAvailability {
+            weekday,
+            available_minutes: if (1..=5).contains(&weekday) { 60 } else { 0 },
+            is_rest: weekday == 0 || weekday == 6,
+        })
+        .collect()
+}
+
+pub fn generate_cycle_slots(
+    subjects: &[StudyCycleSubject],
+    weekly_study_minutes: i64,
+) -> Result<Vec<StudyCycleSlotInput>, String> {
+    if weekly_study_minutes < 0 {
+        return Err("O tempo semanal para estudo não pode ser negativo.".to_string());
+    }
+    if subjects
+        .iter()
+        .any(|subject| !(1..=5).contains(&subject.priority))
+    {
+        return Err("A prioridade de um assunto do ciclo é inválida.".to_string());
+    }
+
+    let block_count =
+        (weekly_study_minutes / STUDY_CYCLE_BLOCK_MINUTES).min(MAX_CYCLE_SLOTS as i64);
+    if block_count == 0 || subjects.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut allocations = vec![0_i64; subjects.len()];
+    let initial_blocks = block_count.min(subjects.len() as i64) as usize;
+    for allocation in allocations.iter_mut().take(initial_blocks) {
+        *allocation = 1;
+    }
+
+    let mut remaining_blocks = block_count - initial_blocks as i64;
+    while remaining_blocks > 0 {
+        let selected_index = (1..subjects.len()).fold(0, |selected, candidate| {
+            let selected_weight = 6 - subjects[selected].priority;
+            let candidate_weight = 6 - subjects[candidate].priority;
+            let candidate_is_better =
+                allocations[candidate] * selected_weight < allocations[selected] * candidate_weight;
+            if candidate_is_better {
+                candidate
+            } else {
+                selected
+            }
+        });
+        allocations[selected_index] += 1;
+        remaining_blocks -= 1;
+    }
+
+    let mut slots = Vec::with_capacity(block_count as usize);
+    loop {
+        let mut inserted = false;
+        for (index, subject) in subjects.iter().enumerate() {
+            if allocations[index] == 0 {
+                continue;
+            }
+            slots.push(StudyCycleSlotInput {
+                subject_id: subject.subject_id.clone(),
+                planned_minutes: STUDY_CYCLE_BLOCK_MINUTES,
+            });
+            allocations[index] -= 1;
+            inserted = true;
+        }
+        if !inserted {
+            break;
+        }
+    }
+
+    Ok(slots)
+}
+
+pub fn validate_cycle_slots_capacity(
+    slots: &[StudyCycleSlotInput],
+    weekly_study_minutes: i64,
+) -> Result<i64, String> {
+    if slots.is_empty() {
+        return Err("O ciclo editado precisa ter ao menos um bloco.".to_string());
+    }
+    if slots.len() > MAX_CYCLE_SLOTS {
+        return Err(format!(
+            "O ciclo pode ter no máximo {MAX_CYCLE_SLOTS} blocos."
+        ));
+    }
+    if weekly_study_minutes < 0 {
+        return Err("O tempo semanal para estudo não pode ser negativo.".to_string());
+    }
+
+    let planned_minutes = slots.iter().try_fold(0_i64, |total, slot| {
+        if !(5..=1_440).contains(&slot.planned_minutes) {
+            return Err("Cada bloco deve ter entre 5 e 1.440 minutos.".to_string());
+        }
+        total
+            .checked_add(slot.planned_minutes)
+            .ok_or_else(|| "O tempo total do ciclo é grande demais.".to_string())
+    })?;
+
+    if planned_minutes > weekly_study_minutes {
+        return Err(format!(
+            "O ciclo editado usa {planned_minutes} minutos, acima dos {weekly_study_minutes} minutos disponíveis para estudo."
+        ));
+    }
+
+    Ok(planned_minutes)
+}
+
+pub fn study_cycle_warning(
+    subject_count: i64,
+    cycle_subject_count: i64,
+    weekly_minutes: i64,
+    slot_count: i64,
+) -> Option<String> {
+    if subject_count == 0 {
+        return Some("Cadastre ao menos uma disciplina para montar o ciclo.".to_string());
+    }
+    if weekly_minutes == 0 {
+        return Some("Informe minutos disponíveis em pelo menos um dia.".to_string());
+    }
+    if slot_count == 0 {
+        return Some(format!(
+            "A disponibilidade precisa alcançar um bloco de {STUDY_CYCLE_BLOCK_MINUTES} minutos."
+        ));
+    }
+    if cycle_subject_count < subject_count {
+        return Some(
+            "Há disciplinas novas ou alteradas; salve o ciclo para recalculá-lo.".to_string(),
+        );
+    }
+    if slot_count < subject_count {
+        return Some(
+            "A disponibilidade atual não comporta um bloco para todas as disciplinas; priorize as mais importantes."
+                .to_string(),
+        );
+    }
+    None
 }
 
 pub fn calculate_subject_coverage(
@@ -282,6 +579,119 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_weekly_planning_and_rejects_conflicting_rest_day() {
+        let input = SaveStudyPlanningInput {
+            preparation_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            availability: (0_u8..=6)
+                .rev()
+                .map(|weekday| StudyDayAvailability {
+                    weekday,
+                    available_minutes: if weekday == 0 { 0 } else { 60 },
+                    is_rest: weekday == 0,
+                })
+                .collect(),
+            subject_priorities: vec![SubjectPriorityInput {
+                subject_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                priority: 1,
+            }],
+            review_reserve_percent: DEFAULT_REVIEW_RESERVE_PERCENT,
+            cycle_slots: None,
+        };
+
+        let normalized =
+            normalize_study_planning_input(input).expect("o planejamento deve ser válido");
+        assert_eq!(normalized.availability[0].weekday, 0);
+        assert_eq!(normalized.availability[6].weekday, 6);
+
+        let invalid = SaveStudyPlanningInput {
+            preparation_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            availability: default_study_availability()
+                .into_iter()
+                .map(|day| StudyDayAvailability {
+                    available_minutes: if day.weekday == 0 {
+                        30
+                    } else {
+                        day.available_minutes
+                    },
+                    ..day
+                })
+                .collect(),
+            subject_priorities: Vec::new(),
+            review_reserve_percent: DEFAULT_REVIEW_RESERVE_PERCENT,
+            cycle_slots: None,
+        };
+        assert!(normalize_study_planning_input(invalid).is_err());
+    }
+
+    #[test]
+    fn generates_deterministic_cycle_blocks_by_priority() {
+        let slots = generate_cycle_slots(
+            &[
+                StudyCycleSubject {
+                    subject_id: "high".to_string(),
+                    priority: 1,
+                },
+                StudyCycleSubject {
+                    subject_id: "low".to_string(),
+                    priority: 5,
+                },
+            ],
+            240,
+        )
+        .expect("a distribuição deve ser válida");
+
+        assert_eq!(slots.len(), 8);
+        assert_eq!(slots[0].subject_id, "high");
+        assert_eq!(
+            slots
+                .iter()
+                .filter(|slot| slot.subject_id == "high")
+                .count(),
+            6
+        );
+        assert_eq!(
+            slots.iter().filter(|slot| slot.subject_id == "low").count(),
+            2
+        );
+        assert!(slots.iter().all(|slot| slot.planned_minutes == 30));
+    }
+
+    #[test]
+    fn validates_manual_cycle_capacity_and_block_limits() {
+        let slots = vec![
+            StudyCycleSlotInput {
+                subject_id: "subject-1".to_string(),
+                planned_minutes: 45,
+            },
+            StudyCycleSlotInput {
+                subject_id: "subject-2".to_string(),
+                planned_minutes: 30,
+            },
+        ];
+
+        assert_eq!(validate_cycle_slots_capacity(&slots, 90), Ok(75));
+        assert!(validate_cycle_slots_capacity(&slots, 60).is_err());
+        assert!(validate_cycle_slots_capacity(&[], 90).is_err());
+    }
+
+    #[test]
+    fn explains_cycle_capacity_warnings_in_priority_order() {
+        assert_eq!(
+            study_cycle_warning(0, 0, 0, 0).as_deref(),
+            Some("Cadastre ao menos uma disciplina para montar o ciclo.")
+        );
+        assert_eq!(
+            study_cycle_warning(2, 0, 120, 4).as_deref(),
+            Some("Há disciplinas novas ou alteradas; salve o ciclo para recalculá-lo.")
+        );
+        assert_eq!(
+            study_cycle_warning(3, 3, 60, 2).as_deref(),
+            Some("A disponibilidade atual não comporta um bloco para todas as disciplinas; priorize as mais importantes.")
+        );
+        assert_eq!(study_cycle_warning(2, 2, 120, 2), None);
+    }
+
+    #[test]
     fn calculates_coverage_from_all_registered_subjects_and_explicit_study_states() {
         let preparations = vec![PreparationSummary {
             id: "preparation-1".to_string(),
@@ -298,6 +708,7 @@ mod tests {
                 parent_id: None,
                 name: "Direito Administrativo".to_string(),
                 position: 0,
+                priority: 3,
                 study_status: SubjectStudyStatus::NotStarted,
             },
             SubjectSummary {
@@ -306,6 +717,7 @@ mod tests {
                 parent_id: Some("subject-1".to_string()),
                 name: "Atos administrativos".to_string(),
                 position: 0,
+                priority: 3,
                 study_status: SubjectStudyStatus::InProgress,
             },
             SubjectSummary {
@@ -314,6 +726,7 @@ mod tests {
                 parent_id: Some("subject-1".to_string()),
                 name: "Poderes administrativos".to_string(),
                 position: 1,
+                priority: 3,
                 study_status: SubjectStudyStatus::TheoryCompleted,
             },
         ];

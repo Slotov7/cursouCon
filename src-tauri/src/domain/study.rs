@@ -9,6 +9,9 @@ pub const QUESTION_XP_PER_DAY: i64 = 2;
 pub const QUESTION_XP_DAILY_CAP: i64 = 60;
 pub const XP_RULES_VERSION: i64 = 1;
 pub const QUESTION_XP_RULES_VERSION: i64 = 1;
+pub const REVIEW_XP_PER_OCCURRENCE: i64 = 5;
+pub const REVIEW_XP_DAILY_CAP: i64 = 30;
+pub const REVIEW_XP_RULES_VERSION: i64 = 1;
 
 #[derive(Debug, Clone)]
 pub struct CreateStudyTaskInput {
@@ -102,6 +105,17 @@ pub struct StudyTaskSummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StudyCycleSuggestion {
+    pub preparation_id: String,
+    pub cycle_position: i64,
+    pub cycle_step: i64,
+    pub subject_id: String,
+    pub subject_name: String,
+    pub planned_minutes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StudySessionSummary {
     pub id: String,
     pub task_id: String,
@@ -119,6 +133,23 @@ pub struct DailyPlan {
     pub tasks: Vec<StudyTaskSummary>,
     pub active_session: Option<StudySessionSummary>,
     pub reviews: Vec<StudyReviewSummary>,
+    pub cycle_suggestion: Option<StudyCycleSuggestion>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcceptStudyCycleActionInput {
+    pub preparation_id: String,
+    pub cycle_position: i64,
+    pub cycle_step: i64,
+    pub scheduled_for: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptStudyCycleActionResult {
+    pub task: StudyTaskSummary,
+    pub next_cycle_position: i64,
+    pub next_cycle_step: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,6 +158,13 @@ pub struct FinishStudySessionResult {
     pub session: StudySessionSummary,
     pub xp_granted: i64,
     pub review: Option<StudyReviewSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteStudyReviewResult {
+    pub review: StudyReviewSummary,
+    pub xp_granted: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -240,6 +278,10 @@ pub fn calculate_question_xp(granted_today: i64) -> i64 {
     (QUESTION_XP_DAILY_CAP - granted_today).clamp(0, QUESTION_XP_PER_DAY)
 }
 
+pub fn calculate_review_xp(granted_today: i64) -> i64 {
+    (REVIEW_XP_DAILY_CAP - granted_today).clamp(0, REVIEW_XP_PER_OCCURRENCE)
+}
+
 pub fn normalize_study_task_input(
     input: CreateStudyTaskInput,
 ) -> Result<CreateStudyTaskInput, String> {
@@ -265,6 +307,21 @@ pub fn normalize_study_task_input(
         objective,
         planned_minutes: input.planned_minutes,
         scheduled_for,
+    })
+}
+
+pub fn normalize_accept_study_cycle_action_input(
+    input: AcceptStudyCycleActionInput,
+) -> Result<AcceptStudyCycleActionInput, String> {
+    if input.cycle_position < 0 || input.cycle_step < 0 {
+        return Err("A posição e o passo do ciclo devem ser não negativos.".to_string());
+    }
+
+    Ok(AcceptStudyCycleActionInput {
+        preparation_id: normalize_id(&input.preparation_id, "A preparação")?,
+        cycle_position: input.cycle_position,
+        cycle_step: input.cycle_step,
+        scheduled_for: normalize_date(&input.scheduled_for)?,
     })
 }
 
@@ -438,6 +495,20 @@ mod question_xp_tests {
     }
 }
 
+#[cfg(test)]
+mod review_xp_tests {
+    use super::{calculate_review_xp, REVIEW_XP_DAILY_CAP, REVIEW_XP_PER_OCCURRENCE};
+
+    #[test]
+    fn grants_five_xp_until_the_review_daily_cap() {
+        assert_eq!(calculate_review_xp(0), REVIEW_XP_PER_OCCURRENCE);
+        assert_eq!(calculate_review_xp(25), REVIEW_XP_PER_OCCURRENCE);
+        assert_eq!(calculate_review_xp(28), 2);
+        assert_eq!(calculate_review_xp(REVIEW_XP_DAILY_CAP), 0);
+        assert_eq!(calculate_review_xp(40), 0);
+    }
+}
+
 fn normalize_id(value: &str, label: &str) -> Result<String, String> {
     let parsed = Uuid::parse_str(value.trim()).map_err(|_| format!("{label} não é válido."))?;
     Ok(parsed.to_string())
@@ -475,6 +546,27 @@ mod tests {
             review_on: Some("2032-03-01".to_string()),
         })
         .is_err());
+    }
+
+    #[test]
+    fn normalizes_cycle_acceptance_and_rejects_negative_position() {
+        let input = AcceptStudyCycleActionInput {
+            preparation_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            cycle_position: 2,
+            cycle_step: 7,
+            scheduled_for: "2032-04-10".to_string(),
+        };
+        let normalized = normalize_accept_study_cycle_action_input(input)
+            .expect("o aceite do ciclo deve ser válido");
+        assert_eq!(normalized.cycle_position, 2);
+
+        let invalid = AcceptStudyCycleActionInput {
+            preparation_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            cycle_position: -1,
+            cycle_step: 0,
+            scheduled_for: "2032-04-10".to_string(),
+        };
+        assert!(normalize_accept_study_cycle_action_input(invalid).is_err());
     }
 
     #[test]

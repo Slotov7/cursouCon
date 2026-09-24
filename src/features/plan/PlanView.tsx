@@ -1,12 +1,18 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   createPreparation,
   createStudyTask,
   createSubject,
+  getStudyPlanning,
   getDesktopErrorMessage,
   setSubjectStudyStatus,
 } from "../../shared/desktop/commands";
-import type { StudyPlan, SubjectStudyStatus, SubjectSummary } from "../../shared/desktop/contracts";
+import type {
+  StudyPlan,
+  StudyPlanningSummary,
+  SubjectStudyStatus,
+} from "../../shared/desktop/contracts";
+import { StudyCyclePanel } from "./StudyCyclePanel";
 import {
   buttonOutlineLightClass,
   buttonPrimaryClass,
@@ -60,6 +66,8 @@ export function PlanView({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [subjectStatusError, setSubjectStatusError] = useState<string | null>(null);
   const [updatingSubjectId, setUpdatingSubjectId] = useState<string | null>(null);
+  const [studyPlanning, setStudyPlanning] = useState<StudyPlanningSummary | null>(null);
+  const [studyPlanningError, setStudyPlanningError] = useState<string | null>(null);
 
   const currentPlan: StudyPlan = plan ?? { preparations: [], subjects: [], subjectCoverage: [] };
   const selectedPreparation =
@@ -81,6 +89,29 @@ export function PlanView({
     : 0;
   const examDateLabel = formatExamDate(selectedPreparation?.examDate ?? null);
   const examCountdownLabel = formatExamCountdown(selectedPreparation?.examDate ?? null);
+
+  useEffect(() => {
+    const preparationId = selectedPreparation?.id;
+    if (!preparationId) {
+      setStudyPlanning(null);
+      setStudyPlanningError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setStudyPlanningError(null);
+    void getStudyPlanning({ preparationId })
+      .then((planning) => {
+        if (!cancelled) setStudyPlanning(planning);
+      })
+      .catch((planningError: unknown) => {
+        if (!cancelled) setStudyPlanningError(getDesktopErrorMessage(planningError));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPreparation?.id, currentPlan.subjects.length]);
 
   const handleSubjectStudyStatusChange = async (
     subjectId: string,
@@ -329,6 +360,20 @@ export function PlanView({
           <p className="mt-2 text-[11px] text-muted">Todas ativas no ciclo local</p>
         </div>
       </div>
+
+      {selectedPreparation && (
+        <StudyCyclePanel
+          preparationId={selectedPreparation.id}
+          subjects={subjects}
+          planning={studyPlanning}
+          isLoading={isLoading}
+          error={studyPlanningError}
+          onChanged={(nextPlanning) => {
+            setStudyPlanning(nextPlanning);
+            onPlanChanged();
+          }}
+        />
+      )}
 
       {/* 3. Modal / Drawer Forms for adding content */}
       {activeModal !== "none" && (

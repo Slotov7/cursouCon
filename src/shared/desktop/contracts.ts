@@ -67,6 +67,7 @@ export type SubjectSummary = {
   parentId: string | null;
   name: string;
   position: number;
+  priority: number;
   studyStatus: SubjectStudyStatus;
 };
 
@@ -83,6 +84,54 @@ export type StudyPlan = {
   preparations: PreparationSummary[];
   subjects: SubjectSummary[];
   subjectCoverage: SubjectCoverageSummary[];
+};
+
+export type StudyDayAvailability = {
+  weekday: number;
+  availableMinutes: number;
+  isRest: boolean;
+};
+
+export type StudyCycleSlotSummary = {
+  position: number;
+  subjectId: string;
+  subjectName: string;
+  priority: number;
+  plannedMinutes: number;
+};
+
+export type StudyPlanningSummary = {
+  preparationId: string;
+  availability: StudyDayAvailability[];
+  subjectPriorities: Array<{
+    subjectId: string;
+    priority: number;
+  }>;
+  weeklyAvailableMinutes: number;
+  weeklyStudyMinutes: number;
+  reviewReservePercent: number;
+  cyclePosition: number;
+  cycleStep: number;
+  cycleSlots: StudyCycleSlotSummary[];
+  warning: string | null;
+  updatedAt: string | null;
+};
+
+export type StudyPlanningPreparationRequest = {
+  preparationId: string;
+};
+
+export type SaveStudyPlanningRequest = StudyPlanningPreparationRequest & {
+  availability: StudyDayAvailability[];
+  subjectPriorities: Array<{
+    subjectId: string;
+    priority: number;
+  }>;
+  reviewReservePercent: number;
+  cycleSlots?: Array<{
+    subjectId: string;
+    plannedMinutes: number;
+  }>;
 };
 
 export type CreatePreparationRequest = {
@@ -179,17 +228,45 @@ export type StudyReviewSummary = {
   completedAt: string | null;
 };
 
+export type StudyCycleSuggestion = {
+  preparationId: string;
+  cyclePosition: number;
+  cycleStep: number;
+  subjectId: string;
+  subjectName: string;
+  plannedMinutes: number;
+};
+
 export type DailyPlan = {
   date: string;
   tasks: StudyTaskSummary[];
   activeSession: StudySessionSummary | null;
   reviews: StudyReviewSummary[];
+  cycleSuggestion: StudyCycleSuggestion | null;
+};
+
+export type AcceptStudyCycleActionRequest = {
+  preparationId: string;
+  cyclePosition: number;
+  cycleStep: number;
+  scheduledFor: string;
+};
+
+export type AcceptStudyCycleActionResult = {
+  task: StudyTaskSummary;
+  nextCyclePosition: number;
+  nextCycleStep: number;
 };
 
 export type FinishStudySessionResult = {
   session: StudySessionSummary;
   xpGranted: number;
   review: StudyReviewSummary | null;
+};
+
+export type CompleteStudyReviewResult = {
+  review: StudyReviewSummary;
+  xpGranted: number;
 };
 
 export type StudyHistoryEntry = {
@@ -615,7 +692,12 @@ export function parseSubject(value: unknown): SubjectSummary {
     typeof value.id !== "string" ||
     typeof value.preparationId !== "string" ||
     typeof value.name !== "string" ||
-    typeof value.position !== "number"
+    typeof value.position !== "number" ||
+    !Number.isInteger(value.position) ||
+    typeof value.priority !== "number" ||
+    !Number.isInteger(value.priority) ||
+    value.priority < 1 ||
+    value.priority > 5
   ) {
     throw new Error("O núcleo local devolveu um assunto inválido.");
   }
@@ -626,6 +708,7 @@ export function parseSubject(value: unknown): SubjectSummary {
     parentId: parseOptionalString(value.parentId, "o assunto pai"),
     name: value.name,
     position: value.position,
+    priority: value.priority,
     studyStatus: parseSubjectStudyStatus(value.studyStatus),
   };
 }
@@ -670,6 +753,116 @@ export function parseStudyPlan(value: unknown): StudyPlan {
     preparations: value.preparations.map(parsePreparation),
     subjects: value.subjects.map(parseSubject),
     subjectCoverage: value.subjectCoverage.map(parseSubjectCoverage),
+  };
+}
+
+function parseStudyDayAvailability(value: unknown): StudyDayAvailability {
+  if (
+    !isRecord(value) ||
+    typeof value.weekday !== "number" ||
+    !Number.isInteger(value.weekday) ||
+    value.weekday < 0 ||
+    value.weekday > 6 ||
+    typeof value.availableMinutes !== "number" ||
+    !Number.isInteger(value.availableMinutes) ||
+    value.availableMinutes < 0 ||
+    value.availableMinutes > 1440 ||
+    typeof value.isRest !== "boolean"
+  ) {
+    throw new Error("O núcleo local devolveu uma disponibilidade inválida.");
+  }
+
+  return {
+    weekday: value.weekday,
+    availableMinutes: value.availableMinutes,
+    isRest: value.isRest,
+  };
+}
+
+function parseStudyCycleSlot(value: unknown): StudyCycleSlotSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.position !== "number" ||
+    !Number.isInteger(value.position) ||
+    value.position < 0 ||
+    typeof value.subjectId !== "string" ||
+    typeof value.subjectName !== "string" ||
+    typeof value.priority !== "number" ||
+    !Number.isInteger(value.priority) ||
+    value.priority < 1 ||
+    value.priority > 5 ||
+    typeof value.plannedMinutes !== "number" ||
+    !Number.isInteger(value.plannedMinutes) ||
+    value.plannedMinutes <= 0
+  ) {
+    throw new Error("O núcleo local devolveu uma posição de ciclo inválida.");
+  }
+
+  return {
+    position: value.position,
+    subjectId: value.subjectId,
+    subjectName: value.subjectName,
+    priority: value.priority,
+    plannedMinutes: value.plannedMinutes,
+  };
+}
+
+function parseStudySubjectPriority(value: unknown): { subjectId: string; priority: number } {
+  if (
+    !isRecord(value) ||
+    typeof value.subjectId !== "string" ||
+    typeof value.priority !== "number" ||
+    !Number.isInteger(value.priority) ||
+    value.priority < 1 ||
+    value.priority > 5
+  ) {
+    throw new Error("O núcleo local devolveu uma prioridade inválida.");
+  }
+
+  return { subjectId: value.subjectId, priority: value.priority };
+}
+
+export function parseStudyPlanning(value: unknown): StudyPlanningSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.preparationId !== "string" ||
+    !Array.isArray(value.availability) ||
+    value.availability.length !== 7 ||
+    !Array.isArray(value.subjectPriorities) ||
+    typeof value.weeklyAvailableMinutes !== "number" ||
+    !Number.isInteger(value.weeklyAvailableMinutes) ||
+    value.weeklyAvailableMinutes < 0 ||
+    typeof value.weeklyStudyMinutes !== "number" ||
+    !Number.isInteger(value.weeklyStudyMinutes) ||
+    value.weeklyStudyMinutes < 0 ||
+    value.weeklyStudyMinutes > value.weeklyAvailableMinutes ||
+    typeof value.reviewReservePercent !== "number" ||
+    !Number.isInteger(value.reviewReservePercent) ||
+    value.reviewReservePercent < 0 ||
+    value.reviewReservePercent > 80 ||
+    typeof value.cyclePosition !== "number" ||
+    !Number.isInteger(value.cyclePosition) ||
+    value.cyclePosition < 0 ||
+    typeof value.cycleStep !== "number" ||
+    !Number.isInteger(value.cycleStep) ||
+    value.cycleStep < 0 ||
+    !Array.isArray(value.cycleSlots)
+  ) {
+    throw new Error("O núcleo local devolveu um planejamento inválido.");
+  }
+
+  return {
+    preparationId: value.preparationId,
+    availability: value.availability.map(parseStudyDayAvailability),
+    subjectPriorities: value.subjectPriorities.map(parseStudySubjectPriority),
+    weeklyAvailableMinutes: value.weeklyAvailableMinutes,
+    weeklyStudyMinutes: value.weeklyStudyMinutes,
+    reviewReservePercent: value.reviewReservePercent,
+    cyclePosition: value.cyclePosition,
+    cycleStep: value.cycleStep,
+    cycleSlots: value.cycleSlots.map(parseStudyCycleSlot),
+    warning: parseOptionalString(value.warning, "o aviso do planejamento"),
+    updatedAt: parseOptionalString(value.updatedAt, "a data de atualização do planejamento"),
   };
 }
 
@@ -1212,6 +1405,35 @@ export function parseStudyReview(value: unknown): StudyReviewSummary {
   };
 }
 
+function parseStudyCycleSuggestion(value: unknown): StudyCycleSuggestion {
+  if (
+    !isRecord(value) ||
+    typeof value.preparationId !== "string" ||
+    typeof value.cyclePosition !== "number" ||
+    !Number.isInteger(value.cyclePosition) ||
+    value.cyclePosition < 0 ||
+    typeof value.cycleStep !== "number" ||
+    !Number.isInteger(value.cycleStep) ||
+    value.cycleStep < 0 ||
+    typeof value.subjectId !== "string" ||
+    typeof value.subjectName !== "string" ||
+    typeof value.plannedMinutes !== "number" ||
+    !Number.isInteger(value.plannedMinutes) ||
+    value.plannedMinutes <= 0
+  ) {
+    throw new Error("O núcleo local devolveu uma sugestão de ciclo inválida.");
+  }
+
+  return {
+    preparationId: value.preparationId,
+    cyclePosition: value.cyclePosition,
+    cycleStep: value.cycleStep,
+    subjectId: value.subjectId,
+    subjectName: value.subjectName,
+    plannedMinutes: value.plannedMinutes,
+  };
+}
+
 export function parseDailyPlan(value: unknown): DailyPlan {
   if (
     !isRecord(value) ||
@@ -1227,6 +1449,30 @@ export function parseDailyPlan(value: unknown): DailyPlan {
     tasks: value.tasks.map(parseStudyTask),
     activeSession: value.activeSession === null ? null : parseStudySession(value.activeSession),
     reviews: value.reviews.map(parseStudyReview),
+    cycleSuggestion:
+      value.cycleSuggestion === null ? null : parseStudyCycleSuggestion(value.cycleSuggestion),
+  };
+}
+
+export function parseAcceptStudyCycleActionResult(
+  value: unknown,
+): AcceptStudyCycleActionResult {
+  if (
+    !isRecord(value) ||
+    typeof value.nextCyclePosition !== "number" ||
+    !Number.isInteger(value.nextCyclePosition) ||
+    value.nextCyclePosition < 0 ||
+    typeof value.nextCycleStep !== "number" ||
+    !Number.isInteger(value.nextCycleStep) ||
+    value.nextCycleStep < 0
+  ) {
+    throw new Error("O núcleo local devolveu um resultado de ciclo inválido.");
+  }
+
+  return {
+    task: parseStudyTask(value.task),
+    nextCyclePosition: value.nextCyclePosition,
+    nextCycleStep: value.nextCycleStep,
   };
 }
 
@@ -1239,6 +1485,22 @@ export function parseFinishStudySessionResult(value: unknown): FinishStudySessio
     session: parseStudySession(value.session),
     xpGranted: value.xpGranted,
     review: value.review === null ? null : parseStudyReview(value.review),
+  };
+}
+
+export function parseCompleteStudyReviewResult(value: unknown): CompleteStudyReviewResult {
+  if (
+    !isRecord(value) ||
+    typeof value.xpGranted !== "number" ||
+    !Number.isInteger(value.xpGranted) ||
+    value.xpGranted < 0
+  ) {
+    throw new Error("O núcleo local devolveu um resultado de revisão inválido.");
+  }
+
+  return {
+    review: parseStudyReview(value.review),
+    xpGranted: value.xpGranted,
   };
 }
 

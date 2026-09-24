@@ -20,8 +20,12 @@ export function ReviewQueue({ reviews, onDataChanged }: ReviewQueueProps) {
     setError(null);
     setMessage(null);
     try {
-      await completeStudyReview({ reviewId: review.id });
-      setMessage(`Revisão de ${review.subjectName} concluída.`);
+      const result = await completeStudyReview({ reviewId: review.id });
+      setMessage(
+        result.xpGranted > 0
+          ? `Revisão de ${review.subjectName} concluída. +${result.xpGranted} XP.`
+          : `Revisão de ${review.subjectName} concluída.`,
+      );
       onDataChanged();
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
