@@ -6,11 +6,13 @@ import {
   pauseStudySession,
   rescheduleStudyTask,
   resumeStudySession,
+  saveStudySessionReflection,
   skipStudyTask,
   startStudySession,
 } from "../../shared/desktop/commands";
 import type {
   DailyPlan,
+  StudySessionDifficulty,
   StudyPlan,
   StudySessionSummary,
   StudyCycleSuggestion,
@@ -28,6 +30,7 @@ import {
   fieldClass,
   inputClass,
   selectClass,
+  textareaClass,
 } from "../../shared/ui/primitives";
 
 type TodayViewProps = {
@@ -67,6 +70,9 @@ export function TodayView({
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [isAcceptingCycleAction, setIsAcceptingCycleAction] = useState(false);
   const [reviewOn, setReviewOn] = useState("");
+  const [sessionSummaryMarkdown, setSessionSummaryMarkdown] = useState("");
+  const [sessionDifficulty, setSessionDifficulty] = useState<StudySessionDifficulty | null>(null);
+  const [sessionNextSteps, setSessionNextSteps] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [pomodoroSettings, setPomodoroSettings] = useState(readPomodoroSettings);
   const [pomodoroPhase, setPomodoroPhase] = useState<PomodoroPhase>("focus");
@@ -84,6 +90,9 @@ export function TodayView({
 
   useEffect(() => {
     setReviewOn("");
+    setSessionSummaryMarkdown(activeSession?.summaryMarkdown ?? "");
+    setSessionDifficulty(activeSession?.difficulty ?? null);
+    setSessionNextSteps(activeSession?.nextSteps ?? "");
   }, [activeSession?.id]);
 
   const tasksToRender = dailyPlan?.tasks ?? [];
@@ -296,6 +305,30 @@ export function TodayView({
     }
   };
 
+  const handleSaveSessionReflection = async () => {
+    if (!activeSession) return;
+    setActionError(null);
+    setActionMessage(null);
+    setPendingTaskId(activeSession.taskId);
+    try {
+      const saved = await saveStudySessionReflection({
+        sessionId: activeSession.id,
+        summaryMarkdown: sessionSummaryMarkdown.trim() ? sessionSummaryMarkdown : null,
+        difficulty: sessionDifficulty,
+        nextSteps: sessionNextSteps.trim() ? sessionNextSteps : null,
+      });
+      setSessionSummaryMarkdown(saved.summaryMarkdown ?? "");
+      setSessionDifficulty(saved.difficulty);
+      setSessionNextSteps(saved.nextSteps ?? "");
+      setActionMessage("Resumo da sessão salvo.");
+      onDataChanged();
+    } catch (operationError: unknown) {
+      setActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingTaskId(null);
+    }
+  };
+
   const handleFinish = async (taskStatus: "completed" | "partial") => {
     if (!activeSession) return;
     setPomodoroRunning(false);
@@ -308,6 +341,9 @@ export function TodayView({
         effectiveSeconds: getElapsedSeconds(activeSession, now),
         taskStatus,
         reviewOn: taskStatus === "completed" && reviewOn ? reviewOn : null,
+        summaryMarkdown: sessionSummaryMarkdown.trim() ? sessionSummaryMarkdown : null,
+        difficulty: sessionDifficulty,
+        nextSteps: sessionNextSteps.trim() ? sessionNextSteps : null,
       });
       const finishMessage =
         result.xpGranted > 0
@@ -541,6 +577,69 @@ export function TodayView({
                   : "Vincule a tarefa a um assunto para poder agendar uma revisão."}
               </p>
             </div>
+          )}
+
+          {activeSession && (
+            <section className="grid max-w-2xl gap-3 rounded-xl border border-white/15 bg-white/5 p-3" aria-labelledby="session-reflection-title">
+              <div>
+                <h3 id="session-reflection-title" className="text-xs font-bold text-slate-100">Resumo da sessão</h3>
+                <p className="mt-1 text-[11px] text-slate-300">
+                  Registro opcional ligado a esta sessão e ao assunto da tarefa.
+                </p>
+              </div>
+              <label className="grid gap-1.5 text-xs font-semibold text-slate-100">
+                O que você estudou ou aprendeu?
+                <textarea
+                  className={textareaClass}
+                  value={sessionSummaryMarkdown}
+                  onChange={(event) => setSessionSummaryMarkdown(event.target.value)}
+                  maxLength={20_000}
+                  disabled={isBusy}
+                  placeholder="Resumo em Markdown (opcional)"
+                />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1.5 text-xs font-semibold text-slate-100">
+                  Dificuldade percebida
+                  <select
+                    className={selectClass}
+                    value={sessionDifficulty ?? ""}
+                    onChange={(event) =>
+                      setSessionDifficulty(
+                        event.target.value === "" ? null : event.target.value as StudySessionDifficulty,
+                      )
+                    }
+                    disabled={isBusy}
+                  >
+                    <option value="">Não informada</option>
+                    <option value="easy">Fácil</option>
+                    <option value="normal">Regular</option>
+                    <option value="hard">Difícil</option>
+                  </select>
+                </label>
+                <label className="grid gap-1.5 text-xs font-semibold text-slate-100">
+                  Próximos passos
+                  <textarea
+                    className={textareaClass}
+                    value={sessionNextSteps}
+                    onChange={(event) => setSessionNextSteps(event.target.value)}
+                    maxLength={5_000}
+                    disabled={isBusy}
+                    placeholder="O que revisar ou praticar depois?"
+                  />
+                </label>
+              </div>
+              <div className="flex justify-end">
+                <button
+                  className={buttonOutlineLightClass}
+                  type="button"
+                  onClick={() => void handleSaveSessionReflection()}
+                  disabled={isBusy}
+                >
+                  Salvar resumo
+                </button>
+              </div>
+            </section>
           )}
         </div>
       </section>

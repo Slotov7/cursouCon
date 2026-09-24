@@ -191,6 +191,7 @@ export type SetManualContestFavoriteRequest = {
 export type StudyTaskStatus = "pending" | "partial" | "completed" | "skipped";
 
 export type StudySessionStatus = "active" | "paused" | "completed" | "interrupted";
+export type StudySessionDifficulty = "easy" | "normal" | "hard";
 
 export type StudyTaskSummary = {
   id: string;
@@ -212,6 +213,9 @@ export type StudySessionSummary = {
   activeStartedAt: string | null;
   effectiveSeconds: number;
   status: StudySessionStatus;
+  summaryMarkdown: string | null;
+  difficulty: StudySessionDifficulty | null;
+  nextSteps: string | null;
 };
 
 export type StudyReviewStatus = "pending" | "completed";
@@ -278,6 +282,9 @@ export type StudyHistoryEntry = {
   effectiveSeconds: number;
   taskStatus: StudyTaskStatus;
   xpGranted: number;
+  summaryMarkdown: string | null;
+  difficulty: StudySessionDifficulty | null;
+  nextSteps: string | null;
 };
 
 export type StudyProgressSummary = {
@@ -538,6 +545,16 @@ export type FinishStudySessionRequest = {
   effectiveSeconds: number;
   taskStatus: "completed" | "partial";
   reviewOn: string | null;
+  summaryMarkdown: string | null;
+  difficulty: StudySessionDifficulty | null;
+  nextSteps: string | null;
+};
+
+export type SaveStudySessionReflectionRequest = {
+  sessionId: string;
+  summaryMarkdown: string | null;
+  difficulty: StudySessionDifficulty | null;
+  nextSteps: string | null;
 };
 
 export type GetStudyProgressRequest = {
@@ -931,6 +948,12 @@ function parseStudySessionStatus(value: unknown): StudySessionStatus {
   }
 
   throw new Error("O núcleo local devolveu um status de sessão inválido.");
+}
+
+function parseOptionalStudySessionDifficulty(value: unknown): StudySessionDifficulty | null {
+  if (value === null) return null;
+  if (value === "easy" || value === "normal" || value === "hard") return value;
+  throw new Error("O núcleo local devolveu uma dificuldade de sessão inválida.");
 }
 
 export function parseStudyTask(value: unknown): StudyTaskSummary {
@@ -1371,6 +1394,9 @@ export function parseStudySession(value: unknown): StudySessionSummary {
     activeStartedAt: parseOptionalString(value.activeStartedAt, "o início ativo da sessão"),
     effectiveSeconds: value.effectiveSeconds,
     status: parseStudySessionStatus(value.status),
+    summaryMarkdown: parseOptionalString(value.summaryMarkdown, "o resumo da sessão"),
+    difficulty: parseOptionalStudySessionDifficulty(value.difficulty),
+    nextSteps: parseOptionalString(value.nextSteps, "os próximos passos da sessão"),
   };
 }
 
@@ -1531,6 +1557,9 @@ function parseStudyHistoryEntry(value: unknown): StudyHistoryEntry {
     effectiveSeconds: value.effectiveSeconds,
     taskStatus: parseStudyTaskStatus(value.taskStatus),
     xpGranted: value.xpGranted,
+    summaryMarkdown: parseOptionalString(value.summaryMarkdown, "o resumo do histórico"),
+    difficulty: parseOptionalStudySessionDifficulty(value.difficulty),
+    nextSteps: parseOptionalString(value.nextSteps, "os próximos passos do histórico"),
   };
 }
 

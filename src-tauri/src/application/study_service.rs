@@ -3,11 +3,12 @@ use crate::domain::study::{
     normalize_accept_study_cycle_action_input, normalize_complete_study_review_input,
     normalize_finish_session_input, normalize_pause_session_input,
     normalize_reschedule_study_review_input, normalize_reschedule_task_input,
-    normalize_resume_session_input, normalize_skip_task_input, normalize_start_session_input,
-    normalize_study_task_input, AcceptStudyCycleActionInput, AcceptStudyCycleActionResult,
-    CompleteStudyReviewInput, CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan,
-    FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput,
-    RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
+    normalize_resume_session_input, normalize_save_session_reflection_input,
+    normalize_skip_task_input, normalize_start_session_input, normalize_study_task_input,
+    AcceptStudyCycleActionInput, AcceptStudyCycleActionResult, CompleteStudyReviewInput,
+    CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan, FinishStudySessionInput,
+    FinishStudySessionResult, PauseStudySessionInput, RescheduleStudyReviewInput,
+    RescheduleStudyTaskInput, ResumeStudySessionInput, SaveStudySessionReflectionInput,
     SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary, StudyReviewSummary,
     StudySessionSummary, StudyTaskSummary,
 };
@@ -42,6 +43,10 @@ pub trait StudyStore {
     fn resume_study_session(
         &self,
         input: &ResumeStudySessionInput,
+    ) -> Result<StudySessionSummary, WorkspaceError>;
+    fn save_study_session_reflection(
+        &self,
+        input: &SaveStudySessionReflectionInput,
     ) -> Result<StudySessionSummary, WorkspaceError>;
     fn finish_study_session(
         &self,
@@ -155,6 +160,15 @@ impl<S: StudyStore> StudyService<S> {
         let normalized =
             normalize_resume_session_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.resume_study_session(&normalized)
+    }
+
+    pub fn save_session_reflection(
+        &self,
+        input: SaveStudySessionReflectionInput,
+    ) -> Result<StudySessionSummary, WorkspaceError> {
+        let normalized =
+            normalize_save_session_reflection_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.save_study_session_reflection(&normalized)
     }
 
     pub fn study_progress(&self, as_of_date: &str) -> Result<StudyProgressSummary, WorkspaceError> {

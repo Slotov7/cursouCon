@@ -30,6 +30,7 @@ O primeiro protótipo vertical implementa:
 - importação de materiais para `blobs/<sha256>`, deduplicação e vínculo opcional a assunto;
 - criação e edição de notas Markdown vinculadas a material ou assunto;
 - início, pausa, retomada e encerramento idempotentes de sessões, com resultado parcial ou concluído;
+- resumos Markdown, dificuldade percebida e próximos passos ligados à sessão e ao assunto;
 - agendamento opcional de revisão ao concluir uma sessão, com fila vencida, reagendamento e conclusão idempotente;
 - conclusão de revisão com 5 XP por ocorrência, teto de 30 XP/dia e concessão idempotente;
 - Pomodoro local configurável, com pausas que suspendem a sessão e não entram no tempo estudado;

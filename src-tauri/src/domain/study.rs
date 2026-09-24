@@ -1,5 +1,5 @@
 use crate::domain::study_plan::normalize_date;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const MAX_TASK_MINUTES: i64 = 1_440;
@@ -56,6 +56,17 @@ pub struct FinishStudySessionInput {
     pub effective_seconds: i64,
     pub task_status: TaskCompletion,
     pub review_on: Option<String>,
+    pub summary_markdown: Option<String>,
+    pub difficulty: Option<SessionDifficulty>,
+    pub next_steps: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SaveStudySessionReflectionInput {
+    pub session_id: String,
+    pub summary_markdown: Option<String>,
+    pub difficulty: Option<SessionDifficulty>,
+    pub next_steps: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -74,6 +85,33 @@ pub enum StudySessionStatus {
     Paused,
     Completed,
     Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionDifficulty {
+    Easy,
+    Normal,
+    Hard,
+}
+
+impl SessionDifficulty {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Easy => "easy",
+            Self::Normal => "normal",
+            Self::Hard => "hard",
+        }
+    }
+
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "easy" => Some(Self::Easy),
+            "normal" => Some(Self::Normal),
+            "hard" => Some(Self::Hard),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -124,6 +162,9 @@ pub struct StudySessionSummary {
     pub active_started_at: Option<String>,
     pub effective_seconds: i64,
     pub status: StudySessionStatus,
+    pub summary_markdown: Option<String>,
+    pub difficulty: Option<SessionDifficulty>,
+    pub next_steps: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -203,6 +244,9 @@ pub struct StudyHistoryEntry {
     pub effective_seconds: i64,
     pub task_status: StudyTaskStatus,
     pub xp_granted: i64,
+    pub summary_markdown: Option<String>,
+    pub difficulty: Option<SessionDifficulty>,
+    pub next_steps: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -388,6 +432,10 @@ pub fn normalize_finish_session_input(
             })
         })
         .transpose()?;
+    let summary_markdown =
+        normalize_optional_session_text(input.summary_markdown, "O resumo da sessão", 20_000)?;
+    let next_steps =
+        normalize_optional_session_text(input.next_steps, "Os próximos passos", 5_000)?;
     if input.task_status == TaskCompletion::Partial && review_on.is_some() {
         return Err("Uma revisão só pode ser agendada ao concluir a tarefa.".to_string());
     }
@@ -397,6 +445,24 @@ pub fn normalize_finish_session_input(
         effective_seconds: input.effective_seconds,
         task_status: input.task_status,
         review_on,
+        summary_markdown,
+        difficulty: input.difficulty,
+        next_steps,
+    })
+}
+
+pub fn normalize_save_session_reflection_input(
+    input: SaveStudySessionReflectionInput,
+) -> Result<SaveStudySessionReflectionInput, String> {
+    Ok(SaveStudySessionReflectionInput {
+        session_id: normalize_id(&input.session_id, "A sessão")?,
+        summary_markdown: normalize_optional_session_text(
+            input.summary_markdown,
+            "O resumo da sessão",
+            20_000,
+        )?,
+        difficulty: input.difficulty,
+        next_steps: normalize_optional_session_text(input.next_steps, "Os próximos passos", 5_000)?,
     })
 }
 
@@ -482,6 +548,30 @@ fn normalize_optional_text(
     normalize_required_text(trimmed.to_string(), label, max_length).map(Some)
 }
 
+fn normalize_optional_session_text(
+    value: Option<String>,
+    label: &str,
+    max_length: usize,
+) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    if value.chars().count() > max_length {
+        return Err(format!(
+            "{label} deve ter no máximo {max_length} caracteres."
+        ));
+    }
+    if value.chars().any(|character| {
+        character.is_control() && character != '\n' && character != '\r' && character != '\t'
+    }) {
+        return Err(format!("{label} contém caracteres inválidos."));
+    }
+    Ok(Some(value))
+}
+
 #[cfg(test)]
 mod question_xp_tests {
     use super::{calculate_question_xp, QUESTION_XP_DAILY_CAP};
@@ -537,6 +627,9 @@ mod tests {
             effective_seconds: 45 * 60,
             task_status: TaskCompletion::Completed,
             review_on: Some("2032-03-01".to_string()),
+            summary_markdown: None,
+            difficulty: None,
+            next_steps: None,
         })
         .is_ok());
         assert!(normalize_finish_session_input(FinishStudySessionInput {
@@ -544,8 +637,32 @@ mod tests {
             effective_seconds: 45 * 60,
             task_status: TaskCompletion::Partial,
             review_on: Some("2032-03-01".to_string()),
+            summary_markdown: None,
+            difficulty: None,
+            next_steps: None,
         })
         .is_err());
+    }
+
+    #[test]
+    fn normalizes_session_reflection_without_stripping_markdown_lines() {
+        let summary = "# Resumo\n\n- Entendi o controle difuso";
+        let normalized =
+            normalize_optional_session_text(Some(summary.to_string()), "O resumo", 20_000)
+                .expect("o resumo multiline deve ser aceito");
+
+        assert_eq!(normalized.as_deref(), Some(summary));
+        assert!(normalize_optional_session_text(
+            Some("texto\0inválido".to_string()),
+            "O resumo",
+            20_000,
+        )
+        .is_err());
+        assert!(
+            normalize_optional_session_text(Some("  \n  ".to_string()), "O resumo", 20_000,)
+                .expect("texto em branco deve ser ausência")
+                .is_none()
+        );
     }
 
     #[test]

@@ -243,6 +243,7 @@ mod tests {
     use crate::application::study_service::StudyStore;
     use crate::application::workspace_service::WorkspaceStore;
     use crate::domain::contest::ContestStatus;
+    use crate::domain::study::{CreateStudyTaskInput, StartStudySessionInput};
     use crate::domain::study_plan::CreatePreparationInput;
     use std::fs;
 
@@ -310,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_version_twelve_workspace_without_losing_preparations() {
+    fn migrates_version_nineteen_workspace_without_losing_sessions() {
         let workspace_path =
             std::env::temp_dir().join(format!("cursoucon-contest-upgrade-{}", Uuid::new_v4()));
         let app_data_dir =
@@ -328,37 +329,51 @@ mod tests {
                 make_primary: true,
             })
             .expect("a preparação anterior deve ser criada");
+        let task = store
+            .create_study_task(&CreateStudyTaskInput {
+                preparation_id: preparation.id.clone(),
+                subject_id: None,
+                title: "Sessão anterior à migração".to_string(),
+                objective: None,
+                planned_minutes: 30,
+                scheduled_for: "2032-01-01".to_string(),
+            })
+            .expect("a tarefa existente deve ser criada");
+        let session = store
+            .start_study_session(&StartStudySessionInput { task_id: task.id })
+            .expect("a sessão ativa deve ser criada");
 
         let connection = store
             .active_database()
             .expect("o banco temporário deve abrir");
         connection
             .execute_batch(
-                "DROP TABLE study_reviews;
-                 DROP TABLE manual_contests;
-                 ALTER TABLE subjects DROP COLUMN study_status;
-                 DELETE FROM schema_migrations WHERE version > 12;",
+                "ALTER TABLE study_sessions DROP COLUMN next_steps;
+                 ALTER TABLE study_sessions DROP COLUMN difficulty;
+                 DELETE FROM schema_migrations WHERE version = 20;",
             )
-            .expect("a fixture deve representar um banco na versão 12");
+            .expect("a fixture deve representar um banco na versão 19");
         drop(connection);
 
         store
             .open_workspace(&workspace_path)
-            .expect("a migração da versão 13 deve ser aplicada na abertura");
+            .expect("a migração da versão 20 deve ser aplicada na abertura");
         let plan = store
             .study_plan()
             .expect("os dados existentes devem continuar disponíveis");
-        let contests = store
-            .list_manual_contests()
-            .expect("a nova tabela deve existir após a migração");
-        let plan_for_review = store
+        let daily_plan = store
             .daily_plan("2032-01-01")
-            .expect("a tabela de revisões deve existir após a migração");
+            .expect("a sessão existente deve continuar disponível");
 
         assert_eq!(plan.preparations.len(), 1);
         assert_eq!(plan.preparations[0].id, preparation.id);
-        assert!(contests.is_empty());
-        assert!(plan_for_review.reviews.is_empty());
+        let migrated_session = daily_plan
+            .active_session
+            .expect("a sessão ativa deve continuar recuperável");
+        assert_eq!(migrated_session.id, session.id);
+        assert!(migrated_session.summary_markdown.is_none());
+        assert!(migrated_session.difficulty.is_none());
+        assert!(migrated_session.next_steps.is_none());
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

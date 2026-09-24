@@ -7,10 +7,10 @@ use crate::domain::study::{
     CompleteStudyReviewInput, CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan,
     FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput, PlannedStudyDay,
     RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
-    SkipStudyTaskInput, StartStudySessionInput, StudyCycleSuggestion, StudyHistoryEntry,
-    StudyProgressSummary, StudyReviewStatus, StudyReviewSummary, StudySessionStatus,
-    StudySessionSummary, StudyTaskStatus, StudyTaskSummary, TaskCompletion,
-    REVIEW_XP_RULES_VERSION, XP_RULES_VERSION,
+    SaveStudySessionReflectionInput, SessionDifficulty, SkipStudyTaskInput, StartStudySessionInput,
+    StudyCycleSuggestion, StudyHistoryEntry, StudyProgressSummary, StudyReviewStatus,
+    StudyReviewSummary, StudySessionStatus, StudySessionSummary, StudyTaskStatus, StudyTaskSummary,
+    TaskCompletion, REVIEW_XP_RULES_VERSION, XP_RULES_VERSION,
 };
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
@@ -35,6 +35,9 @@ type SessionRow = (
     Option<String>,
     i64,
     String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
 );
 type HistoryRow = (
     String,
@@ -45,6 +48,9 @@ type HistoryRow = (
     i64,
     String,
     i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
 );
 type StudyReviewRow = (
     String,
@@ -434,6 +440,44 @@ impl StudyStore for LocalWorkspaceStore {
         Ok(summary)
     }
 
+    fn save_study_session_reflection(
+        &self,
+        input: &SaveStudySessionReflectionInput,
+    ) -> Result<StudySessionSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar gravação do registro da sessão", error))?;
+        let current = load_session(&transaction, &input.session_id)?;
+        if !matches!(
+            current.status,
+            StudySessionStatus::Active | StudySessionStatus::Paused
+        ) {
+            return Err(WorkspaceError::InvalidInput(
+                "O registro só pode ser alterado enquanto a sessão está aberta.".to_string(),
+            ));
+        }
+
+        transaction
+            .execute(
+                "UPDATE study_sessions
+                 SET notes_markdown = ?1, difficulty = ?2, next_steps = ?3
+                 WHERE id = ?4 AND status IN ('active', 'paused')",
+                params![
+                    input.summary_markdown,
+                    input.difficulty.map(SessionDifficulty::as_str),
+                    input.next_steps,
+                    input.session_id,
+                ],
+            )
+            .map_err(|error| map_database_error("gravar registro da sessão", error))?;
+        let updated = load_session(&transaction, &input.session_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar registro da sessão", error))?;
+        Ok(updated)
+    }
+
     fn finish_study_session(
         &self,
         input: &FinishStudySessionInput,
@@ -474,9 +518,16 @@ impl StudyStore for LocalWorkspaceStore {
             .execute(
                 "UPDATE study_sessions
                  SET ended_at = CURRENT_TIMESTAMP, active_started_at = NULL,
-                     effective_seconds = ?1, status = 'completed'
-                 WHERE id = ?2 AND status IN ('active', 'paused')",
-                params![input.effective_seconds, input.session_id.as_str()],
+                     effective_seconds = ?1, status = 'completed',
+                     notes_markdown = ?2, difficulty = ?3, next_steps = ?4
+                 WHERE id = ?5 AND status IN ('active', 'paused')",
+                params![
+                    input.effective_seconds,
+                    input.summary_markdown,
+                    input.difficulty.map(SessionDifficulty::as_str),
+                    input.next_steps,
+                    input.session_id.as_str(),
+                ],
             )
             .map_err(|error| map_database_error("encerrar sessão", error))?;
         transaction
@@ -704,7 +755,8 @@ fn load_recent_history(
         .prepare(
             "SELECT sessions.id, sessions.task_id, tasks.title, subjects.name,
                     sessions.ended_at, sessions.effective_seconds, tasks.status,
-                    COALESCE(events.points, 0)
+                    COALESCE(events.points, 0), sessions.notes_markdown,
+                    sessions.difficulty, sessions.next_steps
              FROM study_sessions sessions
              JOIN study_tasks tasks ON tasks.id = sessions.task_id
              LEFT JOIN subjects ON subjects.id = sessions.subject_id
@@ -727,6 +779,9 @@ fn load_recent_history(
                 row.get(5)?,
                 row.get(6)?,
                 row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
             ))
         })
         .map_err(|error| map_database_error("consultar histórico de estudo", error))?;
@@ -748,11 +803,21 @@ fn history_entry_from_parts(parts: HistoryRow) -> Result<StudyHistoryEntry, Work
         effective_seconds,
         task_status,
         xp_granted,
+        summary_markdown,
+        difficulty,
+        next_steps,
     ) = parts;
     let ended_at = ended_at.ok_or_else(|| {
         WorkspaceError::Database("uma sessão concluída não possui data de encerramento".to_string())
     })?;
     let task_status = parse_task_status(&task_status).map_err(WorkspaceError::Database)?;
+    let difficulty = difficulty
+        .map(|value| {
+            SessionDifficulty::from_storage(&value).ok_or_else(|| {
+                WorkspaceError::Database("uma sessão possui uma dificuldade inválida".to_string())
+            })
+        })
+        .transpose()?;
 
     Ok(StudyHistoryEntry {
         session_id,
@@ -763,6 +828,9 @@ fn history_entry_from_parts(parts: HistoryRow) -> Result<StudyHistoryEntry, Work
         effective_seconds,
         task_status,
         xp_granted,
+        summary_markdown,
+        difficulty,
+        next_steps,
     })
 }
 
@@ -936,7 +1004,8 @@ fn load_active_session(
 ) -> Result<Option<StudySessionSummary>, WorkspaceError> {
     let parts: Option<SessionRow> = connection
         .query_row(
-            "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds, status
+            "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds,
+                    status, notes_markdown, difficulty, next_steps
              FROM study_sessions
              WHERE status IN ('active', 'paused')
              ORDER BY started_at
@@ -955,7 +1024,8 @@ fn load_active_session_from(
 ) -> Result<Option<StudySessionSummary>, WorkspaceError> {
     let parts: Option<SessionRow> = transaction
         .query_row(
-            "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds, status
+            "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds,
+                    status, notes_markdown, difficulty, next_steps
              FROM study_sessions
              WHERE status IN ('active', 'paused')
              LIMIT 1",
@@ -974,7 +1044,8 @@ fn load_session(
 ) -> Result<StudySessionSummary, WorkspaceError> {
     let parts: SessionRow = transaction
         .query_row(
-            "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds, status
+            "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds,
+                    status, notes_markdown, difficulty, next_steps
              FROM study_sessions WHERE id = ?1",
             params![session_id],
             session_row,
@@ -1138,6 +1209,9 @@ fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         row.get(4)?,
         row.get(5)?,
         row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
     ))
 }
 
@@ -1241,8 +1315,26 @@ fn task_summary_from_parts(parts: TaskRow) -> Result<StudyTaskSummary, Workspace
 }
 
 fn session_summary_from_parts(parts: SessionRow) -> Result<StudySessionSummary, WorkspaceError> {
-    let (id, task_id, subject_id, started_at, active_started_at, effective_seconds, status) = parts;
+    let (
+        id,
+        task_id,
+        subject_id,
+        started_at,
+        active_started_at,
+        effective_seconds,
+        status,
+        summary_markdown,
+        difficulty,
+        next_steps,
+    ) = parts;
     let status = parse_session_status(&status).map_err(WorkspaceError::Database)?;
+    let difficulty = difficulty
+        .map(|value| {
+            SessionDifficulty::from_storage(&value).ok_or_else(|| {
+                WorkspaceError::Database("uma sessão possui uma dificuldade inválida".to_string())
+            })
+        })
+        .transpose()?;
 
     Ok(StudySessionSummary {
         id,
@@ -1252,6 +1344,9 @@ fn session_summary_from_parts(parts: SessionRow) -> Result<StudySessionSummary, 
         active_started_at,
         effective_seconds,
         status,
+        summary_markdown,
+        difficulty,
+        next_steps,
     })
 }
 
@@ -1351,6 +1446,9 @@ mod tests {
                 effective_seconds: 1_500,
                 task_status: TaskCompletion::Completed,
                 review_on: None,
+                summary_markdown: None,
+                difficulty: None,
+                next_steps: None,
             })
             .expect("a sessão deve encerrar");
         let daily_plan = store
@@ -1362,6 +1460,9 @@ mod tests {
                 effective_seconds: 1_500,
                 task_status: TaskCompletion::Completed,
                 review_on: None,
+                summary_markdown: None,
+                difficulty: None,
+                next_steps: None,
             })
             .expect("repetir o encerramento deve ser idempotente");
         let progress = store
@@ -1376,6 +1477,115 @@ mod tests {
         assert_eq!(progress.total_xp, 25);
         assert_eq!(progress.completed_sessions, 1);
         assert_eq!(progress.recent_sessions.len(), 1);
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn persists_session_reflection_and_keeps_it_on_finish() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-reflection-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-reflection-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Registro de sessão")
+            .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Redes".to_string(),
+                parent_id: None,
+            })
+            .expect("o assunto deve ser criado");
+        let task = store
+            .create_study_task(&CreateStudyTaskInput {
+                preparation_id: preparation.id,
+                subject_id: Some(subject.id),
+                title: "Estudar roteamento".to_string(),
+                objective: None,
+                planned_minutes: 30,
+                scheduled_for: "2032-06-01".to_string(),
+            })
+            .expect("a tarefa deve ser criada");
+        let session = store
+            .start_study_session(&StartStudySessionInput { task_id: task.id })
+            .expect("a sessão deve iniciar");
+        let reflection = SaveStudySessionReflectionInput {
+            session_id: session.id.clone(),
+            summary_markdown: Some("# Resumo\n\n- Revisei rotas estáticas".to_string()),
+            difficulty: Some(SessionDifficulty::Hard),
+            next_steps: Some("Rever OSPF\nFazer questões".to_string()),
+        };
+
+        let saved = store
+            .save_study_session_reflection(&reflection)
+            .expect("o registro deve ser salvo enquanto a sessão está aberta");
+        let finished = store
+            .finish_study_session(&FinishStudySessionInput {
+                session_id: session.id.clone(),
+                effective_seconds: 1_200,
+                task_status: TaskCompletion::Partial,
+                review_on: None,
+                summary_markdown: reflection.summary_markdown.clone(),
+                difficulty: reflection.difficulty,
+                next_steps: reflection.next_steps.clone(),
+            })
+            .expect("o registro deve permanecer junto da sessão concluída");
+        let repeated_finish = store
+            .finish_study_session(&FinishStudySessionInput {
+                session_id: session.id.clone(),
+                effective_seconds: 1_200,
+                task_status: TaskCompletion::Partial,
+                review_on: None,
+                summary_markdown: Some("Tentativa de substituição".to_string()),
+                difficulty: Some(SessionDifficulty::Easy),
+                next_steps: None,
+            })
+            .expect("repetir o encerramento deve preservar o primeiro registro");
+        let progress = store
+            .study_progress("2032-06-01")
+            .expect("o histórico deve carregar os dados do registro da sessão");
+
+        assert_eq!(
+            saved.summary_markdown.as_deref(),
+            Some("# Resumo\n\n- Revisei rotas estáticas")
+        );
+        assert_eq!(finished.session.difficulty, Some(SessionDifficulty::Hard));
+        assert_eq!(
+            finished.session.next_steps.as_deref(),
+            Some("Rever OSPF\nFazer questões")
+        );
+        assert_eq!(
+            repeated_finish.session.summary_markdown,
+            finished.session.summary_markdown
+        );
+        assert_eq!(
+            repeated_finish.session.difficulty,
+            finished.session.difficulty
+        );
+        assert_eq!(
+            progress.recent_sessions[0].summary_markdown.as_deref(),
+            Some("# Resumo\n\n- Revisei rotas estáticas")
+        );
+        assert_eq!(
+            progress.recent_sessions[0].difficulty,
+            Some(SessionDifficulty::Hard)
+        );
+        assert_eq!(
+            progress.recent_sessions[0].next_steps.as_deref(),
+            Some("Rever OSPF\nFazer questões")
+        );
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);
@@ -1427,6 +1637,9 @@ mod tests {
                 effective_seconds: 1_200,
                 task_status: TaskCompletion::Completed,
                 review_on: Some("2032-04-08".to_string()),
+                summary_markdown: None,
+                difficulty: None,
+                next_steps: None,
             })
             .expect("a sessão e a revisão devem ser salvas juntas");
         let review = finished.review.expect("a revisão deve ser retornada");
@@ -1442,6 +1655,9 @@ mod tests {
                 effective_seconds: 1_200,
                 task_status: TaskCompletion::Completed,
                 review_on: Some("2032-04-09".to_string()),
+                summary_markdown: None,
+                difficulty: None,
+                next_steps: None,
             })
             .expect("repetir o encerramento não deve criar outra revisão");
         let rescheduled = store
@@ -1553,6 +1769,9 @@ mod tests {
                     effective_seconds: 1_200,
                     task_status: TaskCompletion::Completed,
                     review_on: None,
+                    summary_markdown: None,
+                    difficulty: None,
+                    next_steps: None,
                 })
                 .expect("a sessão de estudo deve concluir");
         }

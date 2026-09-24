@@ -56,6 +56,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::study::start_study_session,
             commands::study::pause_study_session,
             commands::study::resume_study_session,
+            commands::study::save_study_session_reflection,
             commands::study::finish_study_session,
             commands::study::reschedule_study_review,
             commands::study::complete_study_review,

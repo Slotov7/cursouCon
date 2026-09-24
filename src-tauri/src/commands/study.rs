@@ -6,8 +6,8 @@ use crate::domain::study::{
     CompleteStudyReviewInput, CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan,
     FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput,
     RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
-    SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary, StudyReviewSummary,
-    StudySessionSummary, StudyTaskSummary,
+    SaveStudySessionReflectionInput, SessionDifficulty, SkipStudyTaskInput, StartStudySessionInput,
+    StudyProgressSummary, StudyReviewSummary, StudySessionSummary, StudyTaskSummary,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -77,6 +77,18 @@ pub struct FinishStudySessionRequest {
     pub effective_seconds: i64,
     pub task_status: String,
     pub review_on: Option<String>,
+    pub summary_markdown: Option<String>,
+    pub difficulty: Option<SessionDifficulty>,
+    pub next_steps: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveStudySessionReflectionRequest {
+    pub session_id: String,
+    pub summary_markdown: Option<String>,
+    pub difficulty: Option<SessionDifficulty>,
+    pub next_steps: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +239,25 @@ pub fn finish_study_session(
             effective_seconds: request.effective_seconds,
             task_status,
             review_on: request.review_on,
+            summary_markdown: request.summary_markdown,
+            difficulty: request.difficulty,
+            next_steps: request.next_steps,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn save_study_session_reflection(
+    app: AppHandle,
+    request: SaveStudySessionReflectionRequest,
+) -> Result<StudySessionSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .save_session_reflection(SaveStudySessionReflectionInput {
+            session_id: request.session_id,
+            summary_markdown: request.summary_markdown,
+            difficulty: request.difficulty,
+            next_steps: request.next_steps,
         })
         .map_err(CommandError::from)
 }

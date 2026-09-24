@@ -1,5 +1,9 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use uuid::Uuid;
+
+const MAX_MATERIAL_TAGS: usize = 20;
+const MAX_MATERIAL_TAG_CHARACTERS: usize = 40;
 
 #[derive(Debug, Clone)]
 pub struct ImportMaterialInput {
@@ -16,6 +20,12 @@ pub struct OpenMaterialInput {
 pub struct UpdateMaterialPageInput {
     pub material_id: String,
     pub page: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SetMaterialTagsInput {
+    pub material_id: String,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +46,7 @@ pub struct MaterialSummary {
     pub imported_at: String,
     pub current_page: i64,
     pub subjects: Vec<MaterialSubjectSummary>,
+    pub tags: Vec<String>,
 }
 
 pub fn normalize_import_material_input(
@@ -79,6 +90,42 @@ pub fn normalize_update_material_page_input(
     })
 }
 
+pub fn normalize_set_material_tags_input(
+    input: SetMaterialTagsInput,
+) -> Result<SetMaterialTagsInput, String> {
+    if input.tags.len() > MAX_MATERIAL_TAGS {
+        return Err(format!("Um material pode ter no máximo {MAX_MATERIAL_TAGS} etiquetas."));
+    }
+
+    let mut seen = HashSet::new();
+    let mut tags = Vec::with_capacity(input.tags.len());
+    for tag in input.tags {
+        let normalized = tag.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        if normalized.chars().count() > MAX_MATERIAL_TAG_CHARACTERS {
+            return Err(format!(
+                "Cada etiqueta pode ter no máximo {MAX_MATERIAL_TAG_CHARACTERS} caracteres."
+            ));
+        }
+        if normalized
+            .chars()
+            .any(|character| character.is_control() || character == ',')
+        {
+            return Err("As etiquetas não podem conter vírgulas ou caracteres de controle.".to_string());
+        }
+        if seen.insert(normalized.to_lowercase()) {
+            tags.push(normalized.to_string());
+        }
+    }
+
+    Ok(SetMaterialTagsInput {
+        material_id: normalize_id(&input.material_id, "O material")?,
+        tags,
+    })
+}
+
 fn normalize_id(value: &str, label: &str) -> Result<String, String> {
     let parsed = Uuid::parse_str(value.trim()).map_err(|_| format!("{label} não é válido."))?;
     Ok(parsed.to_string())
@@ -112,5 +159,21 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn normalizes_tags_and_deduplicates_without_case_sensitivity() {
+        let normalized = normalize_set_material_tags_input(SetMaterialTagsInput {
+            material_id: Uuid::new_v4().to_string(),
+            tags: vec![" Redes ".to_string(), "redes".to_string(), "TCP/IP".to_string()],
+        })
+        .expect("as etiquetas devem ser normalizadas");
+
+        assert_eq!(normalized.tags, vec!["Redes", "TCP/IP"]);
+        assert!(normalize_set_material_tags_input(SetMaterialTagsInput {
+            material_id: Uuid::new_v4().to_string(),
+            tags: vec!["tag,inválida".to_string()],
+        })
+        .is_err());
     }
 }

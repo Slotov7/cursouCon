@@ -307,17 +307,41 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
             {summary.recentSessions.map((session) => (
               <div
                 key={session.sessionId}
-                className="flex items-center justify-between gap-4 rounded-2xl border border-line bg-paper/70 p-4 transition-all duration-150 ease-out hover:border-blue-500/30 hover:bg-paper shadow-xs"
+                className="flex flex-col justify-between gap-4 rounded-2xl border border-line bg-paper/70 p-4 transition-all duration-150 ease-out hover:border-blue-500/30 hover:bg-paper shadow-xs sm:flex-row sm:items-start"
               >
                 <div className="flex items-center gap-3.5 min-w-0">
                   <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-blue-600/10 text-blue-600 font-bold text-xs border border-blue-500/20">
                     ✓
                   </div>
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <h4 className="truncate font-bold text-xs text-ink">{session.taskTitle}</h4>
                     <p className="mt-0.5 text-[11px] text-muted">
                       {session.subjectName || "Geral"} · {formatHistoryDate(session.endedAt)}
                     </p>
+                    {(session.summaryMarkdown || session.difficulty || session.nextSteps) && (
+                      <details className="mt-2 text-[11px]">
+                        <summary className="cursor-pointer font-semibold text-blue-700 dark:text-blue-300">
+                          Ver registro da sessão
+                        </summary>
+                        <div className="mt-2 grid gap-2 rounded-lg border border-line bg-card p-3 text-muted">
+                          {session.difficulty && (
+                            <p><strong className="text-ink">Dificuldade:</strong> {formatSessionDifficulty(session.difficulty)}</p>
+                          )}
+                          {session.summaryMarkdown && (
+                            <div>
+                              <p className="font-semibold text-ink">Resumo</p>
+                              <p className="mt-1 whitespace-pre-wrap">{session.summaryMarkdown}</p>
+                            </div>
+                          )}
+                          {session.nextSteps && (
+                            <div>
+                              <p className="font-semibold text-ink">Próximos passos</p>
+                              <p className="mt-1 whitespace-pre-wrap">{session.nextSteps}</p>
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    )}
                   </div>
                 </div>
 
@@ -377,6 +401,12 @@ function formatDuration(seconds: number): string {
     return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
   }
   return `${minutes} min`;
+}
+
+function formatSessionDifficulty(difficulty: "easy" | "normal" | "hard"): string {
+  if (difficulty === "easy") return "Fácil";
+  if (difficulty === "hard") return "Difícil";
+  return "Regular";
 }
 
 function getLocalDateKey(): string {

@@ -69,6 +69,7 @@ import {
   type SetQuestionNotebookRequest,
   type RescheduleStudyTaskRequest,
   type ResumeStudySessionRequest,
+  type SaveStudySessionReflectionRequest,
   type RestoreBackupRequest,
   type SaveNoteRequest,
   type SaveManualContestRequest,
@@ -1107,6 +1108,9 @@ export async function startStudySession(request: StartStudySessionRequest): Prom
       startedAt: nowIso,
       activeStartedAt: nowIso,
       effectiveSeconds: 0,
+      summaryMarkdown: null,
+      difficulty: null,
+      nextSteps: null,
     };
     return mockActiveSession;
   }
@@ -1138,6 +1142,25 @@ export async function resumeStudySession(request: ResumeStudySessionRequest): Pr
   return parseStudySession(response);
 }
 
+export async function saveStudySessionReflection(
+  request: SaveStudySessionReflectionRequest,
+): Promise<StudySessionSummary> {
+  if (!isTauri()) {
+    if (!mockActiveSession || mockActiveSession.id !== request.sessionId) {
+      throw new Error("A sessão não está mais aberta.");
+    }
+    mockActiveSession = {
+      ...mockActiveSession,
+      summaryMarkdown: request.summaryMarkdown,
+      difficulty: request.difficulty,
+      nextSteps: request.nextSteps,
+    };
+    return mockActiveSession;
+  }
+  const response = await invoke<unknown>("save_study_session_reflection", { request });
+  return parseStudySession(response);
+}
+
 export async function finishStudySession(request: FinishStudySessionRequest): Promise<FinishStudySessionResult> {
   if (!isTauri()) {
     const task = mockTasks.find((t) => t.id === mockActiveSession?.taskId);
@@ -1152,6 +1175,9 @@ export async function finishStudySession(request: FinishStudySessionRequest): Pr
       activeStartedAt: null,
       effectiveSeconds: request.effectiveSeconds,
       status: "completed" as const,
+      summaryMarkdown: request.summaryMarkdown,
+      difficulty: request.difficulty,
+      nextSteps: request.nextSteps,
     };
 
     let review: StudyReviewSummary | null = mockStudyReviews.find(
@@ -1179,7 +1205,13 @@ export async function finishStudySession(request: FinishStudySessionRequest): Pr
     mockXp += 50;
 
     return {
-      session: { ...completedSession, status: "completed" },
+      session: {
+        ...completedSession,
+        status: "completed",
+        summaryMarkdown: request.summaryMarkdown,
+        difficulty: request.difficulty,
+        nextSteps: request.nextSteps,
+      },
       xpGranted: 50,
       review,
     };
@@ -1253,6 +1285,9 @@ export async function getStudyProgress(request: GetStudyProgressRequest): Promis
           effectiveSeconds: 2700,
           taskStatus: "completed",
           xpGranted: 50,
+          summaryMarkdown: null,
+          difficulty: null,
+          nextSteps: null,
         },
         {
           sessionId: "sess-2",
@@ -1263,6 +1298,9 @@ export async function getStudyProgress(request: GetStudyProgressRequest): Promis
           effectiveSeconds: 3600,
           taskStatus: "completed",
           xpGranted: 50,
+          summaryMarkdown: null,
+          difficulty: null,
+          nextSteps: null,
         },
       ],
     };

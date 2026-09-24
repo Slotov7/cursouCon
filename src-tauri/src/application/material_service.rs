@@ -2,7 +2,7 @@ use crate::application::workspace_service::WorkspaceError;
 use crate::domain::material::{
     normalize_import_material_input, normalize_open_material_input,
     normalize_update_material_page_input, ImportMaterialInput, MaterialSummary, OpenMaterialInput,
-    UpdateMaterialPageInput,
+    SetMaterialTagsInput, UpdateMaterialPageInput, normalize_set_material_tags_input,
 };
 use std::path::PathBuf;
 
@@ -16,6 +16,10 @@ pub trait MaterialStore {
     fn update_material_page(
         &self,
         input: &UpdateMaterialPageInput,
+    ) -> Result<MaterialSummary, WorkspaceError>;
+    fn set_material_tags(
+        &self,
+        input: &SetMaterialTagsInput,
     ) -> Result<MaterialSummary, WorkspaceError>;
 }
 
@@ -51,5 +55,14 @@ impl<S: MaterialStore> MaterialService<S> {
         let normalized =
             normalize_update_material_page_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.update_material_page(&normalized)
+    }
+
+    pub fn set_tags(
+        &self,
+        input: SetMaterialTagsInput,
+    ) -> Result<MaterialSummary, WorkspaceError> {
+        let normalized =
+            normalize_set_material_tags_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.set_material_tags(&normalized)
     }
 }
