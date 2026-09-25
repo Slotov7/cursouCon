@@ -1,7 +1,10 @@
 pub mod backup;
 pub mod contest;
+pub mod diagnostic;
+pub mod export;
 pub mod material;
 pub mod note;
+pub mod preferences;
 pub mod question;
 pub mod question_transfer;
 pub mod revision;

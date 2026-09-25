@@ -26,6 +26,10 @@ impl LocalWorkspaceStore {
         Self { app_data_dir }
     }
 
+    pub(crate) fn app_data_dir(&self) -> &Path {
+        &self.app_data_dir
+    }
+
     fn active_workspace_file(&self) -> PathBuf {
         self.app_data_dir.join(ACTIVE_WORKSPACE_FILE)
     }
@@ -407,7 +411,10 @@ pub(crate) fn validate_manifest(manifest: &WorkspaceManifest) -> Result<(), Work
     Ok(())
 }
 
-fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<(), WorkspaceError> {
+pub(crate) fn write_json_atomically<T: Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<(), WorkspaceError> {
     let parent = path.parent().ok_or_else(|| {
         WorkspaceError::Io("não foi possível determinar a pasta do arquivo".to_string())
     })?;
@@ -471,7 +478,7 @@ fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<(), Wor
     write_result
 }
 
-fn backup_path(path: &Path) -> Result<PathBuf, WorkspaceError> {
+pub(crate) fn backup_path(path: &Path) -> Result<PathBuf, WorkspaceError> {
     let parent = path.parent().ok_or_else(|| {
         WorkspaceError::Io("não foi possível determinar a pasta do backup".to_string())
     })?;

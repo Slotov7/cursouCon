@@ -2,8 +2,12 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   getDesktopErrorMessage,
   getManualContests,
+  importMaterial,
+  openMaterial,
+  pickMaterialFile,
   saveManualContest,
   setManualContestFavorite,
+  setManualContestNotice,
 } from "../../shared/desktop/commands";
 import type {
   ContestStatus,
@@ -63,6 +67,8 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingFavoriteId, setPendingFavoriteId] = useState<string | null>(null);
+  const [pendingNoticeId, setPendingNoticeId] = useState<string | null>(null);
+  const [noticeError, setNoticeError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -182,6 +188,52 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
     }
   };
 
+  const handleImportNotice = async (contest: ManualContestSummary) => {
+    setPendingNoticeId(contest.id);
+    setNoticeError(null);
+    setMessage(null);
+    try {
+      const sourcePath = await pickMaterialFile();
+      if (!sourcePath) return;
+      if (!/\.pdf$/i.test(sourcePath)) {
+        throw new Error("Escolha um edital em PDF para guardar uma cópia offline.");
+      }
+      const material = await importMaterial({ sourcePath, subjectId: null });
+      const updated = await setManualContestNotice({ contestId: contest.id, materialId: material.id });
+      setContests((previous) => previous.map((item) => item.id === updated.id ? updated : item));
+      setMessage(`Edital de ${contest.name} guardado localmente. A cópia original pode ser removida.`);
+    } catch (operationError: unknown) {
+      setNoticeError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingNoticeId(null);
+    }
+  };
+
+  const handleOpenNotice = async (contest: ManualContestSummary) => {
+    if (!contest.noticeMaterialId) return;
+    setNoticeError(null);
+    try {
+      await openMaterial({ materialId: contest.noticeMaterialId });
+    } catch (operationError: unknown) {
+      setNoticeError(getDesktopErrorMessage(operationError));
+    }
+  };
+
+  const handleUnlinkNotice = async (contest: ManualContestSummary) => {
+    setPendingNoticeId(contest.id);
+    setNoticeError(null);
+    setMessage(null);
+    try {
+      const updated = await setManualContestNotice({ contestId: contest.id, materialId: null });
+      setContests((previous) => previous.map((item) => item.id === updated.id ? updated : item));
+      setMessage("Vínculo removido. O PDF permanece na biblioteca de materiais.");
+    } catch (operationError: unknown) {
+      setNoticeError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingNoticeId(null);
+    }
+  };
+
   const openRegistrations = contests.filter((contest) => contest.status === "registration_open").length;
   const favoriteCount = contests.filter((contest) => contest.isFavorite).length;
 
@@ -220,6 +272,7 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
           </button>
         </div>
       )}
+      {noticeError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-xs text-red-600" role="alert">{noticeError}</p>}
       {message && (
         <div className="flex items-center justify-between gap-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-xs font-medium text-emerald-700 dark:text-emerald-300" role="status">
           <span>{message}</span>
@@ -349,8 +402,12 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
                 key={contest.id}
                 contest={contest}
                 isFavoritePending={pendingFavoriteId === contest.id}
+                isNoticePending={pendingNoticeId === contest.id}
                 onEdit={() => openEditContestForm(contest)}
                 onToggleFavorite={() => void handleToggleFavorite(contest)}
+                onImportNotice={() => void handleImportNotice(contest)}
+                onOpenNotice={() => void handleOpenNotice(contest)}
+                onUnlinkNotice={() => void handleUnlinkNotice(contest)}
               />
             ))}
           </div>
@@ -373,13 +430,21 @@ function SummaryCard({ label, value, detail }: { label: string; value: number | 
 function ContestCard({
   contest,
   isFavoritePending,
+  isNoticePending,
   onEdit,
   onToggleFavorite,
+  onImportNotice,
+  onOpenNotice,
+  onUnlinkNotice,
 }: {
   contest: ManualContestSummary;
   isFavoritePending: boolean;
+  isNoticePending: boolean;
   onEdit: () => void;
   onToggleFavorite: () => void;
+  onImportNotice: () => void;
+  onOpenNotice: () => void;
+  onUnlinkNotice: () => void;
 }) {
   const deadlines = [
     ["Inscrições", formatDateRange(contest.registrationStartsOn, contest.registrationEndsOn)],
@@ -430,6 +495,20 @@ function ContestCard({
           <span className="font-semibold text-muted">Fonte informada: </span>{contest.sourceUrl}
         </p>
       )}
+      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-paper/60 px-3 py-2 text-xs">
+        <span className="min-w-0 flex-1 truncate text-muted" title={contest.noticeMaterialName ?? undefined}>
+          {contest.noticeMaterialName ? `Edital offline: ${contest.noticeMaterialName}` : "Nenhum edital salvo offline"}
+        </span>
+        {contest.noticeMaterialId && (
+          <button type="button" className={buttonSecondaryClass} onClick={onOpenNotice} disabled={isNoticePending}>Abrir PDF</button>
+        )}
+        <button type="button" className={buttonSecondaryClass} onClick={onImportNotice} disabled={isNoticePending}>
+          {isNoticePending ? "Salvando..." : contest.noticeMaterialId ? "Substituir PDF" : "Importar PDF"}
+        </button>
+        {contest.noticeMaterialId && (
+          <button type="button" className={buttonQuietClass} onClick={onUnlinkNotice} disabled={isNoticePending}>Desvincular</button>
+        )}
+      </div>
       {contest.notes && <p className="mt-3 whitespace-pre-wrap text-xs leading-relaxed text-muted">{contest.notes}</p>}
     </article>
   );

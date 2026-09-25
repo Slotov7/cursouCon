@@ -1,8 +1,11 @@
 pub mod backup_store;
 pub mod contest_store;
 pub mod database;
+pub mod diagnostic_store;
+pub mod export_store;
 pub mod material_store;
 pub mod note_store;
+pub mod preferences_store;
 pub mod question_store;
 pub mod revision_store;
 pub mod study_plan_store;

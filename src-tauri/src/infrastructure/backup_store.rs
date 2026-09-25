@@ -368,7 +368,7 @@ fn validate_blob_directory(database_path: &Path, blobs_path: &Path) -> Result<()
     })?;
     let mut statement = connection
         .prepare(
-            "SELECT content_hash FROM materials
+            "SELECT content_hash FROM materials WHERE source_url IS NULL
              UNION
              SELECT sha256 FROM question_attachments",
         )

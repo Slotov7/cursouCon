@@ -4,6 +4,8 @@ use uuid::Uuid;
 
 const MAX_TASK_MINUTES: i64 = 1_440;
 const MAX_SESSION_SECONDS: i64 = 604_800;
+const MAX_CORRECTION_REASON_CHARACTERS: usize = 500;
+pub const SESSION_INTERRUPTION_THRESHOLD_SECONDS: i64 = 15;
 pub const SESSION_XP_DAILY_CAP: i64 = 120;
 pub const QUESTION_XP_PER_DAY: i64 = 2;
 pub const QUESTION_XP_DAILY_CAP: i64 = 60;
@@ -40,6 +42,25 @@ pub struct StartStudySessionInput {
 }
 
 #[derive(Debug, Clone)]
+pub struct CreateManualStudyInput {
+    pub preparation_id: String,
+    pub subject_id: Option<String>,
+    pub title: String,
+    pub studied_on: String,
+    pub effective_seconds: i64,
+    pub summary_markdown: Option<String>,
+    pub difficulty: Option<SessionDifficulty>,
+    pub next_steps: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CorrectStudySessionDurationInput {
+    pub session_id: String,
+    pub effective_seconds: i64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct PauseStudySessionInput {
     pub session_id: String,
     pub effective_seconds: i64,
@@ -47,6 +68,11 @@ pub struct PauseStudySessionInput {
 
 #[derive(Debug, Clone)]
 pub struct ResumeStudySessionInput {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeartbeatStudySessionInput {
     pub session_id: String,
 }
 
@@ -85,6 +111,23 @@ pub enum StudySessionStatus {
     Paused,
     Completed,
     Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StudySessionOrigin {
+    Timer,
+    Manual,
+}
+
+impl StudySessionOrigin {
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "timer" => Some(Self::Timer),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -162,6 +205,7 @@ pub struct StudySessionSummary {
     pub active_started_at: Option<String>,
     pub effective_seconds: i64,
     pub status: StudySessionStatus,
+    pub origin: StudySessionOrigin,
     pub summary_markdown: Option<String>,
     pub difficulty: Option<SessionDifficulty>,
     pub next_steps: Option<String>,
@@ -199,6 +243,23 @@ pub struct FinishStudySessionResult {
     pub session: StudySessionSummary,
     pub xp_granted: i64,
     pub review: Option<StudyReviewSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateManualStudyResult {
+    pub session: StudySessionSummary,
+    pub xp_granted: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectStudySessionDurationResult {
+    pub session: StudySessionSummary,
+    pub previous_effective_seconds: i64,
+    pub previous_xp: i64,
+    pub corrected_xp: i64,
+    pub xp_delta: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,7 +304,10 @@ pub struct StudyHistoryEntry {
     pub ended_at: String,
     pub effective_seconds: i64,
     pub task_status: StudyTaskStatus,
+    pub origin: StudySessionOrigin,
     pub xp_granted: i64,
+    pub duration_correction_count: i64,
+    pub last_duration_correction_at: Option<String>,
     pub summary_markdown: Option<String>,
     pub difficulty: Option<SessionDifficulty>,
     pub next_steps: Option<String>,
@@ -377,6 +441,54 @@ pub fn normalize_start_session_input(
     })
 }
 
+pub fn normalize_create_manual_study_input(
+    input: CreateManualStudyInput,
+) -> Result<CreateManualStudyInput, String> {
+    if !(1..=MAX_SESSION_SECONDS).contains(&input.effective_seconds) {
+        return Err(format!(
+            "A duração efetiva deve estar entre 1 e {MAX_SESSION_SECONDS} segundos."
+        ));
+    }
+
+    Ok(CreateManualStudyInput {
+        preparation_id: normalize_id(&input.preparation_id, "A preparação")?,
+        subject_id: input
+            .subject_id
+            .map(|subject_id| normalize_id(&subject_id, "O assunto"))
+            .transpose()?,
+        title: normalize_required_text(input.title, "O título do estudo", 160)?,
+        studied_on: normalize_date(&input.studied_on)?,
+        effective_seconds: input.effective_seconds,
+        summary_markdown: normalize_optional_session_text(
+            input.summary_markdown,
+            "O resumo do estudo",
+            20_000,
+        )?,
+        difficulty: input.difficulty,
+        next_steps: normalize_optional_session_text(input.next_steps, "Os próximos passos", 5_000)?,
+    })
+}
+
+pub fn normalize_correct_study_session_duration_input(
+    input: CorrectStudySessionDurationInput,
+) -> Result<CorrectStudySessionDurationInput, String> {
+    if !(0..=MAX_SESSION_SECONDS).contains(&input.effective_seconds) {
+        return Err(format!(
+            "A duração efetiva deve estar entre 0 e {MAX_SESSION_SECONDS} segundos."
+        ));
+    }
+
+    Ok(CorrectStudySessionDurationInput {
+        session_id: normalize_id(&input.session_id, "A sessão")?,
+        effective_seconds: input.effective_seconds,
+        reason: normalize_required_text(
+            input.reason,
+            "O motivo da correção",
+            MAX_CORRECTION_REASON_CHARACTERS,
+        )?,
+    })
+}
+
 pub fn normalize_reschedule_task_input(
     input: RescheduleStudyTaskInput,
 ) -> Result<RescheduleStudyTaskInput, String> {
@@ -411,6 +523,14 @@ pub fn normalize_resume_session_input(
     input: ResumeStudySessionInput,
 ) -> Result<ResumeStudySessionInput, String> {
     Ok(ResumeStudySessionInput {
+        session_id: normalize_id(&input.session_id, "A sessão")?,
+    })
+}
+
+pub fn normalize_heartbeat_session_input(
+    input: HeartbeatStudySessionInput,
+) -> Result<HeartbeatStudySessionInput, String> {
+    Ok(HeartbeatStudySessionInput {
         session_id: normalize_id(&input.session_id, "A sessão")?,
     })
 }
@@ -642,6 +762,39 @@ mod tests {
             next_steps: None,
         })
         .is_err());
+    }
+
+    #[test]
+    fn normalizes_manual_study_and_requires_correction_reason() {
+        let normalized = normalize_create_manual_study_input(CreateManualStudyInput {
+            preparation_id: Uuid::new_v4().to_string(),
+            subject_id: None,
+            title: "  Estudo fora do app  ".to_string(),
+            studied_on: "2032-02-29".to_string(),
+            effective_seconds: 1_800,
+            summary_markdown: Some("# Resumo".to_string()),
+            difficulty: Some(SessionDifficulty::Hard),
+            next_steps: None,
+        })
+        .expect("o estudo manual deve ser válido");
+
+        assert_eq!(normalized.title, "Estudo fora do app");
+        assert!(
+            normalize_correct_study_session_duration_input(CorrectStudySessionDurationInput {
+                session_id: Uuid::new_v4().to_string(),
+                effective_seconds: 900,
+                reason: "corrigi o tempo anotado".to_string(),
+            })
+            .is_ok()
+        );
+        assert!(
+            normalize_correct_study_session_duration_input(CorrectStudySessionDurationInput {
+                session_id: Uuid::new_v4().to_string(),
+                effective_seconds: 900,
+                reason: "  ".to_string(),
+            })
+            .is_err()
+        );
     }
 
     #[test]

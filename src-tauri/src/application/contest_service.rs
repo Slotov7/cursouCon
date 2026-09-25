@@ -1,7 +1,8 @@
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::contest::{
-    normalize_contest_id, normalize_manual_contest_input, ManualContestSummary,
-    SaveManualContestInput,
+    normalize_contest_id, normalize_manual_contest_input,
+    normalize_set_manual_contest_notice_input, ManualContestSummary, SaveManualContestInput,
+    SetManualContestNoticeInput,
 };
 
 pub trait ContestStore {
@@ -14,6 +15,10 @@ pub trait ContestStore {
         &self,
         contest_id: &str,
         is_favorite: bool,
+    ) -> Result<ManualContestSummary, WorkspaceError>;
+    fn set_manual_contest_notice(
+        &self,
+        input: &SetManualContestNoticeInput,
     ) -> Result<ManualContestSummary, WorkspaceError>;
 }
 
@@ -47,5 +52,14 @@ impl<S: ContestStore> ContestService<S> {
         let contest_id = normalize_contest_id(contest_id).map_err(WorkspaceError::InvalidInput)?;
         self.store
             .set_manual_contest_favorite(&contest_id, is_favorite)
+    }
+
+    pub fn set_notice(
+        &self,
+        input: SetManualContestNoticeInput,
+    ) -> Result<ManualContestSummary, WorkspaceError> {
+        let normalized = normalize_set_manual_contest_notice_input(input)
+            .map_err(WorkspaceError::InvalidInput)?;
+        self.store.set_manual_contest_notice(&normalized)
     }
 }

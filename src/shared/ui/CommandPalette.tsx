@@ -5,10 +5,11 @@ import {
   IconPlan,
   IconPractice,
   IconProgress,
+  IconSettings,
   IconToday,
 } from "./primitives";
 
-type ViewId = "today" | "plan" | "materials" | "practice" | "progress" | "explore";
+type ViewId = "today" | "plan" | "materials" | "practice" | "progress" | "explore" | "settings";
 
 type CommandItem = {
   id: string;
@@ -95,6 +96,17 @@ export function CommandPalette({ isOpen, onClose, onNavigate, onToggleTheme }: C
       icon: IconExplore,
       perform: () => {
         onNavigate("explore");
+        onClose();
+      },
+    },
+    {
+      id: "nav-settings",
+      label: "Ir para Configurações e diagnóstico",
+      category: "Navegação",
+      shortcut: "G C",
+      icon: IconSettings,
+      perform: () => {
+        onNavigate("settings");
         onClose();
       },
     },

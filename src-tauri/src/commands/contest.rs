@@ -1,7 +1,9 @@
 use crate::application::contest_service::ContestService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
-use crate::domain::contest::{ContestStatus, ManualContestSummary, SaveManualContestInput};
+use crate::domain::contest::{
+    ContestStatus, ManualContestSummary, SaveManualContestInput, SetManualContestNoticeInput,
+};
 use serde::Deserialize;
 use tauri::AppHandle;
 
@@ -27,6 +29,13 @@ pub struct SaveManualContestRequest {
 pub struct SetManualContestFavoriteRequest {
     pub contest_id: String,
     pub is_favorite: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetManualContestNoticeRequest {
+    pub contest_id: String,
+    pub material_id: Option<String>,
 }
 
 #[tauri::command]
@@ -69,5 +78,19 @@ pub fn set_manual_contest_favorite(
     let store = local_workspace_store(&app)?;
     ContestService::new(store)
         .set_favorite(&request.contest_id, request.is_favorite)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn set_manual_contest_notice(
+    app: AppHandle,
+    request: SetManualContestNoticeRequest,
+) -> Result<ManualContestSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    ContestService::new(store)
+        .set_notice(SetManualContestNoticeInput {
+            contest_id: request.contest_id,
+            material_id: request.material_id,
+        })
         .map_err(CommandError::from)
 }

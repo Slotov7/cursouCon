@@ -1,16 +1,19 @@
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study::{
     normalize_accept_study_cycle_action_input, normalize_complete_study_review_input,
-    normalize_finish_session_input, normalize_pause_session_input,
-    normalize_reschedule_study_review_input, normalize_reschedule_task_input,
-    normalize_resume_session_input, normalize_save_session_reflection_input,
-    normalize_skip_task_input, normalize_start_session_input, normalize_study_task_input,
-    AcceptStudyCycleActionInput, AcceptStudyCycleActionResult, CompleteStudyReviewInput,
-    CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan, FinishStudySessionInput,
-    FinishStudySessionResult, PauseStudySessionInput, RescheduleStudyReviewInput,
-    RescheduleStudyTaskInput, ResumeStudySessionInput, SaveStudySessionReflectionInput,
-    SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary, StudyReviewSummary,
-    StudySessionSummary, StudyTaskSummary,
+    normalize_correct_study_session_duration_input, normalize_create_manual_study_input,
+    normalize_finish_session_input, normalize_heartbeat_session_input,
+    normalize_pause_session_input, normalize_reschedule_study_review_input,
+    normalize_reschedule_task_input, normalize_resume_session_input,
+    normalize_save_session_reflection_input, normalize_skip_task_input,
+    normalize_start_session_input, normalize_study_task_input, AcceptStudyCycleActionInput,
+    AcceptStudyCycleActionResult, CompleteStudyReviewInput, CompleteStudyReviewResult,
+    CorrectStudySessionDurationInput, CorrectStudySessionDurationResult, CreateManualStudyInput,
+    CreateManualStudyResult, CreateStudyTaskInput, DailyPlan, FinishStudySessionInput,
+    FinishStudySessionResult, HeartbeatStudySessionInput, PauseStudySessionInput,
+    RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
+    SaveStudySessionReflectionInput, SkipStudyTaskInput, StartStudySessionInput,
+    StudyProgressSummary, StudyReviewSummary, StudySessionSummary, StudyTaskSummary,
 };
 use crate::domain::study_plan::normalize_date;
 
@@ -36,6 +39,14 @@ pub trait StudyStore {
         &self,
         input: &StartStudySessionInput,
     ) -> Result<StudySessionSummary, WorkspaceError>;
+    fn create_manual_study(
+        &self,
+        input: &CreateManualStudyInput,
+    ) -> Result<CreateManualStudyResult, WorkspaceError>;
+    fn correct_study_session_duration(
+        &self,
+        input: &CorrectStudySessionDurationInput,
+    ) -> Result<CorrectStudySessionDurationResult, WorkspaceError>;
     fn pause_study_session(
         &self,
         input: &PauseStudySessionInput,
@@ -43,6 +54,10 @@ pub trait StudyStore {
     fn resume_study_session(
         &self,
         input: &ResumeStudySessionInput,
+    ) -> Result<StudySessionSummary, WorkspaceError>;
+    fn heartbeat_study_session(
+        &self,
+        input: &HeartbeatStudySessionInput,
     ) -> Result<StudySessionSummary, WorkspaceError>;
     fn save_study_session_reflection(
         &self,
@@ -92,6 +107,24 @@ impl<S: StudyStore> StudyService<S> {
         let normalized =
             normalize_start_session_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.start_study_session(&normalized)
+    }
+
+    pub fn create_manual_study(
+        &self,
+        input: CreateManualStudyInput,
+    ) -> Result<CreateManualStudyResult, WorkspaceError> {
+        let normalized =
+            normalize_create_manual_study_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.create_manual_study(&normalized)
+    }
+
+    pub fn correct_session_duration(
+        &self,
+        input: CorrectStudySessionDurationInput,
+    ) -> Result<CorrectStudySessionDurationResult, WorkspaceError> {
+        let normalized = normalize_correct_study_session_duration_input(input)
+            .map_err(WorkspaceError::InvalidInput)?;
+        self.store.correct_study_session_duration(&normalized)
     }
 
     pub fn accept_cycle_action(
@@ -160,6 +193,15 @@ impl<S: StudyStore> StudyService<S> {
         let normalized =
             normalize_resume_session_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.resume_study_session(&normalized)
+    }
+
+    pub fn heartbeat_session(
+        &self,
+        input: HeartbeatStudySessionInput,
+    ) -> Result<StudySessionSummary, WorkspaceError> {
+        let normalized =
+            normalize_heartbeat_session_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.heartbeat_study_session(&normalized)
     }
 
     pub fn save_session_reflection(

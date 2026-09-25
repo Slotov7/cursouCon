@@ -1,7 +1,10 @@
 pub mod backup_service;
 pub mod contest_service;
+pub mod diagnostic_service;
+pub mod export_service;
 pub mod material_service;
 pub mod note_service;
+pub mod preferences_service;
 pub mod question_service;
 pub mod revision_service;
 pub mod study_plan_service;

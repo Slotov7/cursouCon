@@ -183,6 +183,35 @@ textarea:focus-visible {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+:root.reduce-motion *,
+:root.reduce-motion *::before,
+:root.reduce-motion *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+:root.high-contrast {
+  --color-ink: #000000;
+  --color-muted: #334155;
+  --color-paper: #ffffff;
+  --color-paper-deep: #f1f5f9;
+  --color-card: #ffffff;
+  --color-line: #475569;
+}
+
+:root.dark.high-contrast {
+  --color-ink: #ffffff;
+  --color-muted: #e2e8f0;
+  --color-paper: #000000;
+  --color-paper-deep: #111827;
+  --color-card: #0f172a;
+  --color-line: #cbd5e1;
 }

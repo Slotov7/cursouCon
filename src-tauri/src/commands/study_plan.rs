@@ -2,10 +2,10 @@ use crate::application::study_plan_service::StudyPlanService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study_plan::{
-    CreatePreparationInput, CreateSubjectInput, PreparationSummary, SaveStudyPlanningInput,
-    SetSubjectStudyStatusInput, StudyCycleSlotInput, StudyDayAvailability, StudyPlan,
-    StudyPlanningSummary, SubjectPriorityInput, SubjectStudyStatus, SubjectSummary,
-    DEFAULT_REVIEW_RESERVE_PERCENT,
+    CreatePreparationInput, CreateSubjectInput, PreparationSummary, SavePreparationExamConfigInput,
+    SaveStudyPlanningInput, SetSubjectStudyStatusInput, StudyCycleSlotInput, StudyDayAvailability,
+    StudyPlan, StudyPlanningSummary, SubjectExamWeightInput, SubjectPriorityInput,
+    SubjectStudyStatus, SubjectSummary, DEFAULT_REVIEW_RESERVE_PERCENT,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -27,6 +27,22 @@ pub struct CreateSubjectRequest {
     pub preparation_id: String,
     pub name: String,
     pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubjectExamWeightRequest {
+    pub subject_id: String,
+    pub exam_weight: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavePreparationExamConfigRequest {
+    pub preparation_id: String,
+    pub reference_material_id: Option<String>,
+    pub exam_rules_markdown: Option<String>,
+    pub subject_exam_weights: Vec<SubjectExamWeightRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +137,29 @@ pub fn create_subject(
 
     StudyPlanService::new(store)
         .create_subject(input)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn save_preparation_exam_config(
+    app: AppHandle,
+    request: SavePreparationExamConfigRequest,
+) -> Result<PreparationSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyPlanService::new(store)
+        .save_preparation_exam_config(SavePreparationExamConfigInput {
+            preparation_id: request.preparation_id,
+            reference_material_id: request.reference_material_id,
+            exam_rules_markdown: request.exam_rules_markdown,
+            subject_exam_weights: request
+                .subject_exam_weights
+                .into_iter()
+                .map(|subject| SubjectExamWeightInput {
+                    subject_id: subject.subject_id,
+                    exam_weight: subject.exam_weight,
+                })
+                .collect(),
+        })
         .map_err(CommandError::from)
 }
 

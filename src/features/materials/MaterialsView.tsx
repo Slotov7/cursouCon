@@ -5,8 +5,11 @@ import {
   importMaterial,
   openMaterial,
   pickMaterialFile,
+  registerMaterialLink,
+  setMaterialSubjects,
+  setMaterialTags,
 } from "../../shared/desktop/commands";
-import type { MaterialSummary, StudyPlan } from "../../shared/desktop/contracts";
+import type { MaterialSummary, NoteSummary, StudyPlan } from "../../shared/desktop/contracts";
 import {
   buttonOutlineLightClass,
   buttonPrimaryClass,
@@ -28,13 +31,27 @@ type MaterialsViewProps = {
 
 export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
   const [materials, setMaterials] = useState<MaterialSummary[]>([]);
+  const [notes, setNotes] = useState<NoteSummary[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
+  const [materialKind, setMaterialKind] = useState<"file" | "link">("file");
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkTitle, setLinkTitle] = useState("");
   const [subjectId, setSubjectId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("");
+  const [subjectDrafts, setSubjectDrafts] = useState<Record<string, string[]>>({});
+  const [tagDrafts, setTagDrafts] = useState<Record<string, string>>({});
 
   const [isLoading, setIsLoading] = useState(true);
-  const [pendingAction, setPendingAction] = useState<"idle" | "picking" | "importing" | "opening">("idle");
+  const [pendingAction, setPendingAction] = useState<
+    | "idle"
+    | "picking"
+    | "importing"
+    | "registering-link"
+    | "opening"
+    | "tagging"
+    | "subjects"
+  >("idle");
   const [readerMaterial, setReaderMaterial] = useState<MaterialSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -48,6 +65,8 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
       .then((loadedMaterials) => {
         if (!cancelled) {
           setMaterials(loadedMaterials);
+          setSubjectDrafts({});
+          setTagDrafts({});
           setError(null);
         }
       })
@@ -75,14 +94,22 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase().trim();
         const matchName = m.originalName.toLowerCase().includes(query);
+        const matchUrl = m.sourceUrl?.toLowerCase().includes(query) ?? false;
         const matchSubject = m.subjects.some((s) => s.name.toLowerCase().includes(query));
-        if (!matchName && !matchSubject) {
+        const matchTag = m.tags.some((tag) => tag.toLowerCase().includes(query));
+        const matchNote = notes.some(
+          (note) =>
+            note.materialId === m.id &&
+            (note.title.toLowerCase().includes(query) ||
+              note.contentMarkdown.toLowerCase().includes(query)),
+        );
+        if (!matchName && !matchUrl && !matchSubject && !matchTag && !matchNote) {
           return false;
         }
       }
       return true;
     });
-  }, [materials, subjectFilter, searchQuery]);
+  }, [materials, notes, subjectFilter, searchQuery]);
 
   const chooseFile = async () => {
     setError(null);
@@ -130,9 +157,45 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
     }
   };
 
+  const handleRegisterLink = async () => {
+    if (!linkUrl.trim()) {
+      setError("Informe um link antes de salvar.");
+      return;
+    }
+
+    setError(null);
+    setMessage(null);
+    setPendingAction("registering-link");
+
+    try {
+      const registeredMaterial = await registerMaterialLink({
+        url: linkUrl,
+        title: linkTitle || null,
+        subjectId: subjectId || null,
+      });
+      setMaterials((currentMaterials) => [
+        registeredMaterial,
+        ...currentMaterials.filter((material) => material.id !== registeredMaterial.id),
+      ]);
+      setLinkUrl("");
+      setLinkTitle("");
+      setSubjectId("");
+      setIsImportingModalOpen(false);
+      setMessage("Link registrado na biblioteca local.");
+    } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingAction("idle");
+    }
+  };
+
   const handleOpenIntegrated = (material: MaterialSummary) => {
     setError(null);
     setMessage(null);
+    if (!isPdfMaterial(material)) {
+      void handleOpenExternal(material);
+      return;
+    }
     setReaderMaterial(material);
   };
 
@@ -142,7 +205,11 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
     setPendingAction("opening");
     try {
       await openMaterial({ materialId: material.id });
-      setMessage(`${material.originalName} foi aberto no visualizador do sistema.`);
+      setMessage(
+        material.sourceUrl
+          ? "O link foi aberto no navegador padrão."
+          : `${material.originalName} foi aberto no aplicativo padrão do sistema.`,
+      );
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -156,7 +223,59 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
         material.id === updatedMaterial.id ? updatedMaterial : material,
       ),
     );
-    setReaderMaterial(updatedMaterial);
+    setReaderMaterial((currentMaterial) =>
+      currentMaterial?.id === updatedMaterial.id ? updatedMaterial : currentMaterial,
+    );
+  };
+
+  const handleSaveSubjects = async (material: MaterialSummary) => {
+    setError(null);
+    setMessage(null);
+    setPendingAction("subjects");
+
+    try {
+      const subjectIds = subjectDrafts[material.id] ?? material.subjects.map((subject) => subject.id);
+      const updatedMaterial = await setMaterialSubjects({
+        materialId: material.id,
+        subjectIds,
+      });
+      handleMaterialUpdated(updatedMaterial);
+      setSubjectDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[material.id];
+        return nextDrafts;
+      });
+      setMessage("Assuntos do material atualizados.");
+    } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingAction("idle");
+    }
+  };
+
+  const handleSaveTags = async (material: MaterialSummary) => {
+    setError(null);
+    setMessage(null);
+    setPendingAction("tagging");
+
+    try {
+      const draft = tagDrafts[material.id] ?? material.tags.join(", ");
+      const updatedMaterial = await setMaterialTags({
+        materialId: material.id,
+        tags: draft.split(","),
+      });
+      handleMaterialUpdated(updatedMaterial);
+      setTagDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[material.id];
+        return nextDrafts;
+      });
+      setMessage("Etiquetas do material atualizadas.");
+    } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingAction("idle");
+    }
   };
 
   const isBusy = pendingAction !== "idle";
@@ -177,10 +296,10 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
 
           <div>
             <h2 className="font-heading text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
-              Materiais de Estudo & Apostilas PDF
+              Materiais de Estudo & Arquivos
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
-              Leitura focada com marcador de página persistente, abertura no leitor embutido e bloco de notas integrado ao ciclo de estudos.
+              Arquivos locais, links externos, marcador de página persistente e bloco de notas integrado ao ciclo de estudos.
             </p>
           </div>
 
@@ -190,7 +309,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
               onClick={() => setIsImportingModalOpen(true)}
               className={buttonPrimaryClass}
             >
-              + Importar Novo PDF
+              + Importar Material
             </button>
           </div>
         </div>
@@ -214,7 +333,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
         </div>
       )}
 
-      {/* PDF Reader Overlay Modal if active */}
+      {/* PDF reader overlay when a supported material is active */}
       {readerMaterial && (
         <Suspense fallback={<p className="rounded-2xl border border-line bg-card p-6 text-sm text-muted">Carregando leitor de PDF...</p>}>
           <PdfReader
@@ -231,7 +350,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
           <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
             <div>
               <Eyebrow>Biblioteca Local</Eyebrow>
-              <h3 className="font-heading text-lg font-bold text-ink">Importar Material PDF</h3>
+              <h3 className="font-heading text-lg font-bold text-ink">Importar material local</h3>
             </div>
             <button
               type="button"
@@ -243,26 +362,74 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
           </div>
 
           <div className="grid gap-4">
-            <label className={fieldClass}>
-              Arquivo no Computador
-              <div className="flex gap-2">
-                <input
-                  className={`${inputClass} flex-1 text-xs`}
-                  type="text"
-                  placeholder="Nenhum arquivo selecionado"
-                  value={selectedPath}
-                  readOnly
-                />
-                <button
-                  type="button"
-                  onClick={chooseFile}
-                  disabled={isBusy}
-                  className={`${buttonSecondaryClass} shrink-0 px-3 py-2 text-xs`}
-                >
-                  {pendingAction === "picking" ? "Abrindo..." : "Selecionar..."}
-                </button>
-              </div>
+            <label className={fieldClass} htmlFor="material-kind">
+              Origem do material
+              <select
+                className={selectClass}
+                id="material-kind"
+                value={materialKind}
+                onChange={(event) => setMaterialKind(event.target.value === "link" ? "link" : "file")}
+                disabled={isBusy}
+              >
+                <option value="file">Arquivo copiado para o espaço</option>
+                <option value="link">Link externo</option>
+              </select>
             </label>
+
+            {materialKind === "file" ? (
+              <label className={fieldClass}>
+                Arquivo no computador
+                <div className="flex gap-2">
+                  <input
+                    className={`${inputClass} flex-1 text-xs`}
+                    type="text"
+                    placeholder="Nenhum arquivo selecionado"
+                    value={selectedPath}
+                    readOnly
+                  />
+                  <button
+                    type="button"
+                    onClick={chooseFile}
+                    disabled={isBusy}
+                    className={`${buttonSecondaryClass} shrink-0 px-3 py-2 text-xs`}
+                  >
+                    {pendingAction === "picking" ? "Abrindo..." : "Selecionar..."}
+                  </button>
+                </div>
+              </label>
+            ) : (
+              <>
+                <label className={fieldClass} htmlFor="material-url">
+                  Link HTTP ou HTTPS
+                  <input
+                    className={inputClass}
+                    id="material-url"
+                    type="url"
+                    inputMode="url"
+                    placeholder="https://exemplo.gov.br/edital"
+                    value={linkUrl}
+                    onChange={(event) => setLinkUrl(event.target.value)}
+                    disabled={isBusy}
+                  />
+                </label>
+                <label className={fieldClass} htmlFor="material-link-title">
+                  Título <span className="font-normal text-muted">(opcional)</span>
+                  <input
+                    className={inputClass}
+                    id="material-link-title"
+                    type="text"
+                    maxLength={240}
+                    placeholder="Ex.: Página oficial do edital"
+                    value={linkTitle}
+                    onChange={(event) => setLinkTitle(event.target.value)}
+                    disabled={isBusy}
+                  />
+                </label>
+                <p className="text-xs leading-relaxed text-muted">
+                  O app salva apenas o endereço. O conteúdo continua no site e abre no navegador padrão.
+                </p>
+              </>
+            )}
 
             <label className={fieldClass}>
               Vincular a uma Disciplina <span className="text-muted font-normal">(opcional)</span>
@@ -290,14 +457,25 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
               >
                 Cancelar
               </button>
-              <button
-                type="button"
-                onClick={handleImport}
-                disabled={isBusy || !selectedPath}
-                className={buttonPrimaryClass}
-              >
-                {pendingAction === "importing" ? "Copiando para o espaço..." : "Confirmar Importação"}
-              </button>
+              {materialKind === "file" ? (
+                <button
+                  type="button"
+                  onClick={handleImport}
+                  disabled={isBusy || !selectedPath}
+                  className={buttonPrimaryClass}
+                >
+                  {pendingAction === "importing" ? "Copiando para o espaço..." : "Confirmar importação"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleRegisterLink}
+                  disabled={isBusy || !linkUrl.trim()}
+                  className={buttonPrimaryClass}
+                >
+                  {pendingAction === "registering-link" ? "Salvando link..." : "Salvar link"}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -305,12 +483,12 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
 
       {/* 2. Main Content Grid - Library & Notes Panel */}
       <div className="grid gap-6 xl:grid-cols-[minmax(330px,1fr)_minmax(0,1.2fr)]">
-        {/* PDF Library List */}
+        {/* Material library list */}
         <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs flex flex-col">
           <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
             <div>
               <Eyebrow>Sua Biblioteca</Eyebrow>
-              <h3 className="font-heading text-lg font-bold text-ink">Arquivos & Apostilas</h3>
+              <h3 className="font-heading text-lg font-bold text-ink">Arquivos & Links</h3>
             </div>
             <span className="font-mono text-xs font-bold text-muted bg-paper-deep px-2.5 py-1 rounded-lg">
               {filteredMaterials.length} de {materials.length}
@@ -322,7 +500,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
             <input
               type="text"
               className={inputClass}
-              placeholder="Buscar apostila por título ou matéria..."
+              placeholder="Buscar por título, link, matéria ou etiqueta..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -351,8 +529,8 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
               <p className="font-bold text-ink">Nenhum material encontrado.</p>
               <p className="mt-1">
                 {materials.length === 0
-                  ? "Importe seu primeiro PDF de teoria ou resumo para começar a leitura."
-                  : "Nenhum PDF corresponde aos filtros de busca atuais."}
+                  ? "Importe seu primeiro material de teoria ou resumo para começar."
+                  : "Nenhum material corresponde aos filtros de busca atuais."}
               </p>
               <button
                 type="button"
@@ -366,7 +544,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
                 }}
                 className={`${buttonPrimaryClass} mt-4 text-xs`}
               >
-                {materials.length === 0 ? "+ Importar Primeiro PDF" : "Limpar Filtros"}
+                {materials.length === 0 ? "+ Importar Primeiro Material" : "Limpar Filtros"}
               </button>
             </div>
           ) : (
@@ -377,38 +555,120 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
                   className="flex flex-col gap-3 rounded-xl border border-line bg-paper/80 p-4 transition-all duration-150 ease-out hover:border-blue-500/40 hover:bg-paper shadow-xs"
                 >
                   <div className="flex items-start gap-3 min-w-0">
-                    <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-red-500/10 text-red-600 font-extrabold text-xs border border-red-500/20 font-mono">
-                      PDF
+                    <div className={`flex size-10 shrink-0 items-center justify-center rounded-xl font-extrabold text-xs border font-mono ${item.sourceUrl ? "border-blue-500/20 bg-blue-500/10 text-blue-600" : "border-red-500/20 bg-red-500/10 text-red-600"}`}>
+                      {getMaterialFormat(item)}
                     </div>
                     <div className="min-w-0 flex-1">
                       <h4 className="truncate font-bold text-xs text-ink">{item.originalName}</h4>
+                      {item.sourceUrl ? (
+                        <span className="mt-1 block truncate text-[11px] text-muted" title={item.sourceUrl}>
+                          {item.sourceUrl}
+                        </span>
+                      ) : null}
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
                         <span className="rounded bg-paper-deep px-1.5 py-0.5 font-medium border border-line">
                           {item.subjects[0]?.name || "Geral"}
                         </span>
                         <span className="font-mono tabular-nums">
-                          Página {item.currentPage} · {formatBytes(item.byteSize)}
+                          {item.sourceUrl ? "Link externo" : `Página ${item.currentPage} · ${formatBytes(item.byteSize)}`}
                         </span>
                       </div>
                     </div>
                   </div>
+
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+                      Disciplinas e assuntos
+                    </span>
+                    <div className="flex gap-2">
+                      <select
+                        className={`${inputClass} min-w-0 flex-1 text-xs`}
+                        multiple
+                        size={Math.min(4, Math.max(2, (plan?.subjects.length ?? 0) + item.subjects.length))}
+                        value={subjectDrafts[item.id] ?? item.subjects.map((subject) => subject.id)}
+                        onChange={(event) =>
+                          setSubjectDrafts((currentDrafts) => ({
+                            ...currentDrafts,
+                            [item.id]: Array.from(
+                              event.target.selectedOptions,
+                              (option) => option.value,
+                            ),
+                          }))
+                        }
+                        disabled={isBusy}
+                        aria-label={`Disciplinas e assuntos de ${item.originalName}`}
+                      >
+                        {[...
+                          item.subjects.map((subject) => ({ id: subject.id, name: subject.name })),
+                          ...(plan?.subjects ?? [])
+                            .filter((subject) => !item.subjects.some((itemSubject) => itemSubject.id === subject.id))
+                            .map((subject) => ({ id: subject.id, name: subject.name })),
+                        ].map((subject) => (
+                          <option key={subject.id} value={subject.id}>
+                            {subject.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => handleSaveSubjects(item)}
+                        className={`${buttonSecondaryClass} shrink-0 self-start px-3 py-1 text-xs`}
+                        disabled={isBusy}
+                      >
+                        Salvar
+                      </button>
+                    </div>
+                    <span className="text-[10px] text-muted">Use Ctrl/Cmd para selecionar mais de um vínculo.</span>
+                  </label>
+
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+                      Etiquetas
+                    </span>
+                    <div className="flex gap-2">
+                      <input
+                        className={`${inputClass} min-w-0 flex-1 text-xs`}
+                        type="text"
+                        value={tagDrafts[item.id] ?? item.tags.join(", ")}
+                        onChange={(event) =>
+                          setTagDrafts((currentDrafts) => ({
+                            ...currentDrafts,
+                            [item.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Ex.: revisão, constitucional"
+                        disabled={isBusy}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveTags(item)}
+                        className={`${buttonSecondaryClass} shrink-0 px-3 py-1 text-xs`}
+                        disabled={isBusy}
+                      >
+                        Salvar
+                      </button>
+                    </div>
+                    <span className="text-[10px] text-muted">Separe as etiquetas por vírgulas.</span>
+                  </label>
 
                   <div className="flex items-center justify-end gap-2 pt-2 border-t border-line">
                     <button
                       type="button"
                       onClick={() => handleOpenExternal(item)}
                       className={`${buttonQuietClass} text-xs px-2.5 py-1`}
-                      title="Abrir com o visualizador padrão do Windows/Linux"
+                      title="Abrir com o aplicativo padrão do sistema"
                     >
-                      ↗ Externo
+                      ↗ {item.sourceUrl ? "Abrir link" : isPdfMaterial(item) ? "Externo" : "Abrir arquivo"}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenIntegrated(item)}
-                      className={`${buttonPrimaryClass} text-xs px-3.5 py-1`}
-                    >
-                      ▶ Ler no App
-                    </button>
+                    {isPdfMaterial(item) ? (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenIntegrated(item)}
+                        className={`${buttonPrimaryClass} text-xs px-3.5 py-1`}
+                      >
+                        ▶ Ler no App
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -418,7 +678,12 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
 
         {/* Notes & Summaries Panel */}
         <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs">
-          <NotesPanel plan={plan} materials={materials} refreshKey={refreshKey} />
+          <NotesPanel
+            plan={plan}
+            materials={materials}
+            refreshKey={refreshKey}
+            onNotesChanged={setNotes}
+          />
         </section>
       </div>
     </div>
@@ -430,4 +695,19 @@ function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function isPdfMaterial(material: MaterialSummary): boolean {
+  if (material.sourceUrl) return false;
+  return (
+    material.mimeType?.toLowerCase() === "application/pdf" ||
+    material.originalName.toLowerCase().endsWith(".pdf")
+  );
+}
+
+function getMaterialFormat(material: MaterialSummary): string {
+  if (material.sourceUrl) return "WEB";
+  if (isPdfMaterial(material)) return "PDF";
+  const extension = material.originalName.split(".").pop()?.trim().toUpperCase();
+  return extension && extension.length <= 5 ? extension : "ARQ";
 }

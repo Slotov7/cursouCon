@@ -12,6 +12,13 @@ pub struct ImportMaterialInput {
 }
 
 #[derive(Debug, Clone)]
+pub struct RegisterMaterialLinkInput {
+    pub url: String,
+    pub title: Option<String>,
+    pub subject_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct OpenMaterialInput {
     pub material_id: String,
 }
@@ -28,6 +35,12 @@ pub struct SetMaterialTagsInput {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SetMaterialSubjectsInput {
+    pub material_id: String,
+    pub subject_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaterialSubjectSummary {
@@ -42,6 +55,7 @@ pub struct MaterialSummary {
     pub original_name: String,
     pub content_hash: String,
     pub mime_type: Option<String>,
+    pub source_url: Option<String>,
     pub byte_size: i64,
     pub imported_at: String,
     pub current_page: i64,
@@ -69,6 +83,54 @@ pub fn normalize_import_material_input(
     })
 }
 
+pub fn normalize_register_material_link_input(
+    input: RegisterMaterialLinkInput,
+) -> Result<RegisterMaterialLinkInput, String> {
+    let url = normalize_external_url(&input.url)?;
+    let title = input
+        .title
+        .map(|title| title.trim().to_string())
+        .filter(|title| !title.is_empty());
+    if let Some(title) = &title {
+        validate_material_title(title)?;
+    }
+
+    Ok(RegisterMaterialLinkInput {
+        url,
+        title,
+        subject_id: input
+            .subject_id
+            .map(|subject_id| normalize_id(&subject_id, "O assunto"))
+            .transpose()?,
+    })
+}
+
+pub fn normalize_external_url(value: &str) -> Result<String, String> {
+    let url = value.trim();
+    if url.is_empty()
+        || url.chars().count() > 2048
+        || url
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err("Informe um link HTTP ou HTTPS válido.".to_string());
+    }
+
+    let Some((scheme, remainder)) = url.split_once("://") else {
+        return Err("O link precisa começar com http:// ou https://.".to_string());
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return Err("Apenas links HTTP e HTTPS podem ser registrados.".to_string());
+    }
+
+    let authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') || authority.contains('\\') {
+        return Err("O link precisa apontar para um endereço web válido.".to_string());
+    }
+
+    Ok(format!("{}://{remainder}", scheme.to_ascii_lowercase()))
+}
+
 pub fn normalize_open_material_input(
     input: OpenMaterialInput,
 ) -> Result<OpenMaterialInput, String> {
@@ -94,7 +156,9 @@ pub fn normalize_set_material_tags_input(
     input: SetMaterialTagsInput,
 ) -> Result<SetMaterialTagsInput, String> {
     if input.tags.len() > MAX_MATERIAL_TAGS {
-        return Err(format!("Um material pode ter no máximo {MAX_MATERIAL_TAGS} etiquetas."));
+        return Err(format!(
+            "Um material pode ter no máximo {MAX_MATERIAL_TAGS} etiquetas."
+        ));
     }
 
     let mut seen = HashSet::new();
@@ -113,7 +177,9 @@ pub fn normalize_set_material_tags_input(
             .chars()
             .any(|character| character.is_control() || character == ',')
         {
-            return Err("As etiquetas não podem conter vírgulas ou caracteres de controle.".to_string());
+            return Err(
+                "As etiquetas não podem conter vírgulas ou caracteres de controle.".to_string(),
+            );
         }
         if seen.insert(normalized.to_lowercase()) {
             tags.push(normalized.to_string());
@@ -126,9 +192,34 @@ pub fn normalize_set_material_tags_input(
     })
 }
 
+pub fn normalize_set_material_subjects_input(
+    input: SetMaterialSubjectsInput,
+) -> Result<SetMaterialSubjectsInput, String> {
+    let mut seen = HashSet::new();
+    let mut subject_ids = Vec::with_capacity(input.subject_ids.len());
+    for subject_id in input.subject_ids {
+        let normalized = normalize_id(&subject_id, "O assunto")?;
+        if seen.insert(normalized.clone()) {
+            subject_ids.push(normalized);
+        }
+    }
+
+    Ok(SetMaterialSubjectsInput {
+        material_id: normalize_id(&input.material_id, "O material")?,
+        subject_ids,
+    })
+}
+
 fn normalize_id(value: &str, label: &str) -> Result<String, String> {
     let parsed = Uuid::parse_str(value.trim()).map_err(|_| format!("{label} não é válido."))?;
     Ok(parsed.to_string())
+}
+
+fn validate_material_title(title: &str) -> Result<(), String> {
+    if title.chars().count() > 240 || title.chars().any(char::is_control) {
+        return Err("O título do material é inválido.".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -151,6 +242,27 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_http_links_and_rejects_other_schemes() {
+        let normalized = normalize_register_material_link_input(RegisterMaterialLinkInput {
+            url: " HTTPS://example.com/edital ".to_string(),
+            title: Some("  Edital de referência ".to_string()),
+            subject_id: None,
+        })
+        .expect("o link deve ser normalizado");
+
+        assert_eq!(normalized.url, "https://example.com/edital");
+        assert_eq!(normalized.title.as_deref(), Some("Edital de referência"));
+        assert!(
+            normalize_register_material_link_input(RegisterMaterialLinkInput {
+                url: "file:///etc/passwd".to_string(),
+                title: None,
+                subject_id: None,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
     fn rejects_material_page_before_first_page() {
         assert!(
             normalize_update_material_page_input(UpdateMaterialPageInput {
@@ -165,7 +277,11 @@ mod tests {
     fn normalizes_tags_and_deduplicates_without_case_sensitivity() {
         let normalized = normalize_set_material_tags_input(SetMaterialTagsInput {
             material_id: Uuid::new_v4().to_string(),
-            tags: vec![" Redes ".to_string(), "redes".to_string(), "TCP/IP".to_string()],
+            tags: vec![
+                " Redes ".to_string(),
+                "redes".to_string(),
+                "TCP/IP".to_string(),
+            ],
         })
         .expect("as etiquetas devem ser normalizadas");
 
@@ -175,5 +291,27 @@ mod tests {
             tags: vec!["tag,inválida".to_string()],
         })
         .is_err());
+    }
+
+    #[test]
+    fn normalizes_material_subject_links_and_removes_duplicates() {
+        let material_id = Uuid::new_v4().to_string();
+        let first_subject_id = Uuid::new_v4().to_string();
+        let second_subject_id = Uuid::new_v4().to_string();
+        let normalized = normalize_set_material_subjects_input(SetMaterialSubjectsInput {
+            material_id: format!(" {material_id} "),
+            subject_ids: vec![
+                format!(" {first_subject_id} "),
+                first_subject_id.clone(),
+                second_subject_id.clone(),
+            ],
+        })
+        .expect("os vínculos devem ser normalizados");
+
+        assert_eq!(normalized.material_id, material_id);
+        assert_eq!(
+            normalized.subject_ids,
+            vec![first_subject_id, second_subject_id]
+        );
     }
 }

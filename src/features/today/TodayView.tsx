@@ -20,6 +20,7 @@ import type {
   StudyTaskStatus,
 } from "../../shared/desktop/contracts";
 import { ReviewQueue } from "./ReviewQueue";
+import { displayTimezone } from "../../shared/date";
 import {
   buttonLightClass,
   buttonOutlineLightClass,
@@ -34,6 +35,7 @@ import {
 } from "../../shared/ui/primitives";
 
 type TodayViewProps = {
+  timezone: string;
   plan: StudyPlan | null;
   dailyPlan: DailyPlan | null;
   isLoading: boolean;
@@ -58,6 +60,7 @@ const DEFAULT_POMODORO_SETTINGS: PomodoroSettings = {
 };
 
 export function TodayView({
+  timezone,
   plan,
   dailyPlan,
   isLoading,
@@ -73,6 +76,7 @@ export function TodayView({
   const [sessionSummaryMarkdown, setSessionSummaryMarkdown] = useState("");
   const [sessionDifficulty, setSessionDifficulty] = useState<StudySessionDifficulty | null>(null);
   const [sessionNextSteps, setSessionNextSteps] = useState("");
+  const [recoveryMinutes, setRecoveryMinutes] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [pomodoroSettings, setPomodoroSettings] = useState(readPomodoroSettings);
   const [pomodoroPhase, setPomodoroPhase] = useState<PomodoroPhase>("focus");
@@ -93,7 +97,12 @@ export function TodayView({
     setSessionSummaryMarkdown(activeSession?.summaryMarkdown ?? "");
     setSessionDifficulty(activeSession?.difficulty ?? null);
     setSessionNextSteps(activeSession?.nextSteps ?? "");
-  }, [activeSession?.id]);
+    setRecoveryMinutes(
+      activeSession?.status === "interrupted"
+        ? Math.ceil((activeSession.effectiveSeconds ?? 0) / 60).toString()
+        : "",
+    );
+  }, [activeSession?.id, activeSession?.status, activeSession?.effectiveSeconds]);
 
   const tasksToRender = dailyPlan?.tasks ?? [];
   const activeTask =
@@ -281,19 +290,27 @@ export function TodayView({
       onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
+      onDataChanged();
     } finally {
       setPendingTaskId(null);
     }
   };
 
   const handleResume = async () => {
-    if (!activeSession || activeSession.status !== "paused") return;
+    if (
+      !activeSession ||
+      (activeSession.status !== "paused" && activeSession.status !== "interrupted")
+    ) return;
     setActionError(null);
     setActionMessage(null);
     setPendingTaskId(activeSession.taskId);
     try {
       await resumeStudySession({ sessionId: activeSession.id });
-      setActionMessage("Sessão retomada.");
+      setActionMessage(
+        activeSession.status === "interrupted"
+          ? "Sessão retomada. O trecho desde o último checkpoint foi descartado para revisão manual."
+          : "Sessão retomada.",
+      );
       if (pomodoroPhase === "focus") {
         setPomodoroRunning(true);
       }
@@ -331,6 +348,16 @@ export function TodayView({
 
   const handleFinish = async (taskStatus: "completed" | "partial") => {
     if (!activeSession) return;
+    let effectiveSeconds = getElapsedSeconds(activeSession, now);
+    if (activeSession.status === "interrupted") {
+      const minutes = Number(recoveryMinutes);
+      const minimumMinutes = Math.ceil(activeSession.effectiveSeconds / 60);
+      if (!Number.isInteger(minutes) || minutes < minimumMinutes || minutes > 10_080) {
+        setActionError(`Informe um tempo confirmado entre ${minimumMinutes} e 10.080 minutos.`);
+        return;
+      }
+      effectiveSeconds = minutes * 60;
+    }
     setPomodoroRunning(false);
     setActionError(null);
     setActionMessage(null);
@@ -338,7 +365,7 @@ export function TodayView({
     try {
       const result = await finishStudySession({
         sessionId: activeSession.id,
-        effectiveSeconds: getElapsedSeconds(activeSession, now),
+        effectiveSeconds,
         taskStatus,
         reviewOn: taskStatus === "completed" && reviewOn ? reviewOn : null,
         summaryMarkdown: sessionSummaryMarkdown.trim() ? sessionSummaryMarkdown : null,
@@ -362,6 +389,7 @@ export function TodayView({
       onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
+      onDataChanged();
     } finally {
       setPendingTaskId(null);
     }
@@ -487,11 +515,13 @@ export function TodayView({
           {/* Status Badge */}
           <div className="flex flex-wrap items-center gap-3">
             <span className="inline-flex items-center gap-2 rounded-full border border-blue-400/30 bg-blue-500/20 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 backdrop-blur-xs">
-              <span className={`size-2 rounded-full ${activeSession?.status === "active" ? "bg-orange-400 animate-pulse" : activeSession?.status === "paused" ? "bg-amber-400" : "bg-emerald-400"}`} />
+              <span className={`size-2 rounded-full ${activeSession?.status === "active" ? "bg-orange-400 animate-pulse" : activeSession?.status === "paused" ? "bg-amber-400" : activeSession?.status === "interrupted" ? "bg-red-400" : "bg-emerald-400"}`} />
               {activeSession?.status === "paused"
                 ? "Sessão Pausada"
                 : activeSession?.status === "active"
                 ? "Estudo em Andamento"
+                : activeSession?.status === "interrupted"
+                ? "Tempo Incerto para Revisar"
                 : "Próxima Ação do Seu Ciclo"}
             </span>
 
@@ -526,7 +556,7 @@ export function TodayView({
 
           {/* Action Button Bar */}
           <div className="flex flex-wrap items-center gap-3 pt-2">
-            {activeSession?.status === "paused" ? (
+            {activeSession?.status === "interrupted" ? null : activeSession?.status === "paused" ? (
               <button className={buttonPrimaryClass} type="button" onClick={handleResumePomodoro} disabled={isBusy}>
                 ▶ {pomodoroPhase === "focus" ? "Retomar Sessão" : "Continuar Intervalo"}
               </button>
@@ -552,12 +582,44 @@ export function TodayView({
               </button>
             )}
 
-            {activeSession && (
+            {activeSession && activeSession.status !== "interrupted" && (
               <button className={buttonQuietClass} type="button" onClick={() => handleFinish("partial")} disabled={isBusy}>
                 Encerrar Parcial
               </button>
             )}
           </div>
+
+          {activeSession?.status === "interrupted" && (
+            <section className="grid max-w-2xl gap-3 rounded-xl border border-red-300/35 bg-red-950/20 p-3" aria-labelledby="interrupted-session-title">
+              <div>
+                <h3 id="interrupted-session-title" className="text-xs font-bold text-red-100">Revise o trecho incerto</h3>
+                <p className="mt-1 text-[11px] leading-relaxed text-red-100/80">
+                  O aplicativo não somou o tempo desde o último checkpoint. Confirme somente o tempo efetivo conhecido ou retome descartando esse trecho.
+                </p>
+              </div>
+              <label className="grid max-w-xs gap-1.5 text-xs font-semibold text-slate-100">
+                Tempo efetivo confirmado (minutos)
+                <input
+                  className={inputClass}
+                  type="number"
+                  min={Math.ceil(activeSession.effectiveSeconds / 60)}
+                  max="10080"
+                  step="1"
+                  value={recoveryMinutes}
+                  onChange={(event) => setRecoveryMinutes(event.target.value)}
+                  disabled={isBusy}
+                />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button className={buttonPrimaryClass} type="button" onClick={() => void handleFinish("completed")} disabled={isBusy}>
+                  Encerrar com tempo confirmado
+                </button>
+                <button className={buttonOutlineLightClass} type="button" onClick={handleResume} disabled={isBusy}>
+                  Retomar sem o trecho incerto
+                </button>
+              </div>
+            </section>
+          )}
 
           {activeSession && (
             <div className="max-w-md rounded-xl border border-white/15 bg-white/5 p-3">
@@ -594,7 +656,7 @@ export function TodayView({
                   value={sessionSummaryMarkdown}
                   onChange={(event) => setSessionSummaryMarkdown(event.target.value)}
                   maxLength={20_000}
-                  disabled={isBusy}
+                  disabled={isBusy || activeSession.status === "interrupted"}
                   placeholder="Resumo em Markdown (opcional)"
                 />
               </label>
@@ -609,7 +671,7 @@ export function TodayView({
                         event.target.value === "" ? null : event.target.value as StudySessionDifficulty,
                       )
                     }
-                    disabled={isBusy}
+                    disabled={isBusy || activeSession.status === "interrupted"}
                   >
                     <option value="">Não informada</option>
                     <option value="easy">Fácil</option>
@@ -624,7 +686,7 @@ export function TodayView({
                     value={sessionNextSteps}
                     onChange={(event) => setSessionNextSteps(event.target.value)}
                     maxLength={5_000}
-                    disabled={isBusy}
+                    disabled={isBusy || activeSession.status === "interrupted"}
                     placeholder="O que revisar ou praticar depois?"
                   />
                 </label>
@@ -634,7 +696,7 @@ export function TodayView({
                   className={buttonOutlineLightClass}
                   type="button"
                   onClick={() => void handleSaveSessionReflection()}
-                  disabled={isBusy}
+                  disabled={isBusy || activeSession.status === "interrupted"}
                 >
                   Salvar resumo
                 </button>
@@ -644,7 +706,7 @@ export function TodayView({
         </div>
       </section>
 
-      {dailyPlan && <ReviewQueue reviews={dailyPlan.reviews} onDataChanged={onDataChanged} />}
+      {dailyPlan && <ReviewQueue reviews={dailyPlan.reviews} onDataChanged={onDataChanged} timezone={timezone} />}
 
       {/* 2. Daily plan metrics */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
@@ -751,7 +813,7 @@ export function TodayView({
             <div className="mt-4 grid gap-2.5 text-xs text-muted">
               <div className="flex items-center justify-between border-b border-line pb-2">
                 <span>Data do Plano:</span>
-                <span className="font-semibold text-ink">{formatToday()}</span>
+                <span className="font-semibold text-ink">{formatToday(timezone)}</span>
               </div>
               <div className="flex items-center justify-between border-b border-line pb-2">
                 <span>Modo de Armazenamento:</span>
@@ -1085,11 +1147,12 @@ function isPomodoroSettings(value: unknown): value is PomodoroSettings {
   );
 }
 
-function formatToday(): string {
+function formatToday(timezone: string): string {
   return new Intl.DateTimeFormat("pt-BR", {
     weekday: "long",
     day: "numeric",
     month: "long",
+    timeZone: displayTimezone(timezone),
   }).format(new Date());
 }
 
@@ -1099,5 +1162,5 @@ function getElapsedSeconds(session: StudySessionSummary, now: number): number {
   const normalized = startedAt.includes("T") ? startedAt : startedAt.replace(" ", "T");
   const startTime = Date.parse(/[zZ]$/.test(normalized) ? normalized : `${normalized}Z`);
   if (Number.isNaN(startTime)) return session.effectiveSeconds;
-  return Math.max(session.effectiveSeconds, Math.floor((now - startTime) / 1000));
+  return session.effectiveSeconds + Math.max(0, Math.floor((now - startTime) / 1000));
 }

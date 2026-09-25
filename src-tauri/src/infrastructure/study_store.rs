@@ -4,15 +4,18 @@ use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study::{
     calculate_review_xp, calculate_session_xp, calculate_study_streak, parse_session_status,
     parse_task_status, AcceptStudyCycleActionInput, AcceptStudyCycleActionResult,
-    CompleteStudyReviewInput, CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan,
-    FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput, PlannedStudyDay,
+    CompleteStudyReviewInput, CompleteStudyReviewResult, CorrectStudySessionDurationInput,
+    CorrectStudySessionDurationResult, CreateManualStudyInput, CreateManualStudyResult,
+    CreateStudyTaskInput, DailyPlan, FinishStudySessionInput, FinishStudySessionResult,
+    HeartbeatStudySessionInput, PauseStudySessionInput, PlannedStudyDay,
     RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
     SaveStudySessionReflectionInput, SessionDifficulty, SkipStudyTaskInput, StartStudySessionInput,
     StudyCycleSuggestion, StudyHistoryEntry, StudyProgressSummary, StudyReviewStatus,
-    StudyReviewSummary, StudySessionStatus, StudySessionSummary, StudyTaskStatus, StudyTaskSummary,
-    TaskCompletion, REVIEW_XP_RULES_VERSION, XP_RULES_VERSION,
+    StudyReviewSummary, StudySessionOrigin, StudySessionStatus, StudySessionSummary,
+    StudyTaskStatus, StudyTaskSummary, TaskCompletion, REVIEW_XP_RULES_VERSION,
+    SESSION_INTERRUPTION_THRESHOLD_SECONDS, XP_RULES_VERSION,
 };
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 type TaskRow = (
@@ -35,6 +38,7 @@ type SessionRow = (
     Option<String>,
     i64,
     String,
+    String,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -47,7 +51,10 @@ type HistoryRow = (
     Option<String>,
     i64,
     String,
+    String,
     i64,
+    i64,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -67,6 +74,7 @@ type StudyReviewRow = (
 impl StudyStore for LocalWorkspaceStore {
     fn daily_plan(&self, date: &str) -> Result<DailyPlan, WorkspaceError> {
         let connection = self.active_database()?;
+        recover_stale_active_session(&connection)?;
         let tasks = load_daily_tasks(&connection, date)?;
         let active_session = load_active_session(&connection)?;
         let reviews = load_due_reviews(&connection, date)?;
@@ -329,12 +337,18 @@ impl StudyStore for LocalWorkspaceStore {
         input: &StartStudySessionInput,
     ) -> Result<StudySessionSummary, WorkspaceError> {
         let mut connection = self.active_database()?;
+        recover_stale_active_session(&connection)?;
         let transaction = connection
             .transaction()
             .map_err(|error| map_database_error("iniciar criação da sessão", error))?;
         let subject_id = load_startable_task(&transaction, &input.task_id)?;
 
         if let Some(existing) = load_active_session_from(&transaction)? {
+            if existing.status == StudySessionStatus::Interrupted {
+                return Err(WorkspaceError::InvalidInput(
+                    "Revise a sessão interrompida antes de iniciar outra sessão.".to_string(),
+                ));
+            }
             if existing.task_id == input.task_id {
                 transaction
                     .commit()
@@ -361,11 +375,143 @@ impl StudyStore for LocalWorkspaceStore {
         Ok(summary)
     }
 
+    fn create_manual_study(
+        &self,
+        input: &CreateManualStudyInput,
+    ) -> Result<CreateManualStudyResult, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar registro manual", error))?;
+        ensure_preparation_exists(&transaction, &input.preparation_id)?;
+        if let Some(subject_id) = input.subject_id.as_deref() {
+            ensure_subject_exists(&transaction, &input.preparation_id, subject_id)?;
+        }
+
+        let task_id = Uuid::new_v4().to_string();
+        let planned_minutes = (input.effective_seconds + 59) / 60;
+        transaction
+            .execute(
+                "INSERT INTO study_tasks
+                    (id, preparation_id, subject_id, title, planned_minutes, scheduled_for, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed')",
+                params![
+                    task_id.as_str(),
+                    input.preparation_id.as_str(),
+                    input.subject_id.as_deref(),
+                    input.title.as_str(),
+                    planned_minutes,
+                    input.studied_on.as_str(),
+                ],
+            )
+            .map_err(|error| map_database_error("gravar tarefa do estudo manual", error))?;
+
+        let session_id = Uuid::new_v4().to_string();
+        let timestamp = format!("{}T12:00:00Z", input.studied_on);
+        transaction
+            .execute(
+                "INSERT INTO study_sessions
+                    (id, task_id, subject_id, started_at, ended_at, effective_seconds, status,
+                     origin, notes_markdown, difficulty, next_steps)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, 'completed', 'manual', ?6, ?7, ?8)",
+                params![
+                    session_id.as_str(),
+                    task_id.as_str(),
+                    input.subject_id.as_deref(),
+                    timestamp.as_str(),
+                    input.effective_seconds,
+                    input.summary_markdown.as_deref(),
+                    input.difficulty.map(SessionDifficulty::as_str),
+                    input.next_steps.as_deref(),
+                ],
+            )
+            .map_err(|error| map_database_error("gravar sessão manual", error))?;
+
+        let session = load_session(&transaction, &session_id)?;
+        let xp_granted = grant_session_xp(&transaction, &session)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar registro manual", error))?;
+        Ok(CreateManualStudyResult {
+            session,
+            xp_granted,
+        })
+    }
+
+    fn correct_study_session_duration(
+        &self,
+        input: &CorrectStudySessionDurationInput,
+    ) -> Result<CorrectStudySessionDurationResult, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar correção da duração", error))?;
+        let current = load_session(&transaction, &input.session_id)?;
+        if current.status != StudySessionStatus::Completed {
+            return Err(WorkspaceError::InvalidInput(
+                "Somente sessões concluídas podem ter a duração corrigida.".to_string(),
+            ));
+        }
+
+        let previous_xp = load_session_xp(&transaction, &current.id)?;
+        if current.effective_seconds == input.effective_seconds {
+            transaction
+                .commit()
+                .map_err(|error| map_database_error("confirmar duração sem alteração", error))?;
+            return Ok(CorrectStudySessionDurationResult {
+                session: current,
+                previous_effective_seconds: input.effective_seconds,
+                previous_xp,
+                corrected_xp: previous_xp,
+                xp_delta: 0,
+            });
+        }
+
+        transaction
+            .execute(
+                "UPDATE study_sessions SET effective_seconds = ?1 WHERE id = ?2 AND status = 'completed'",
+                params![input.effective_seconds, input.session_id.as_str()],
+            )
+            .map_err(|error| map_database_error("corrigir duração da sessão", error))?;
+        recalculate_session_xp_for_day(&transaction, &current.started_at)?;
+        let corrected_session = load_session(&transaction, &input.session_id)?;
+        let corrected_xp = load_session_xp(&transaction, &current.id)?;
+        transaction
+            .execute(
+                "INSERT INTO study_session_duration_corrections
+                    (id, session_id, previous_effective_seconds, corrected_effective_seconds,
+                     previous_xp, corrected_xp, reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    current.id.as_str(),
+                    current.effective_seconds,
+                    input.effective_seconds,
+                    previous_xp,
+                    corrected_xp,
+                    input.reason.as_str(),
+                ],
+            )
+            .map_err(|error| map_database_error("gravar auditoria da correção", error))?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar correção da duração", error))?;
+
+        Ok(CorrectStudySessionDurationResult {
+            session: corrected_session,
+            previous_effective_seconds: current.effective_seconds,
+            previous_xp,
+            corrected_xp,
+            xp_delta: corrected_xp - previous_xp,
+        })
+    }
+
     fn pause_study_session(
         &self,
         input: &PauseStudySessionInput,
     ) -> Result<StudySessionSummary, WorkspaceError> {
         let mut connection = self.active_database()?;
+        recover_stale_active_session(&connection)?;
         let transaction = connection
             .transaction()
             .map_err(|error| map_database_error("iniciar pausa da sessão", error))?;
@@ -418,6 +564,23 @@ impl StudyStore for LocalWorkspaceStore {
             return Ok(current);
         }
 
+        if current.status == StudySessionStatus::Interrupted {
+            transaction
+                .execute(
+                    "UPDATE study_sessions
+                     SET active_started_at = CURRENT_TIMESTAMP,
+                         ended_at = NULL, status = 'active'
+                     WHERE id = ?1 AND status = 'interrupted'",
+                    params![input.session_id.as_str()],
+                )
+                .map_err(|error| map_database_error("retomar sessão interrompida", error))?;
+            let summary = load_session(&transaction, &input.session_id)?;
+            transaction
+                .commit()
+                .map_err(|error| map_database_error("confirmar retomada interrompida", error))?;
+            return Ok(summary);
+        }
+
         if current.status != StudySessionStatus::Paused {
             return Err(WorkspaceError::InvalidInput(
                 "Esta sessão não pode mais ser retomada.".to_string(),
@@ -437,6 +600,61 @@ impl StudyStore for LocalWorkspaceStore {
         transaction
             .commit()
             .map_err(|error| map_database_error("confirmar retomada da sessão", error))?;
+        Ok(summary)
+    }
+
+    fn heartbeat_study_session(
+        &self,
+        input: &HeartbeatStudySessionInput,
+    ) -> Result<StudySessionSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar checkpoint da sessão", error))?;
+        let current = load_session(&transaction, &input.session_id)?;
+        if current.status != StudySessionStatus::Active {
+            transaction
+                .commit()
+                .map_err(|error| map_database_error("confirmar checkpoint sem alteração", error))?;
+            return Ok(current);
+        }
+
+        let elapsed_seconds: i64 = transaction
+            .query_row(
+                "SELECT MAX(0, CAST(strftime('%s', 'now') AS INTEGER) -
+                            CAST(strftime('%s', active_started_at) AS INTEGER))
+                 FROM study_sessions
+                 WHERE id = ?1 AND status = 'active'",
+                params![input.session_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|error| map_database_error("calcular checkpoint da sessão", error))?;
+        if elapsed_seconds > SESSION_INTERRUPTION_THRESHOLD_SECONDS {
+            transaction
+                .execute(
+                    "UPDATE study_sessions
+                     SET status = 'interrupted', ended_at = CURRENT_TIMESTAMP,
+                         active_started_at = NULL
+                     WHERE id = ?1 AND status = 'active'",
+                    params![input.session_id.as_str()],
+                )
+                .map_err(|error| map_database_error("marcar sessão interrompida", error))?;
+        } else {
+            transaction
+                .execute(
+                    "UPDATE study_sessions
+                     SET effective_seconds = effective_seconds + ?1,
+                         active_started_at = CURRENT_TIMESTAMP
+                     WHERE id = ?2 AND status = 'active'",
+                    params![elapsed_seconds, input.session_id.as_str()],
+                )
+                .map_err(|error| map_database_error("gravar checkpoint da sessão", error))?;
+        }
+
+        let summary = load_session(&transaction, &input.session_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar checkpoint da sessão", error))?;
         Ok(summary)
     }
 
@@ -486,12 +704,21 @@ impl StudyStore for LocalWorkspaceStore {
         let transaction = connection
             .transaction()
             .map_err(|error| map_database_error("iniciar encerramento da sessão", error))?;
+        let was_active =
+            load_session(&transaction, &input.session_id)?.status == StudySessionStatus::Active;
+        recover_stale_active_session(&transaction)?;
         let current = load_session(&transaction, &input.session_id)?;
 
-        if matches!(
-            current.status,
-            StudySessionStatus::Completed | StudySessionStatus::Interrupted
-        ) {
+        if was_active && current.status == StudySessionStatus::Interrupted {
+            transaction
+                .commit()
+                .map_err(|error| map_database_error("confirmar recuperação da sessão", error))?;
+            return Err(WorkspaceError::InvalidInput(
+                "A sessão foi interrompida antes do encerramento. Revise o tempo confirmado antes de concluir.".to_string(),
+            ));
+        }
+
+        if current.status == StudySessionStatus::Completed {
             let review = load_review_by_session(&transaction, &input.session_id)?;
             transaction
                 .commit()
@@ -520,7 +747,7 @@ impl StudyStore for LocalWorkspaceStore {
                  SET ended_at = CURRENT_TIMESTAMP, active_started_at = NULL,
                      effective_seconds = ?1, status = 'completed',
                      notes_markdown = ?2, difficulty = ?3, next_steps = ?4
-                 WHERE id = ?5 AND status IN ('active', 'paused')",
+                  WHERE id = ?5 AND status IN ('active', 'paused', 'interrupted')",
                 params![
                     input.effective_seconds,
                     input.summary_markdown,
@@ -674,33 +901,87 @@ fn grant_session_xp(
     transaction: &rusqlite::Transaction<'_>,
     session: &StudySessionSummary,
 ) -> Result<i64, WorkspaceError> {
-    let granted_today: i64 = transaction
+    recalculate_session_xp_for_day(transaction, &session.started_at)?;
+    load_session_xp(transaction, &session.id)
+}
+
+fn recalculate_session_xp_for_day(
+    transaction: &rusqlite::Transaction<'_>,
+    started_at: &str,
+) -> Result<(), WorkspaceError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, effective_seconds
+             FROM study_sessions
+             WHERE status = 'completed' AND date(started_at) = date(?1)
+             ORDER BY started_at, id",
+        )
+        .map_err(|error| map_database_error("preparar recálculo de XP", error))?;
+    let rows = statement
+        .query_map(params![started_at], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|error| map_database_error("consultar sessões para recálculo de XP", error))?;
+    let sessions = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| map_database_error("ler sessões para recálculo de XP", error))?;
+    drop(statement);
+
+    let mut granted_today = 0;
+    for (session_id, effective_seconds) in sessions {
+        let points = calculate_session_xp(effective_seconds, granted_today);
+        transaction
+            .execute(
+                "INSERT INTO xp_events (id, source_type, source_id, points, rules_version)
+                 VALUES (?1, 'study_session', ?2, ?3, ?4)
+                 ON CONFLICT(source_type, source_id) DO UPDATE SET
+                     points = excluded.points,
+                     rules_version = excluded.rules_version",
+                params![
+                    Uuid::new_v4().to_string(),
+                    session_id.as_str(),
+                    points,
+                    XP_RULES_VERSION,
+                ],
+            )
+            .map_err(|error| map_database_error("atualizar XP da sessão", error))?;
+        granted_today += points;
+    }
+
+    Ok(())
+}
+
+fn load_session_xp(
+    transaction: &rusqlite::Transaction<'_>,
+    session_id: &str,
+) -> Result<i64, WorkspaceError> {
+    transaction
         .query_row(
-            "SELECT COALESCE(SUM(events.points), 0)
-             FROM xp_events events
-             JOIN study_sessions sessions ON sessions.id = events.source_id
-             WHERE events.source_type = 'study_session'
-               AND date(sessions.started_at) = date(?1)",
-            params![session.started_at.as_str()],
+            "SELECT COALESCE(SUM(points), 0)
+             FROM xp_events
+             WHERE source_type = 'study_session' AND source_id = ?1",
+            params![session_id],
             |row| row.get(0),
         )
-        .map_err(|error| map_database_error("calcular XP do dia", error))?;
-    let xp_granted = calculate_session_xp(session.effective_seconds, granted_today);
+        .map_err(|error| map_database_error("consultar XP da sessão", error))
+}
 
-    transaction
+fn recover_stale_active_session(connection: &Connection) -> Result<(), WorkspaceError> {
+    connection
         .execute(
-            "INSERT INTO xp_events (id, source_type, source_id, points, rules_version)
-             VALUES (?1, 'study_session', ?2, ?3, ?4)",
-            params![
-                Uuid::new_v4().to_string(),
-                session.id.as_str(),
-                xp_granted,
-                XP_RULES_VERSION,
-            ],
+            "UPDATE study_sessions
+             SET status = 'interrupted', ended_at = CURRENT_TIMESTAMP,
+                 active_started_at = NULL
+             WHERE status = 'active'
+               AND (
+                   active_started_at IS NULL OR
+                   (CAST(strftime('%s', 'now') AS INTEGER) -
+                    CAST(strftime('%s', active_started_at) AS INTEGER)) > ?1
+               )",
+            params![SESSION_INTERRUPTION_THRESHOLD_SECONDS],
         )
-        .map_err(|error| map_database_error("gravar XP da sessão", error))?;
-
-    Ok(xp_granted)
+        .map_err(|error| map_database_error("recuperar sessão após interrupção", error))?;
+    Ok(())
 }
 
 fn grant_review_xp(
@@ -754,9 +1035,13 @@ fn load_recent_history(
     let mut statement = connection
         .prepare(
             "SELECT sessions.id, sessions.task_id, tasks.title, subjects.name,
-                    sessions.ended_at, sessions.effective_seconds, tasks.status,
-                    COALESCE(events.points, 0), sessions.notes_markdown,
-                    sessions.difficulty, sessions.next_steps
+                     sessions.ended_at, sessions.effective_seconds, tasks.status,
+                     sessions.origin, COALESCE(events.points, 0),
+                     (SELECT COUNT(*) FROM study_session_duration_corrections corrections
+                      WHERE corrections.session_id = sessions.id),
+                     (SELECT MAX(corrected_at) FROM study_session_duration_corrections corrections
+                      WHERE corrections.session_id = sessions.id),
+                     sessions.notes_markdown, sessions.difficulty, sessions.next_steps
              FROM study_sessions sessions
              JOIN study_tasks tasks ON tasks.id = sessions.task_id
              LEFT JOIN subjects ON subjects.id = sessions.subject_id
@@ -782,6 +1067,9 @@ fn load_recent_history(
                 row.get(8)?,
                 row.get(9)?,
                 row.get(10)?,
+                row.get(11)?,
+                row.get(12)?,
+                row.get(13)?,
             ))
         })
         .map_err(|error| map_database_error("consultar histórico de estudo", error))?;
@@ -802,7 +1090,10 @@ fn history_entry_from_parts(parts: HistoryRow) -> Result<StudyHistoryEntry, Work
         ended_at,
         effective_seconds,
         task_status,
+        origin,
         xp_granted,
+        duration_correction_count,
+        last_duration_correction_at,
         summary_markdown,
         difficulty,
         next_steps,
@@ -811,6 +1102,9 @@ fn history_entry_from_parts(parts: HistoryRow) -> Result<StudyHistoryEntry, Work
         WorkspaceError::Database("uma sessão concluída não possui data de encerramento".to_string())
     })?;
     let task_status = parse_task_status(&task_status).map_err(WorkspaceError::Database)?;
+    let origin = StudySessionOrigin::from_storage(&origin).ok_or_else(|| {
+        WorkspaceError::Database("uma sessão possui uma origem inválida".to_string())
+    })?;
     let difficulty = difficulty
         .map(|value| {
             SessionDifficulty::from_storage(&value).ok_or_else(|| {
@@ -827,7 +1121,10 @@ fn history_entry_from_parts(parts: HistoryRow) -> Result<StudyHistoryEntry, Work
         ended_at,
         effective_seconds,
         task_status,
+        origin,
         xp_granted,
+        duration_correction_count,
+        last_duration_correction_at,
         summary_markdown,
         difficulty,
         next_steps,
@@ -1005,9 +1302,9 @@ fn load_active_session(
     let parts: Option<SessionRow> = connection
         .query_row(
             "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds,
-                    status, notes_markdown, difficulty, next_steps
+                    status, origin, notes_markdown, difficulty, next_steps
              FROM study_sessions
-             WHERE status IN ('active', 'paused')
+              WHERE status IN ('active', 'paused', 'interrupted')
              ORDER BY started_at
              LIMIT 1",
             [],
@@ -1025,9 +1322,9 @@ fn load_active_session_from(
     let parts: Option<SessionRow> = transaction
         .query_row(
             "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds,
-                    status, notes_markdown, difficulty, next_steps
+                    status, origin, notes_markdown, difficulty, next_steps
              FROM study_sessions
-             WHERE status IN ('active', 'paused')
+              WHERE status IN ('active', 'paused', 'interrupted')
              LIMIT 1",
             [],
             session_row,
@@ -1045,7 +1342,7 @@ fn load_session(
     let parts: SessionRow = transaction
         .query_row(
             "SELECT id, task_id, subject_id, started_at, active_started_at, effective_seconds,
-                    status, notes_markdown, difficulty, next_steps
+                    status, origin, notes_markdown, difficulty, next_steps
              FROM study_sessions WHERE id = ?1",
             params![session_id],
             session_row,
@@ -1212,6 +1509,7 @@ fn session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         row.get(7)?,
         row.get(8)?,
         row.get(9)?,
+        row.get(10)?,
     ))
 }
 
@@ -1323,11 +1621,15 @@ fn session_summary_from_parts(parts: SessionRow) -> Result<StudySessionSummary, 
         active_started_at,
         effective_seconds,
         status,
+        origin,
         summary_markdown,
         difficulty,
         next_steps,
     ) = parts;
     let status = parse_session_status(&status).map_err(WorkspaceError::Database)?;
+    let origin = StudySessionOrigin::from_storage(&origin).ok_or_else(|| {
+        WorkspaceError::Database("uma sessão possui uma origem inválida".to_string())
+    })?;
     let difficulty = difficulty
         .map(|value| {
             SessionDifficulty::from_storage(&value).ok_or_else(|| {
@@ -1344,6 +1646,7 @@ fn session_summary_from_parts(parts: SessionRow) -> Result<StudySessionSummary, 
         active_started_at,
         effective_seconds,
         status,
+        origin,
         summary_markdown,
         difficulty,
         next_steps,
@@ -1477,6 +1780,158 @@ mod tests {
         assert_eq!(progress.total_xp, 25);
         assert_eq!(progress.completed_sessions, 1);
         assert_eq!(progress.recent_sessions.len(), 1);
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn records_manual_study_and_audits_duration_correction_without_duplicate_xp() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-manual-study-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-manual-study-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Estudo manual")
+            .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+
+        let manual = store
+            .create_manual_study(&CreateManualStudyInput {
+                preparation_id: preparation.id,
+                subject_id: None,
+                title: "Leitura fora do app".to_string(),
+                studied_on: "2032-07-01".to_string(),
+                effective_seconds: 3_600,
+                summary_markdown: Some("Resumo manual".to_string()),
+                difficulty: Some(SessionDifficulty::Normal),
+                next_steps: None,
+            })
+            .expect("o estudo manual deve ser registrado");
+        let corrected = store
+            .correct_study_session_duration(&CorrectStudySessionDurationInput {
+                session_id: manual.session.id.clone(),
+                effective_seconds: 1_800,
+                reason: "o cronômetro externo ficou aberto".to_string(),
+            })
+            .expect("a duração deve ser corrigida");
+        let repeated = store
+            .correct_study_session_duration(&CorrectStudySessionDurationInput {
+                session_id: manual.session.id.clone(),
+                effective_seconds: 1_800,
+                reason: "mesmo valor já conferido".to_string(),
+            })
+            .expect("repetir a correção deve ser idempotente");
+        let progress = store
+            .study_progress("2032-07-01")
+            .expect("o progresso deve incluir o estudo manual");
+        let connection = store
+            .active_database()
+            .expect("o banco ativo deve poder ser consultado");
+        let correction_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM study_session_duration_corrections WHERE session_id = ?1",
+                params![manual.session.id.as_str()],
+                |row| row.get(0),
+            )
+            .expect("a auditoria deve ser persistida");
+
+        assert_eq!(manual.session.origin, StudySessionOrigin::Manual);
+        assert_eq!(manual.xp_granted, 60);
+        assert_eq!(corrected.previous_effective_seconds, 3_600);
+        assert_eq!(corrected.corrected_xp, 30);
+        assert_eq!(corrected.xp_delta, -30);
+        assert_eq!(repeated.xp_delta, 0);
+        assert_eq!(progress.total_xp, 30);
+        assert_eq!(progress.effective_seconds, 1_800);
+        assert_eq!(
+            progress.recent_sessions[0].origin,
+            StudySessionOrigin::Manual
+        );
+        assert_eq!(progress.recent_sessions[0].duration_correction_count, 1);
+        assert_eq!(correction_count, 1);
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn interrupts_stale_session_without_adding_uncertain_wall_time() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-interrupted-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-interrupted-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Sessão interrompida")
+            .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let task = store
+            .create_study_task(&CreateStudyTaskInput {
+                preparation_id: preparation.id,
+                subject_id: None,
+                title: "Sessão recuperável".to_string(),
+                objective: None,
+                planned_minutes: 30,
+                scheduled_for: "2032-08-01".to_string(),
+            })
+            .expect("a tarefa deve ser criada");
+        let session = store
+            .start_study_session(&StartStudySessionInput { task_id: task.id })
+            .expect("a sessão deve iniciar");
+        let connection = store
+            .active_database()
+            .expect("o banco ativo deve ser aberto");
+        connection
+            .execute(
+                "UPDATE study_sessions
+                 SET active_started_at = '2000-01-01 00:00:00'
+                 WHERE id = ?1",
+                params![session.id.as_str()],
+            )
+            .expect("o relógio antigo deve ser aplicado à fixture");
+        drop(connection);
+
+        let plan = store
+            .daily_plan("2032-08-01")
+            .expect("o plano deve recuperar a sessão");
+        let interrupted = plan
+            .active_session
+            .expect("a sessão interrompida deve continuar visível");
+        assert_eq!(interrupted.status, StudySessionStatus::Interrupted);
+        assert_eq!(interrupted.effective_seconds, 0);
+
+        let repeated_heartbeat = store
+            .heartbeat_study_session(&HeartbeatStudySessionInput {
+                session_id: session.id.clone(),
+            })
+            .expect("o heartbeat repetido deve ser idempotente");
+        assert_eq!(repeated_heartbeat.status, StudySessionStatus::Interrupted);
+
+        let resumed = store
+            .resume_study_session(&ResumeStudySessionInput {
+                session_id: session.id,
+            })
+            .expect("a sessão deve poder ser retomada após a revisão");
+        assert_eq!(resumed.status, StudySessionStatus::Active);
+        assert_eq!(resumed.effective_seconds, 0);
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

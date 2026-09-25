@@ -1,7 +1,16 @@
-import { useEffect, useState, type ReactElement } from "react";
-import { getActiveWorkspace, getDailyPlan, getDesktopErrorMessage, getStudyPlan } from "../shared/desktop/commands";
-import type { DailyPlan, StudyPlan, WorkspaceSummary } from "../shared/desktop/contracts";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
+import {
+  getAppPreferences,
+  getActiveWorkspace,
+  getDailyPlan,
+  getDesktopErrorMessage,
+  getStudyPlan,
+  heartbeatStudySession,
+  saveAppPreferences,
+} from "../shared/desktop/commands";
+import type { AppPreferences, DailyPlan, StudyPlan, WorkspaceSummary } from "../shared/desktop/contracts";
 import { useThemePreference } from "../shared/ui/theme";
+import { dateKeyForTimezone } from "../shared/date";
 import { PlanView } from "../features/plan/PlanView";
 import { MaterialsView } from "../features/materials/MaterialsView";
 import { ProgressView } from "../features/progress/ProgressView";
@@ -10,6 +19,7 @@ import { PracticeView } from "../features/practice/PracticeView";
 import { ExploreView } from "../features/explore/ExploreView";
 import { WorkspaceSetup } from "../features/workspace/WorkspaceSetup";
 import { WorkspaceDataActions } from "../features/workspace/WorkspaceDataActions";
+import { SettingsView } from "../features/settings/SettingsView";
 import { CommandPalette } from "../shared/ui/CommandPalette";
 
 import {
@@ -20,11 +30,12 @@ import {
   IconPlan,
   IconPractice,
   IconProgress,
+  IconSettings,
   IconToday,
   ThemeToggle,
 } from "../shared/ui/primitives";
 
-type ViewId = "today" | "plan" | "materials" | "practice" | "progress" | "explore";
+type ViewId = "today" | "plan" | "materials" | "practice" | "progress" | "explore" | "settings";
 
 const navigation: Array<{
   id: ViewId;
@@ -39,14 +50,62 @@ const navigation: Array<{
   { id: "practice", label: "Questões", note: "banco de questões", badge: "Novo", icon: IconPractice },
   { id: "progress", label: "Evolução & Sinais", note: "desempenho local", icon: IconProgress },
   { id: "explore", label: "Explorar", note: "concursos e prazos", icon: IconExplore },
+  { id: "settings", label: "Configurações", note: "preferências locais", icon: IconSettings },
 ];
 
+const DEFAULT_APP_PREFERENCES: AppPreferences = {
+  theme: "dark",
+  reducedMotion: false,
+  highContrast: false,
+  timezone: "system",
+  gamificationVisible: true,
+};
+
 export function App() {
-  const { theme, toggleTheme } = useThemePreference();
+  const { theme, setTheme } = useThemePreference();
   const [workspace, setWorkspace] = useState<WorkspaceSummary | null>(null);
   const [activeView, setActiveView] = useState<ViewId>("today");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [appPreferences, setAppPreferences] = useState<AppPreferences>(DEFAULT_APP_PREFERENCES);
+  const [preferencesError, setPreferencesError] = useState<string | null>(null);
+  const themeSaveInFlight = useRef(false);
+
+  useEffect(() => {
+    void getAppPreferences()
+      .then((loadedPreferences) => {
+        setAppPreferences(loadedPreferences);
+        setTheme(loadedPreferences.theme);
+      })
+      .catch((operationError: unknown) => {
+        setPreferencesError(getDesktopErrorMessage(operationError));
+      });
+  }, [setTheme]);
+
+  const handleToggleTheme = () => {
+    if (themeSaveInFlight.current) return;
+    themeSaveInFlight.current = true;
+    setPreferencesError(null);
+    void saveAppPreferences({
+      ...appPreferences,
+      theme: theme === "dark" ? "light" : "dark",
+    })
+      .then((saved) => {
+        setAppPreferences(saved);
+        setTheme(saved.theme);
+      })
+      .catch((operationError: unknown) => {
+        setPreferencesError(getDesktopErrorMessage(operationError));
+      })
+      .finally(() => {
+        themeSaveInFlight.current = false;
+      });
+  };
+
+  useLayoutEffect(() => {
+    document.documentElement.classList.toggle("reduce-motion", appPreferences.reducedMotion);
+    document.documentElement.classList.toggle("high-contrast", appPreferences.highContrast);
+  }, [appPreferences.reducedMotion, appPreferences.highContrast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,7 +141,7 @@ export function App() {
       <WorkspaceSetup
         initialError={error}
         theme={theme}
-        onToggleTheme={toggleTheme}
+        onToggleTheme={handleToggleTheme}
         onWorkspaceReady={(readyWorkspace) => {
           setError(null);
           setWorkspace(readyWorkspace);
@@ -96,7 +155,14 @@ export function App() {
       activeView={activeView}
       workspace={workspace}
       theme={theme}
-      onToggleTheme={toggleTheme}
+      appPreferences={appPreferences}
+      preferencesError={preferencesError}
+      onToggleTheme={handleToggleTheme}
+      onPreferencesSaved={(preferences) => {
+        setAppPreferences(preferences);
+        setTheme(preferences.theme);
+        setPreferencesError(null);
+      }}
       onNavigate={setActiveView}
       onWorkspaceRestored={(restoredWorkspace) => {
         setWorkspace(restoredWorkspace);
@@ -121,7 +187,10 @@ type AppShellProps = {
   activeView: ViewId;
   workspace: WorkspaceSummary;
   theme: "light" | "dark";
+  appPreferences: AppPreferences;
+  preferencesError: string | null;
   onToggleTheme: () => void;
+  onPreferencesSaved: (preferences: AppPreferences) => void;
   onNavigate: (view: ViewId) => void;
   onWorkspaceRestored: (workspace: WorkspaceSummary) => void;
 };
@@ -130,7 +199,10 @@ function AppShell({
   activeView,
   workspace,
   theme,
+  appPreferences,
+  preferencesError,
   onToggleTheme,
+  onPreferencesSaved,
   onNavigate,
   onWorkspaceRestored,
 }: AppShellProps) {
@@ -157,7 +229,7 @@ function AppShell({
     let cancelled = false;
     setIsStudyDataLoading(true);
 
-    Promise.all([getStudyPlan(), getDailyPlan(getLocalDateKey())])
+    Promise.all([getStudyPlan(), getDailyPlan(dateKeyForTimezone(appPreferences.timezone))])
       .then(([loadedPlan, loadedDailyPlan]) => {
         if (!cancelled) {
           setStudyPlan(loadedPlan);
@@ -179,7 +251,42 @@ function AppShell({
     return () => {
       cancelled = true;
     };
-  }, [refreshVersion, workspace.workspaceId]);
+  }, [refreshVersion, workspace.workspaceId, appPreferences.timezone]);
+
+  useEffect(() => {
+    const activeSession = dailyPlan?.activeSession;
+    if (!activeSession || activeSession.status !== "active") return;
+
+    let heartbeatInFlight = false;
+    let interruptionDetected = false;
+    const sendHeartbeat = async () => {
+      if (heartbeatInFlight || interruptionDetected || document.visibilityState !== "visible") return;
+      heartbeatInFlight = true;
+      try {
+        const updatedSession = await heartbeatStudySession({ sessionId: activeSession.id });
+        if (updatedSession.status === "interrupted") {
+          interruptionDetected = true;
+          setRefreshVersion((currentVersion) => currentVersion + 1);
+        }
+      } catch (operationError: unknown) {
+        setStudyDataError(getDesktopErrorMessage(operationError));
+      } finally {
+        heartbeatInFlight = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => void sendHeartbeat(), 5_000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void sendHeartbeat();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleVisibilityChange);
+    };
+  }, [dailyPlan?.activeSession?.id, dailyPlan?.activeSession?.status]);
 
   const refreshStudyData = () => {
     setRefreshVersion((currentVersion) => currentVersion + 1);
@@ -269,7 +376,7 @@ function AppShell({
           </button>
 
           <div className="flex items-center justify-between px-1 text-xs text-muted">
-            <span className="font-mono text-[11px]">v1.0 Local</span>
+            <span className="font-mono text-[11px]">Dados locais</span>
             <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           </div>
         </div>
@@ -348,6 +455,11 @@ function AppShell({
 
         {/* Main View Content Container */}
         <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 max-w-7xl w-full mx-auto">
+          {preferencesError && (
+            <p className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">
+              Não foi possível carregar ou salvar as preferências: {preferencesError}
+            </p>
+          )}
           {activeView === "today" ? (
             <TodayView
               isLoading={isStudyDataLoading}
@@ -356,6 +468,7 @@ function AppShell({
               error={studyDataError}
               onOpenPlan={() => onNavigate("plan")}
               onDataChanged={refreshStudyData}
+              timezone={appPreferences.timezone}
             />
           ) : activeView === "plan" ? (
             <PlanView
@@ -364,15 +477,22 @@ function AppShell({
               error={studyDataError}
               onRetry={refreshStudyData}
               onPlanChanged={refreshStudyData}
+              timezone={appPreferences.timezone}
             />
           ) : activeView === "materials" ? (
             <MaterialsView plan={studyPlan} refreshKey={refreshVersion} />
           ) : activeView === "practice" ? (
             <PracticeView plan={studyPlan} refreshKey={refreshVersion} />
           ) : activeView === "progress" ? (
-            <ProgressView refreshKey={refreshVersion} />
+            <ProgressView
+              refreshKey={refreshVersion}
+              showGamification={appPreferences.gamificationVisible}
+              timezone={appPreferences.timezone}
+            />
           ) : activeView === "explore" ? (
             <ExploreView refreshKey={refreshVersion} />
+          ) : activeView === "settings" ? (
+            <SettingsView preferences={appPreferences} onSaved={onPreferencesSaved} />
           ) : (
             <TodayView
               isLoading={isStudyDataLoading}
@@ -381,18 +501,11 @@ function AppShell({
               error={studyDataError}
               onOpenPlan={() => onNavigate("plan")}
               onDataChanged={refreshStudyData}
+              timezone={appPreferences.timezone}
             />
           )}
         </main>
       </div>
     </div>
   );
-}
-
-function getLocalDateKey(): string {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }

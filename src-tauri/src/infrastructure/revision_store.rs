@@ -450,7 +450,7 @@ fn collect_blob_references(
     })?;
     let mut statement = connection
         .prepare(
-            "SELECT content_hash FROM materials
+            "SELECT content_hash FROM materials WHERE source_url IS NULL
              UNION
              SELECT sha256 FROM question_attachments
              ORDER BY 1",

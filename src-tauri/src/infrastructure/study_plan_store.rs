@@ -4,9 +4,10 @@ use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study_plan::{
     calculate_subject_coverage, default_study_availability, generate_cycle_slots,
     study_cycle_warning, validate_cycle_slots_capacity, CreatePreparationInput, CreateSubjectInput,
-    PreparationSummary, SaveStudyPlanningInput, SetSubjectStudyStatusInput, StudyCycleSlotInput,
-    StudyCycleSlotSummary, StudyCycleSubject, StudyPlan, StudyPlanningSummary,
-    SubjectPrioritySummary, SubjectStudyStatus, SubjectSummary, DEFAULT_REVIEW_RESERVE_PERCENT,
+    PreparationSummary, SavePreparationExamConfigInput, SaveStudyPlanningInput,
+    SetSubjectStudyStatusInput, StudyCycleSlotInput, StudyCycleSlotSummary, StudyCycleSubject,
+    StudyPlan, StudyPlanningSummary, SubjectPrioritySummary, SubjectStudyStatus, SubjectSummary,
+    DEFAULT_REVIEW_RESERVE_PERCENT,
 };
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
@@ -75,6 +76,8 @@ impl StudyPlanStore for LocalWorkspaceStore {
             role: input.role.clone(),
             exam_date: input.exam_date.clone(),
             is_primary,
+            reference_material_id: None,
+            exam_rules_markdown: None,
         };
         transaction
             .commit()
@@ -127,11 +130,77 @@ impl StudyPlanStore for LocalWorkspaceStore {
             position,
             priority: 3,
             study_status: SubjectStudyStatus::NotStarted,
+            exam_weight: None,
         };
         transaction
             .commit()
             .map_err(|error| map_database_error("confirmar assunto", error))?;
 
+        Ok(summary)
+    }
+
+    fn save_preparation_exam_config(
+        &self,
+        input: &SavePreparationExamConfigInput,
+    ) -> Result<PreparationSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar salvamento das regras da prova", error))?;
+        ensure_preparation_exists(&transaction, &input.preparation_id)?;
+
+        if let Some(material_id) = input.reference_material_id.as_deref() {
+            let material_exists: Option<i64> = transaction
+                .query_row(
+                    "SELECT 1 FROM materials WHERE id = ?1",
+                    params![material_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| map_database_error("verificar edital de referência", error))?;
+            if material_exists.is_none() {
+                return Err(WorkspaceError::InvalidInput(
+                    "O edital de referência escolhido não existe mais.".to_string(),
+                ));
+            }
+        }
+
+        for subject in &input.subject_exam_weights {
+            let updated = transaction
+                .execute(
+                    "UPDATE subjects SET exam_weight = ?1
+                     WHERE id = ?2 AND preparation_id = ?3 AND archived_at IS NULL",
+                    params![
+                        subject.exam_weight,
+                        subject.subject_id,
+                        input.preparation_id
+                    ],
+                )
+                .map_err(|error| map_database_error("salvar peso da prova", error))?;
+            if updated != 1 {
+                return Err(WorkspaceError::InvalidInput(
+                    "Um dos assuntos escolhidos não pertence à preparação.".to_string(),
+                ));
+            }
+        }
+
+        transaction
+            .execute(
+                "UPDATE preparations
+                 SET reference_material_id = ?1, exam_rules_markdown = ?2
+                 WHERE id = ?3 AND archived_at IS NULL",
+                params![
+                    input.reference_material_id,
+                    input.exam_rules_markdown,
+                    input.preparation_id
+                ],
+            )
+            .map_err(|error| map_database_error("salvar configuração da prova", error))?;
+        let summary = load_preparation(&transaction, &input.preparation_id)?;
+
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar configuração da prova", error))?;
         Ok(summary)
     }
 
@@ -304,7 +373,8 @@ fn load_preparations(
 ) -> Result<Vec<PreparationSummary>, WorkspaceError> {
     let mut statement = connection
         .prepare(
-            "SELECT id, name, organization, role, exam_date, is_primary
+            "SELECT id, name, organization, role, exam_date, is_primary,
+                    reference_material_id, exam_rules_markdown
              FROM preparations
              WHERE archived_at IS NULL
              ORDER BY is_primary DESC, name COLLATE NOCASE",
@@ -320,6 +390,8 @@ fn load_preparations(
                 role: row.get(3)?,
                 exam_date: row.get(4)?,
                 is_primary: is_primary == 1,
+                reference_material_id: row.get(6)?,
+                exam_rules_markdown: row.get(7)?,
             })
         })
         .map_err(|error| map_database_error("consultar as preparações", error))?;
@@ -328,10 +400,43 @@ fn load_preparations(
         .collect()
 }
 
+fn load_preparation(
+    connection: &rusqlite::Connection,
+    preparation_id: &str,
+) -> Result<PreparationSummary, WorkspaceError> {
+    connection
+        .query_row(
+            "SELECT id, name, organization, role, exam_date, is_primary,
+                    reference_material_id, exam_rules_markdown
+             FROM preparations
+             WHERE id = ?1 AND archived_at IS NULL",
+            params![preparation_id],
+            |row| {
+                let is_primary: i64 = row.get(5)?;
+                Ok(PreparationSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    organization: row.get(2)?,
+                    role: row.get(3)?,
+                    exam_date: row.get(4)?,
+                    is_primary: is_primary == 1,
+                    reference_material_id: row.get(6)?,
+                    exam_rules_markdown: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| map_database_error("consultar preparação", error))?
+        .ok_or_else(|| {
+            WorkspaceError::InvalidInput("A preparação escolhida não existe mais.".to_string())
+        })
+}
+
 fn load_subjects(connection: &rusqlite::Connection) -> Result<Vec<SubjectSummary>, WorkspaceError> {
     let mut statement = connection
         .prepare(
-            "SELECT s.id, s.preparation_id, s.parent_id, s.name, s.position, s.priority, s.study_status
+            "SELECT s.id, s.preparation_id, s.parent_id, s.name, s.position, s.priority,
+                    s.study_status, s.exam_weight
              FROM subjects s
              JOIN preparations p ON p.id = s.preparation_id
              WHERE s.archived_at IS NULL AND p.archived_at IS NULL
@@ -349,7 +454,16 @@ fn load_subjects(connection: &rusqlite::Connection) -> Result<Vec<SubjectSummary
     .collect()
 }
 
-type SubjectRow = (String, String, Option<String>, String, i64, i64, String);
+type SubjectRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    i64,
+    i64,
+    String,
+    Option<f64>,
+);
 
 fn read_subject_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubjectRow> {
     Ok((
@@ -360,11 +474,12 @@ fn read_subject_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubjectRow> {
         row.get(4)?,
         row.get(5)?,
         row.get(6)?,
+        row.get(7)?,
     ))
 }
 
 fn subject_summary_from_row(row: SubjectRow) -> Result<SubjectSummary, WorkspaceError> {
-    let (id, preparation_id, parent_id, name, position, priority, study_status) = row;
+    let (id, preparation_id, parent_id, name, position, priority, study_status, exam_weight) = row;
     let study_status = SubjectStudyStatus::from_storage(&study_status).ok_or_else(|| {
         WorkspaceError::Database("um assunto possui um estado de estudo inválido".to_string())
     })?;
@@ -376,6 +491,7 @@ fn subject_summary_from_row(row: SubjectRow) -> Result<SubjectSummary, Workspace
         position,
         priority,
         study_status,
+        exam_weight,
     })
 }
 
@@ -385,7 +501,8 @@ fn load_subject_by_id(
 ) -> Result<SubjectSummary, WorkspaceError> {
     let row = connection
         .query_row(
-            "SELECT id, preparation_id, parent_id, name, position, priority, study_status
+            "SELECT id, preparation_id, parent_id, name, position, priority,
+                    study_status, exam_weight
              FROM subjects WHERE id = ?1 AND archived_at IS NULL",
             params![subject_id],
             read_subject_row,
@@ -708,8 +825,8 @@ mod tests {
     use crate::application::study_plan_service::StudyPlanStore;
     use crate::application::workspace_service::WorkspaceStore;
     use crate::domain::study_plan::{
-        default_study_availability, SaveStudyPlanningInput, StudyCycleSlotInput,
-        SubjectPriorityInput,
+        default_study_availability, SavePreparationExamConfigInput, SaveStudyPlanningInput,
+        StudyCycleSlotInput, SubjectExamWeightInput, SubjectPriorityInput,
     };
     use std::fs;
 
@@ -755,6 +872,117 @@ mod tests {
         assert_eq!(child.parent_id.as_deref(), Some(subject.id.as_str()));
         assert_eq!(plan.subject_coverage[0].total_subjects, 2);
         assert_eq!(plan.subject_coverage[0].completed_subjects, 0);
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn persists_editable_exam_reference_rules_and_weights_per_preparation() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-exam-config-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-exam-config-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Configuração da prova")
+            .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let first_subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Direito Constitucional".to_string(),
+                parent_id: None,
+            })
+            .expect("o primeiro assunto deve ser criado");
+        let second_subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Língua Portuguesa".to_string(),
+                parent_id: None,
+            })
+            .expect("o segundo assunto deve ser criado");
+        let material_id = Uuid::new_v4().to_string();
+        let connection = store
+            .active_database()
+            .expect("o banco ativo deve ser aberto");
+        connection
+            .execute(
+                "INSERT INTO materials (id, original_name, content_hash, byte_size)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    material_id,
+                    "edital.pdf",
+                    Uuid::new_v4().to_string(),
+                    128_i64
+                ],
+            )
+            .expect("o edital da fixture deve ser inserido");
+        drop(connection);
+
+        let saved = store
+            .save_preparation_exam_config(&SavePreparationExamConfigInput {
+                preparation_id: preparation.id.clone(),
+                reference_material_id: Some(material_id.clone()),
+                exam_rules_markdown: Some("- Cada questão vale 1 ponto.".to_string()),
+                subject_exam_weights: vec![
+                    SubjectExamWeightInput {
+                        subject_id: first_subject.id.clone(),
+                        exam_weight: Some(2.5),
+                    },
+                    SubjectExamWeightInput {
+                        subject_id: second_subject.id.clone(),
+                        exam_weight: None,
+                    },
+                ],
+            })
+            .expect("a configuração da prova deve ser salva");
+        let plan = store.study_plan().expect("o plano deve ser relido");
+
+        assert_eq!(
+            saved.reference_material_id.as_deref(),
+            Some(material_id.as_str())
+        );
+        assert_eq!(
+            saved.exam_rules_markdown.as_deref(),
+            Some("- Cada questão vale 1 ponto.")
+        );
+        assert_eq!(
+            plan.subjects
+                .iter()
+                .find(|subject| subject.id == first_subject.id)
+                .and_then(|subject| subject.exam_weight),
+            Some(2.5)
+        );
+        assert_eq!(
+            plan.subjects
+                .iter()
+                .find(|subject| subject.id == second_subject.id)
+                .and_then(|subject| subject.exam_weight),
+            None
+        );
+
+        let cleared = store
+            .save_preparation_exam_config(&SavePreparationExamConfigInput {
+                preparation_id: preparation.id,
+                reference_material_id: None,
+                exam_rules_markdown: None,
+                subject_exam_weights: vec![SubjectExamWeightInput {
+                    subject_id: first_subject.id,
+                    exam_weight: None,
+                }],
+            })
+            .expect("a configuração deve poder ser editada");
+        assert_eq!(cleared.reference_material_id, None);
+        assert_eq!(cleared.exam_rules_markdown, None);
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

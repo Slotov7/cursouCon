@@ -53,6 +53,12 @@ pub struct SaveManualContestInput {
     pub notes: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SetManualContestNoticeInput {
+    pub contest_id: String,
+    pub material_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManualContestSummary {
@@ -69,6 +75,8 @@ pub struct ManualContestSummary {
     pub exam_date: Option<String>,
     pub notes: Option<String>,
     pub is_favorite: bool,
+    pub notice_material_id: Option<String>,
+    pub notice_material_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -100,6 +108,15 @@ pub fn normalize_manual_contest_input(
 
 pub fn normalize_contest_id(value: &str) -> Result<String, String> {
     normalize_id(value)
+}
+
+pub fn normalize_set_manual_contest_notice_input(
+    input: SetManualContestNoticeInput,
+) -> Result<SetManualContestNoticeInput, String> {
+    Ok(SetManualContestNoticeInput {
+        contest_id: normalize_id(&input.contest_id)?,
+        material_id: input.material_id.map(|id| normalize_id(&id)).transpose()?,
+    })
 }
 
 fn normalize_required_text(

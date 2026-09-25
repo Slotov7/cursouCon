@@ -3,6 +3,7 @@ import {
   createWorkspaceBackup,
   createWorkspaceRevision,
   configureSyncDestination,
+  exportWorkspaceData,
   getDesktopErrorMessage,
   getRecentWorkspaces,
   getSyncDestinationSettings,
@@ -36,6 +37,7 @@ type PendingAction =
   | "pickingRestoreDestination"
   | "restoringBackup"
   | "creatingRevision"
+  | "exportingData"
   | "pickingRevisionDestination"
   | "savingSyncDestination"
   | "publishingRevision"
@@ -114,6 +116,22 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
     try {
       const revision = await createWorkspaceRevision();
       setMessage(`Revisão preparada em ${revision.path} (${revision.blobCount} blobs verificados).`);
+    } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingAction("idle");
+    }
+  };
+
+  const handleExportData = async () => {
+    setError(null);
+    setMessage(null);
+    setPendingAction("exportingData");
+    try {
+      const exported = await exportWorkspaceData();
+      setMessage(
+        `Exportação criada em ${exported.path}: ${exported.exportedRecords} registros, ${exported.exportedNotes} notas e ${exported.exportedAttachments} anexos.`,
+      );
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -436,6 +454,23 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
                   disabled={isBusy}
                 >
                   {pendingAction === "creatingRevision" ? "Preparando snapshot..." : "Preparar revisão"}
+                </button>
+              </section>
+
+              <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="export-data-title">
+                <div>
+                  <h3 id="export-data-title" className="font-heading font-bold text-ink">Exportar dados legíveis</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-muted">
+                    Cria um pacote com <code>data.json</code>, notas Markdown e anexos verificados em <code>exports/</code>. O banco ativo e caminhos da máquina ficam fora dele.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className={`${buttonSecondaryClass} justify-self-start`}
+                  onClick={handleExportData}
+                  disabled={isBusy}
+                >
+                  {pendingAction === "exportingData" ? "Exportando..." : "Exportar dados"}
                 </button>
               </section>
 

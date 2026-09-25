@@ -15,11 +15,12 @@ type NotesPanelProps = {
   plan: StudyPlan | null;
   materials: MaterialSummary[];
   refreshKey: number;
+  onNotesChanged: (notes: NoteSummary[]) => void;
 };
 
 const feedbackClass = "rounded-[10px] border border-danger-line bg-danger-soft px-3.5 py-3 text-sm leading-relaxed text-danger";
 
-export function NotesPanel({ plan, materials, refreshKey }: NotesPanelProps) {
+export function NotesPanel({ plan, materials, refreshKey, onNotesChanged }: NotesPanelProps) {
   const [notes, setNotes] = useState<NoteSummary[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -39,6 +40,7 @@ export function NotesPanel({ plan, materials, refreshKey }: NotesPanelProps) {
       .then((loadedNotes) => {
         if (!cancelled) {
           setNotes(loadedNotes);
+          onNotesChanged(loadedNotes);
           setError(null);
         }
       })
@@ -56,7 +58,7 @@ export function NotesPanel({ plan, materials, refreshKey }: NotesPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [onNotesChanged, refreshKey]);
 
   const startNewNote = () => {
     setSelectedNoteId(null);
@@ -91,7 +93,9 @@ export function NotesPanel({ plan, materials, refreshKey }: NotesPanelProps) {
         materialId: materialId || null,
         subjectId: subjectId || null,
       });
-      setNotes((currentNotes) => [savedNote, ...currentNotes.filter((note) => note.id !== savedNote.id)]);
+      const updatedNotes = [savedNote, ...notes.filter((note) => note.id !== savedNote.id)];
+      setNotes(updatedNotes);
+      onNotesChanged(updatedNotes);
       setSelectedNoteId(savedNote.id);
       setTitle(savedNote.title);
       setContentMarkdown(savedNote.contentMarkdown);

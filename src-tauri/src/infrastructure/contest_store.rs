@@ -1,7 +1,10 @@
 use super::{map_database_error, workspace_store::LocalWorkspaceStore};
 use crate::application::contest_service::ContestStore;
+use crate::application::material_service::MaterialStore;
 use crate::application::workspace_service::WorkspaceError;
-use crate::domain::contest::{ContestStatus, ManualContestSummary, SaveManualContestInput};
+use crate::domain::contest::{
+    ContestStatus, ManualContestSummary, SaveManualContestInput, SetManualContestNoticeInput,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
@@ -21,6 +24,8 @@ type ManualContestRow = (
     i64,
     String,
     String,
+    Option<String>,
+    Option<String>,
 );
 
 impl ContestStore for LocalWorkspaceStore {
@@ -28,10 +33,12 @@ impl ContestStore for LocalWorkspaceStore {
         let connection = self.active_database()?;
         let mut statement = connection
             .prepare(
-                "SELECT id, name, organization, role, board, source_url, status,
+                "SELECT c.id, c.name, c.organization, c.role, c.board, c.source_url, c.status,
                         registration_starts_on, registration_ends_on, fee_deadline,
-                        exam_date, notes, is_favorite, created_at, updated_at
-                 FROM manual_contests
+                        exam_date, notes, is_favorite, created_at, updated_at,
+                        c.notice_material_id, m.original_name
+                 FROM manual_contests c
+                 LEFT JOIN materials m ON m.id = c.notice_material_id
                  ORDER BY is_favorite DESC,
                           COALESCE(registration_ends_on, exam_date, '9999-12-31'),
                           name COLLATE NOCASE",
@@ -151,6 +158,55 @@ impl ContestStore for LocalWorkspaceStore {
             .map_err(|error| map_database_error("confirmar alteração do favorito", error))?;
         Ok(summary)
     }
+
+    fn set_manual_contest_notice(
+        &self,
+        input: &SetManualContestNoticeInput,
+    ) -> Result<ManualContestSummary, WorkspaceError> {
+        if let Some(material_id) = input.material_id.as_deref() {
+            let connection = self.active_database()?;
+            let is_pdf: Option<bool> = connection
+                .query_row(
+                    "SELECT COALESCE(source_url IS NULL AND mime_type = 'application/pdf', 0)
+                     FROM materials WHERE id = ?1",
+                    params![material_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| map_database_error("verificar edital importado", error))?;
+            if is_pdf != Some(true) {
+                return Err(WorkspaceError::InvalidInput(
+                    "Escolha um PDF importado localmente para usar como edital offline."
+                        .to_string(),
+                ));
+            }
+            drop(connection);
+            self.material_path(material_id)?;
+        }
+
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar vínculo do edital", error))?;
+        let changed = transaction
+            .execute(
+                "UPDATE manual_contests
+                 SET notice_material_id = ?1, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?2",
+                params![input.material_id.as_deref(), input.contest_id.as_str()],
+            )
+            .map_err(|error| map_database_error("vincular edital ao concurso", error))?;
+        if changed == 0 {
+            return Err(WorkspaceError::InvalidInput(
+                "O concurso escolhido não existe mais.".to_string(),
+            ));
+        }
+        let summary = load_manual_contest(&transaction, &input.contest_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar vínculo do edital", error))?;
+        Ok(summary)
+    }
 }
 
 fn read_manual_contest_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManualContestRow> {
@@ -170,6 +226,8 @@ fn read_manual_contest_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManualCo
         row.get(12)?,
         row.get(13)?,
         row.get(14)?,
+        row.get(15)?,
+        row.get(16)?,
     ))
 }
 
@@ -179,10 +237,13 @@ fn load_manual_contest(
 ) -> Result<ManualContestSummary, WorkspaceError> {
     let row = connection
         .query_row(
-            "SELECT id, name, organization, role, board, source_url, status,
+            "SELECT c.id, c.name, c.organization, c.role, c.board, c.source_url, c.status,
                     registration_starts_on, registration_ends_on, fee_deadline,
-                    exam_date, notes, is_favorite, created_at, updated_at
-             FROM manual_contests WHERE id = ?1",
+                    exam_date, notes, is_favorite, created_at, updated_at,
+                    c.notice_material_id, m.original_name
+             FROM manual_contests c
+             LEFT JOIN materials m ON m.id = c.notice_material_id
+             WHERE c.id = ?1",
             params![contest_id],
             read_manual_contest_row,
         )
@@ -211,6 +272,8 @@ fn summary_from_row(row: ManualContestRow) -> Result<ManualContestSummary, Works
         is_favorite,
         created_at,
         updated_at,
+        notice_material_id,
+        notice_material_name,
     ) = row;
     let status = ContestStatus::from_storage(&status).ok_or_else(|| {
         WorkspaceError::Database("o concurso possui uma situação desconhecida".to_string())
@@ -230,6 +293,8 @@ fn summary_from_row(row: ManualContestRow) -> Result<ManualContestSummary, Works
         exam_date,
         notes,
         is_favorite: is_favorite == 1,
+        notice_material_id,
+        notice_material_name,
         created_at,
         updated_at,
     })
@@ -239,10 +304,12 @@ fn summary_from_row(row: ManualContestRow) -> Result<ManualContestSummary, Works
 mod tests {
     use super::*;
     use crate::application::contest_service::ContestStore;
+    use crate::application::material_service::MaterialStore;
     use crate::application::study_plan_service::StudyPlanStore;
     use crate::application::study_service::StudyStore;
     use crate::application::workspace_service::WorkspaceStore;
     use crate::domain::contest::ContestStatus;
+    use crate::domain::material::{ImportMaterialInput, RegisterMaterialLinkInput};
     use crate::domain::study::{CreateStudyTaskInput, StartStudySessionInput};
     use crate::domain::study_plan::CreatePreparationInput;
     use std::fs;
@@ -311,6 +378,94 @@ mod tests {
     }
 
     #[test]
+    fn keeps_favorite_notice_offline_and_rejects_external_links() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-notice-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-notice-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Edital de teste")
+            .expect("o espaço deve ser criado");
+        let contest = store
+            .save_manual_contest(&SaveManualContestInput {
+                id: None,
+                name: "Concurso".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                source_url: None,
+                status: ContestStatus::NoticePublished,
+                registration_starts_on: None,
+                registration_ends_on: None,
+                fee_deadline: None,
+                exam_date: None,
+                notes: None,
+            })
+            .expect("o concurso deve ser criado");
+        store
+            .set_manual_contest_favorite(&contest.id, true)
+            .expect("o concurso deve ser favorito");
+        let original = app_data_dir.join("edital.pdf");
+        fs::write(&original, b"%PDF-1.4\nfixture").expect("o PDF sintético deve existir");
+        let material = store
+            .import_material(&ImportMaterialInput {
+                source_path: original.to_string_lossy().to_string(),
+                subject_id: None,
+            })
+            .expect("o PDF deve ser copiado para o espaço");
+        fs::remove_file(original).expect("o original pode ser removido");
+        let linked = store
+            .set_manual_contest_notice(&SetManualContestNoticeInput {
+                contest_id: contest.id.clone(),
+                material_id: Some(material.id.clone()),
+            })
+            .expect("o edital local deve ser vinculado");
+        assert_eq!(linked.notice_material_name.as_deref(), Some("edital.pdf"));
+        assert!(linked.is_favorite);
+        assert!(store
+            .material_path(&material.id)
+            .expect("o PDF deve abrir")
+            .is_file());
+
+        let external = store
+            .register_material_link(&RegisterMaterialLinkInput {
+                url: "https://example.org/edital.pdf".to_string(),
+                title: None,
+                subject_id: None,
+            })
+            .expect("o link da fixture deve ser registrado");
+        assert!(store
+            .set_manual_contest_notice(&SetManualContestNoticeInput {
+                contest_id: contest.id.clone(),
+                material_id: Some(external.id),
+            })
+            .is_err());
+        let loaded = store
+            .list_manual_contests()
+            .expect("o favorito deve sobreviver à leitura");
+        assert_eq!(
+            loaded[0].notice_material_id.as_deref(),
+            Some(material.id.as_str())
+        );
+        assert!(loaded[0].is_favorite);
+
+        let missing_blob = store
+            .material_path(&material.id)
+            .expect("a cópia local deve existir antes da falha simulada");
+        fs::remove_file(missing_blob).expect("a cópia deve ser removida da fixture");
+        assert!(store
+            .set_manual_contest_notice(&SetManualContestNoticeInput {
+                contest_id: contest.id,
+                material_id: Some(material.id),
+            })
+            .is_err());
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
     fn migrates_version_nineteen_workspace_without_losing_sessions() {
         let workspace_path =
             std::env::temp_dir().join(format!("cursoucon-contest-upgrade-{}", Uuid::new_v4()));
@@ -349,8 +504,19 @@ mod tests {
         connection
             .execute_batch(
                 "ALTER TABLE study_sessions DROP COLUMN next_steps;
-                 ALTER TABLE study_sessions DROP COLUMN difficulty;
-                 DELETE FROM schema_migrations WHERE version = 20;",
+                  ALTER TABLE study_sessions DROP COLUMN difficulty;
+                  ALTER TABLE study_sessions DROP COLUMN origin;
+                  DROP TABLE study_session_duration_corrections;
+                  DROP INDEX IF EXISTS idx_materials_source_url;
+                   ALTER TABLE materials DROP COLUMN source_url;
+                   DROP TABLE material_tags;
+                   DROP INDEX IF EXISTS idx_preparations_reference_material;
+                   ALTER TABLE preparations DROP COLUMN reference_material_id;
+                   ALTER TABLE preparations DROP COLUMN exam_rules_markdown;
+                    ALTER TABLE subjects DROP COLUMN exam_weight;
+                    DROP INDEX IF EXISTS idx_manual_contests_notice_material;
+                    ALTER TABLE manual_contests DROP COLUMN notice_material_id;
+                    DELETE FROM schema_migrations WHERE version >= 20;",
             )
             .expect("a fixture deve representar um banco na versão 19");
         drop(connection);

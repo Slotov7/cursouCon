@@ -1,10 +1,33 @@
 import { useMemo, useState, useEffect } from "react";
-import { getDesktopErrorMessage, getStudyProgress } from "../../shared/desktop/commands";
-import type { StudyProgressSummary } from "../../shared/desktop/contracts";
-import { buttonSecondaryClass, Eyebrow } from "../../shared/ui/primitives";
+import {
+  correctStudySessionDuration,
+  createManualStudy,
+  getDesktopErrorMessage,
+  getStudyPlan,
+  getStudyProgress,
+} from "../../shared/desktop/commands";
+import type {
+  StudyHistoryEntry,
+  StudyPlan,
+  StudyProgressSummary,
+  StudySessionDifficulty,
+} from "../../shared/desktop/contracts";
+import { dateKeyForTimezone } from "../../shared/date";
+import {
+  buttonPrimaryClass,
+  buttonQuietClass,
+  buttonSecondaryClass,
+  Eyebrow,
+  fieldClass,
+  inputClass,
+  selectClass,
+  textareaClass,
+} from "../../shared/ui/primitives";
 
 type ProgressViewProps = {
   refreshKey: number;
+  showGamification: boolean;
+  timezone: string;
 };
 
 // Level definitions based on total XP
@@ -35,16 +58,32 @@ function calculateLevel(totalXp: number): {
   return { level, title, currentXpInLevel, xpRequiredForNextLevel, percent };
 }
 
-export function ProgressView({ refreshKey }: ProgressViewProps) {
+export function ProgressView({ refreshKey, showGamification, timezone }: ProgressViewProps) {
   const [summary, setSummary] = useState<StudyProgressSummary | null>(null);
+  const [plan, setPlan] = useState<StudyPlan | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryVersion, setRetryVersion] = useState(0);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isManualFormOpen, setIsManualFormOpen] = useState(false);
+  const [manualTitle, setManualTitle] = useState("");
+  const [manualDate, setManualDate] = useState(() => dateKeyForTimezone(timezone));
+  const [manualMinutes, setManualMinutes] = useState("30");
+  const [manualSubjectId, setManualSubjectId] = useState("");
+  const [manualSummary, setManualSummary] = useState("");
+  const [manualDifficulty, setManualDifficulty] = useState<StudySessionDifficulty | "">("");
+  const [manualNextSteps, setManualNextSteps] = useState("");
+  const [isSavingManual, setIsSavingManual] = useState(false);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [correctionMinutes, setCorrectionMinutes] = useState("");
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [isSavingCorrection, setIsSavingCorrection] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
 
-    getStudyProgress({ asOfDate: getLocalDateKey() })
+    getStudyProgress({ asOfDate: dateKeyForTimezone(timezone) })
       .then((loadedSummary) => {
         if (!cancelled) {
           setSummary(loadedSummary);
@@ -62,14 +101,114 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
         }
       });
 
+    getStudyPlan()
+      .then((loadedPlan) => {
+        if (!cancelled) setPlan(loadedPlan);
+      })
+      .catch(() => {
+        if (!cancelled) setPlan(null);
+      });
+
     return () => {
       cancelled = true;
     };
-  }, [refreshKey, retryVersion]);
+  }, [refreshKey, retryVersion, timezone]);
 
   const levelInfo = useMemo(() => {
     return calculateLevel(summary?.totalXp ?? 0);
   }, [summary?.totalXp]);
+
+  const primaryPreparation = plan?.preparations.find((preparation) => preparation.isPrimary) ?? plan?.preparations[0];
+  const availableSubjects = plan?.subjects.filter(
+    (subject) => subject.preparationId === primaryPreparation?.id,
+  ) ?? [];
+
+  const handleCreateManualStudy = async () => {
+    const minutes = Number(manualMinutes);
+    if (!primaryPreparation) {
+      setActionError("Cadastre uma preparação antes de registrar um estudo manual.");
+      return;
+    }
+    if (!manualTitle.trim() || !Number.isInteger(minutes) || minutes < 1 || minutes > 10_080) {
+      setActionError("Informe título e uma duração entre 1 e 10.080 minutos.");
+      return;
+    }
+
+    setActionError(null);
+    setActionMessage(null);
+    setIsSavingManual(true);
+    try {
+      const result = await createManualStudy({
+        preparationId: primaryPreparation.id,
+        subjectId: manualSubjectId || null,
+        title: manualTitle,
+        studiedOn: manualDate,
+        effectiveSeconds: minutes * 60,
+        summaryMarkdown: manualSummary.trim() ? manualSummary : null,
+        difficulty: manualDifficulty || null,
+        nextSteps: manualNextSteps.trim() ? manualNextSteps : null,
+      });
+      setActionMessage(
+        showGamification && result.xpGranted > 0
+          ? `Estudo manual registrado. +${result.xpGranted} XP.`
+          : "Estudo manual registrado.",
+      );
+      setIsManualFormOpen(false);
+      setManualTitle("");
+      setManualSummary("");
+      setManualNextSteps("");
+      setManualDifficulty("");
+      setRetryVersion((current) => current + 1);
+    } catch (operationError: unknown) {
+      setActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setIsSavingManual(false);
+    }
+  };
+
+  const startDurationCorrection = (session: StudyHistoryEntry) => {
+    setEditingSessionId(session.sessionId);
+    setCorrectionMinutes(Math.round(session.effectiveSeconds / 60).toString());
+    setCorrectionReason("");
+    setActionError(null);
+    setActionMessage(null);
+  };
+
+  const handleCorrectDuration = async (session: StudyHistoryEntry) => {
+    const minutes = Number(correctionMinutes);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10_080) {
+      setActionError("Informe uma duração entre 0 e 10.080 minutos.");
+      return;
+    }
+    if (!correctionReason.trim()) {
+      setActionError("Informe o motivo da correção para manter o histórico auditável.");
+      return;
+    }
+
+    setActionError(null);
+    setActionMessage(null);
+    setIsSavingCorrection(true);
+    try {
+      const result = await correctStudySessionDuration({
+        sessionId: session.sessionId,
+        effectiveSeconds: minutes * 60,
+        reason: correctionReason,
+      });
+      const deltaMessage = !showGamification
+        ? "Duração corrigida; o painel de gamificação está oculto."
+        : result.xpDelta === 0
+          ? "O XP não mudou."
+          : `Variação de XP: ${result.xpDelta > 0 ? "+" : ""}${result.xpDelta}.`;
+      setActionMessage(`Duração corrigida. ${deltaMessage}`);
+      setEditingSessionId(null);
+      setCorrectionReason("");
+      setRetryVersion((current) => current + 1);
+    } catch (operationError: unknown) {
+      setActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setIsSavingCorrection(false);
+    }
+  };
 
   const subjectActivity = useMemo(() => {
     const activity = new Map<string, { name: string; sessions: number; effectiveSeconds: number }>();
@@ -123,12 +262,150 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
               Acompanhe horas líquidas acumuladas, histórico local e evolução de nível de experiência.
             </p>
           </div>
+
+          <button
+            type="button"
+            className={`${buttonPrimaryClass} justify-self-start`}
+            onClick={() => {
+              setIsManualFormOpen((current) => !current);
+              setActionError(null);
+              setActionMessage(null);
+            }}
+          >
+            {isManualFormOpen ? "Fechar registro manual" : "Registrar estudo manual"}
+          </button>
         </div>
       </section>
 
+      {actionError ? (
+        <p className="rounded-xl border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">
+          {actionError}
+        </p>
+      ) : null}
+      {actionMessage ? (
+        <p className="rounded-xl border border-success-line bg-success-soft px-4 py-3 text-sm text-forest-ink" role="status">
+          {actionMessage}
+        </p>
+      ) : null}
+
+      {isManualFormOpen ? (
+        <section className="glass-card rounded-2xl p-5 lg:p-6" aria-labelledby="manual-study-heading">
+          <div className="border-b border-line pb-3">
+            <Eyebrow>Registro auditável</Eyebrow>
+            <h3 id="manual-study-heading" className="mt-1 font-heading text-lg font-bold text-ink">
+              Estudo realizado fora do cronômetro
+            </h3>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
+              Use para registrar leitura, aula ou revisão feita fora do app. O tempo entra nas métricas e recebe XP uma única vez.
+            </p>
+          </div>
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <label className={fieldClass} htmlFor="manual-study-title">
+              Título
+              <input
+                id="manual-study-title"
+                className={inputClass}
+                value={manualTitle}
+                onChange={(event) => setManualTitle(event.target.value)}
+                placeholder="Ex.: Revisão de anotações"
+                disabled={isSavingManual}
+              />
+            </label>
+            <label className={fieldClass} htmlFor="manual-study-date">
+              Data do estudo
+              <input
+                id="manual-study-date"
+                className={inputClass}
+                type="date"
+                value={manualDate}
+                onChange={(event) => setManualDate(event.target.value)}
+                disabled={isSavingManual}
+              />
+            </label>
+            <label className={fieldClass} htmlFor="manual-study-minutes">
+              Duração efetiva (minutos)
+              <input
+                id="manual-study-minutes"
+                className={inputClass}
+                type="number"
+                min="1"
+                max="10080"
+                step="1"
+                value={manualMinutes}
+                onChange={(event) => setManualMinutes(event.target.value)}
+                disabled={isSavingManual}
+              />
+            </label>
+            <label className={fieldClass} htmlFor="manual-study-subject">
+              Assunto <span className="font-normal text-muted">(opcional)</span>
+              <select
+                id="manual-study-subject"
+                className={selectClass}
+                value={manualSubjectId}
+                onChange={(event) => setManualSubjectId(event.target.value)}
+                disabled={isSavingManual}
+              >
+                <option value="">Geral da preparação</option>
+                {availableSubjects.map((subject) => (
+                  <option key={subject.id} value={subject.id}>{subject.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className={fieldClass} htmlFor="manual-study-difficulty">
+              Dificuldade percebida <span className="font-normal text-muted">(opcional)</span>
+              <select
+                id="manual-study-difficulty"
+                className={selectClass}
+                value={manualDifficulty}
+                onChange={(event) => setManualDifficulty(event.target.value as StudySessionDifficulty | "")}
+                disabled={isSavingManual}
+              >
+                <option value="">Não informar</option>
+                <option value="easy">Fácil</option>
+                <option value="normal">Regular</option>
+                <option value="hard">Difícil</option>
+              </select>
+            </label>
+            <label className={`${fieldClass} sm:col-span-2`} htmlFor="manual-study-summary">
+              Resumo <span className="font-normal text-muted">(opcional)</span>
+              <textarea
+                id="manual-study-summary"
+                className={textareaClass}
+                rows={3}
+                value={manualSummary}
+                onChange={(event) => setManualSummary(event.target.value)}
+                placeholder="O que foi estudado?"
+                disabled={isSavingManual}
+              />
+            </label>
+            <label className={`${fieldClass} sm:col-span-2`} htmlFor="manual-study-next-steps">
+              Próximos passos <span className="font-normal text-muted">(opcional)</span>
+              <textarea
+                id="manual-study-next-steps"
+                className={textareaClass}
+                rows={2}
+                value={manualNextSteps}
+                onChange={(event) => setManualNextSteps(event.target.value)}
+                placeholder="O que revisar depois?"
+                disabled={isSavingManual}
+              />
+            </label>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" className={buttonQuietClass} onClick={() => setIsManualFormOpen(false)} disabled={isSavingManual}>
+              Cancelar
+            </button>
+            <button type="button" className={buttonPrimaryClass} onClick={handleCreateManualStudy} disabled={isSavingManual}>
+              {isSavingManual ? "Registrando..." : "Salvar estudo manual"}
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       {/* 2. XP level and recent activity */}
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,.8fr)]">
-        <section className="glass-card rounded-2xl p-5 lg:p-6 shadow-xs flex flex-col justify-between">
+        {showGamification && (
+          <section className="glass-card rounded-2xl p-5 lg:p-6 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
               <div>
@@ -168,9 +445,10 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
             </div>
           </div>
 
-        </section>
+          </section>
+        )}
 
-        <section className="glass-card rounded-2xl p-5 lg:p-6 shadow-xs flex flex-col justify-between">
+        <section className={`glass-card rounded-2xl p-5 lg:p-6 shadow-xs flex flex-col justify-between ${showGamification ? "" : "lg:col-span-2"}`}>
           <div>
             <div className="border-b border-line pb-3 mb-4">
               <Eyebrow>Histórico Local</Eyebrow>
@@ -203,7 +481,8 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
 
       {/* 3. Metrics Row - 4 Tactile Stats Cards */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5 lg:gap-4">
-        <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
+        {showGamification && (
+          <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
           <p className="text-xs font-semibold text-muted">Total de Pontos XP</p>
           <div className="mt-1 flex items-center justify-between">
             <span className="font-heading text-xl font-extrabold text-orange-500 tabular-nums">
@@ -214,7 +493,8 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
             </span>
           </div>
           <p className="mt-2 text-[11px] text-muted">Pontos acumulados no espaço</p>
-        </div>
+          </div>
+        )}
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
           <p className="text-xs font-semibold text-muted">Sessões Concluídas</p>
@@ -307,7 +587,7 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
             {summary.recentSessions.map((session) => (
               <div
                 key={session.sessionId}
-                className="flex flex-col justify-between gap-4 rounded-2xl border border-line bg-paper/70 p-4 transition-all duration-150 ease-out hover:border-blue-500/30 hover:bg-paper shadow-xs sm:flex-row sm:items-start"
+                className="grid gap-4 rounded-2xl border border-line bg-paper/70 p-4 transition-all duration-150 ease-out hover:border-blue-500/30 hover:bg-paper shadow-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
               >
                 <div className="flex items-center gap-3.5 min-w-0">
                   <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-blue-600/10 text-blue-600 font-bold text-xs border border-blue-500/20">
@@ -316,8 +596,14 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
                   <div className="min-w-0 flex-1">
                     <h4 className="truncate font-bold text-xs text-ink">{session.taskTitle}</h4>
                     <p className="mt-0.5 text-[11px] text-muted">
-                      {session.subjectName || "Geral"} · {formatHistoryDate(session.endedAt)}
+                      {session.subjectName || "Geral"} · {formatHistoryDate(session.endedAt)} · {session.origin === "manual" ? "registro manual" : "cronômetro"}
                     </p>
+                    {session.durationCorrectionCount > 0 ? (
+                      <p className="mt-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                        Duração corrigida {session.durationCorrectionCount}x
+                        {session.lastDurationCorrectionAt ? ` · ${formatHistoryDate(session.lastDurationCorrectionAt)}` : ""}
+                      </p>
+                    ) : null}
                     {(session.summaryMarkdown || session.difficulty || session.nextSteps) && (
                       <details className="mt-2 text-[11px]">
                         <summary className="cursor-pointer font-semibold text-blue-700 dark:text-blue-300">
@@ -352,7 +638,52 @@ export function ProgressView({ refreshKey }: ProgressViewProps) {
                   <span className="rounded-full bg-orange-500/20 px-2.5 py-1 text-[11px] font-extrabold text-orange-600 dark:text-orange-400 border border-orange-500/30">
                     +{session.xpGranted} XP
                   </span>
+                  <button
+                    type="button"
+                    className={`${buttonQuietClass} px-2.5 py-1 text-[11px]`}
+                    onClick={() => startDurationCorrection(session)}
+                    disabled={isSavingCorrection}
+                  >
+                    Corrigir duração
+                  </button>
                 </div>
+                {editingSessionId === session.sessionId ? (
+                  <div className="grid gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 sm:col-span-2 sm:grid-cols-[160px_minmax(0,1fr)_auto] sm:items-end">
+                    <label className={fieldClass} htmlFor={`correction-minutes-${session.sessionId}`}>
+                      Duração (minutos)
+                      <input
+                        id={`correction-minutes-${session.sessionId}`}
+                        className={inputClass}
+                        type="number"
+                        min="0"
+                        max="10080"
+                        step="1"
+                        value={correctionMinutes}
+                        onChange={(event) => setCorrectionMinutes(event.target.value)}
+                        disabled={isSavingCorrection}
+                      />
+                    </label>
+                    <label className={fieldClass} htmlFor={`correction-reason-${session.sessionId}`}>
+                      Motivo da correção
+                      <input
+                        id={`correction-reason-${session.sessionId}`}
+                        className={inputClass}
+                        value={correctionReason}
+                        onChange={(event) => setCorrectionReason(event.target.value)}
+                        placeholder="Ex.: cronômetro ficou aberto"
+                        disabled={isSavingCorrection}
+                      />
+                    </label>
+                    <div className="flex gap-2 sm:justify-end">
+                      <button type="button" className={buttonQuietClass} onClick={() => setEditingSessionId(null)} disabled={isSavingCorrection}>
+                        Cancelar
+                      </button>
+                      <button type="button" className={buttonSecondaryClass} onClick={() => handleCorrectDuration(session)} disabled={isSavingCorrection}>
+                        {isSavingCorrection ? "Salvando..." : "Confirmar"}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -409,16 +740,9 @@ function formatSessionDifficulty(difficulty: "easy" | "normal" | "hard"): string
   return "Regular";
 }
 
-function getLocalDateKey(): string {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function formatHistoryDate(value: string): string {
-  const date = new Date(value.replace(" ", "T") + "Z");
+  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) {
     return value;
   }

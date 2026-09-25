@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { dateKeyForTimezone } from "../../shared/date";
 import { completeStudyReview, getDesktopErrorMessage, rescheduleStudyReview } from "../../shared/desktop/commands";
 import type { StudyReviewSummary } from "../../shared/desktop/contracts";
 import { buttonPrimaryClass, buttonQuietClass, buttonSecondaryClass, Eyebrow, fieldClass, inputClass } from "../../shared/ui/primitives";
@@ -6,9 +7,10 @@ import { buttonPrimaryClass, buttonQuietClass, buttonSecondaryClass, Eyebrow, fi
 type ReviewQueueProps = {
   reviews: StudyReviewSummary[];
   onDataChanged: () => void;
+  timezone: string;
 };
 
-export function ReviewQueue({ reviews, onDataChanged }: ReviewQueueProps) {
+export function ReviewQueue({ reviews, onDataChanged, timezone }: ReviewQueueProps) {
   const [pendingReviewId, setPendingReviewId] = useState<string | null>(null);
   const [editingReviewId, setEditingReviewId] = useState<string | null>(null);
   const [dueDate, setDueDate] = useState("");
@@ -78,7 +80,7 @@ export function ReviewQueue({ reviews, onDataChanged }: ReviewQueueProps) {
       ) : (
         <ul className="grid gap-3">
           {reviews.map((review) => {
-            const isOverdue = review.dueDate < getLocalDateKey();
+            const isOverdue = review.dueDate < dateKeyForTimezone(timezone);
             const isEditing = editingReviewId === review.id;
             const isPending = pendingReviewId === review.id;
 
@@ -133,14 +135,6 @@ export function ReviewQueue({ reviews, onDataChanged }: ReviewQueueProps) {
       )}
     </section>
   );
-}
-
-function getLocalDateKey(): string {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 
 function formatDate(dateKey: string): string {

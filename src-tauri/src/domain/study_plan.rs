@@ -16,6 +16,20 @@ pub struct CreatePreparationInput {
 }
 
 #[derive(Debug, Clone)]
+pub struct SavePreparationExamConfigInput {
+    pub preparation_id: String,
+    pub reference_material_id: Option<String>,
+    pub exam_rules_markdown: Option<String>,
+    pub subject_exam_weights: Vec<SubjectExamWeightInput>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubjectExamWeightInput {
+    pub subject_id: String,
+    pub exam_weight: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
 pub struct CreateSubjectInput {
     pub preparation_id: String,
     pub name: String,
@@ -64,6 +78,8 @@ pub struct PreparationSummary {
     pub role: Option<String>,
     pub exam_date: Option<String>,
     pub is_primary: bool,
+    pub reference_material_id: Option<String>,
+    pub exam_rules_markdown: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +92,7 @@ pub struct SubjectSummary {
     pub position: i64,
     pub priority: i64,
     pub study_status: SubjectStudyStatus,
+    pub exam_weight: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +191,47 @@ pub fn normalize_subject_study_status_input(
 
 pub fn normalize_preparation_id(value: &str) -> Result<String, String> {
     normalize_id(value, "A preparação")
+}
+
+pub fn normalize_preparation_exam_config_input(
+    input: SavePreparationExamConfigInput,
+) -> Result<SavePreparationExamConfigInput, String> {
+    let mut subject_ids = HashSet::new();
+    let subject_exam_weights = input
+        .subject_exam_weights
+        .into_iter()
+        .map(|subject| {
+            let subject_id = normalize_id(&subject.subject_id, "O assunto")?;
+            if !subject_ids.insert(subject_id.clone()) {
+                return Err("O peso de um assunto foi informado mais de uma vez.".to_string());
+            }
+            if let Some(exam_weight) = subject.exam_weight {
+                if !exam_weight.is_finite() || exam_weight <= 0.0 {
+                    return Err("O peso da prova deve ser um número maior que zero.".to_string());
+                }
+            }
+            Ok(SubjectExamWeightInput {
+                subject_id,
+                exam_weight: subject.exam_weight,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let exam_rules_markdown = input
+        .exam_rules_markdown
+        .map(|value| normalize_markdown(value, "As regras da prova", 20_000))
+        .transpose()?
+        .filter(|value| !value.is_empty());
+
+    Ok(SavePreparationExamConfigInput {
+        preparation_id: normalize_preparation_id(&input.preparation_id)?,
+        reference_material_id: input
+            .reference_material_id
+            .map(|value| normalize_id(&value, "O material de referência"))
+            .transpose()?,
+        exam_rules_markdown,
+        subject_exam_weights,
+    })
 }
 
 pub fn normalize_study_planning_input(
@@ -482,6 +540,24 @@ fn normalize_optional_text(
         .transpose()
 }
 
+fn normalize_markdown(value: String, label: &str, max_length: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.chars().count() > max_length {
+        return Err(format!(
+            "{label} deve ter no máximo {max_length} caracteres."
+        ));
+    }
+    if trimmed.chars().any(|character| {
+        character.is_control() && character != '\n' && character != '\r' && character != '\t'
+    }) {
+        return Err(format!("{label} contém caracteres inválidos."));
+    }
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(trimmed.to_string())
+}
+
 fn normalize_optional_date(value: Option<String>) -> Result<Option<String>, String> {
     let Some(value) = value else {
         return Ok(None);
@@ -700,6 +776,8 @@ mod tests {
             role: None,
             exam_date: None,
             is_primary: true,
+            reference_material_id: None,
+            exam_rules_markdown: None,
         }];
         let subjects = vec![
             SubjectSummary {
@@ -710,6 +788,7 @@ mod tests {
                 position: 0,
                 priority: 3,
                 study_status: SubjectStudyStatus::NotStarted,
+                exam_weight: None,
             },
             SubjectSummary {
                 id: "subject-2".to_string(),
@@ -719,6 +798,7 @@ mod tests {
                 position: 0,
                 priority: 3,
                 study_status: SubjectStudyStatus::InProgress,
+                exam_weight: Some(1.0),
             },
             SubjectSummary {
                 id: "subject-3".to_string(),
@@ -728,6 +808,7 @@ mod tests {
                 position: 1,
                 priority: 3,
                 study_status: SubjectStudyStatus::TheoryCompleted,
+                exam_weight: Some(2.0),
             },
         ];
 

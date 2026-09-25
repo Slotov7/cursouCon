@@ -4,8 +4,14 @@ import {
   parseAnswerQuestionResult,
   parseBackupSummary,
   parseCompleteStudyReviewResult,
+  parseAppPreferences,
+  parseCorrectStudySessionDurationResult,
+  parseCreateManualStudyResult,
+  parseWorkspaceDataExportResult,
   parseAcceptStudyCycleActionResult,
   parseDailyPlan,
+  parseDiagnosticExportResult,
+  parseDiagnosticSnapshot,
   parseFinishStudySessionResult,
   parseMaterial,
   parseMaterials,
@@ -14,6 +20,7 @@ import {
   parseManualContest,
   parseManualContests,
   parseOptionalWorkspaceSummary,
+  parsePreparationSummary,
   parseQuestion,
   parseQuestionExportResult,
   parseQuestionImportPreview,
@@ -34,6 +41,7 @@ import {
   parseWorkspaceSummary,
   type AnswerQuestionRequest,
   type AnswerQuestionResult,
+  type AppPreferences,
   type BackupSummary,
   type CreatePreparationRequest,
   type CreateBackupRequest,
@@ -42,16 +50,25 @@ import {
   type CreateStudyTaskRequest,
   type ConfigureSyncDestinationRequest,
   type CreateSubjectRequest,
+  type SavePreparationExamConfigRequest,
   type DailyPlan,
+  type DiagnosticExportResult,
+  type DiagnosticSnapshot,
   type AcceptStudyCycleActionRequest,
   type AcceptStudyCycleActionResult,
   type FinishStudySessionRequest,
   type FinishStudySessionResult,
+  type HeartbeatStudySessionRequest,
   type CompleteStudyReviewRequest,
   type CompleteStudyReviewResult,
+  type CorrectStudySessionDurationRequest,
+  type CorrectStudySessionDurationResult,
+  type CreateManualStudyRequest,
+  type CreateManualStudyResult,
   type GetStudyProgressRequest,
   type GetQuestionsRequest,
   type ImportMaterialRequest,
+  type RegisterMaterialLinkRequest,
   type MaterialSummary,
   type NoteSummary,
   type ManualContestSummary,
@@ -74,13 +91,19 @@ import {
   type SaveNoteRequest,
   type SaveManualContestRequest,
   type SetManualContestFavoriteRequest,
+  type SetManualContestNoticeRequest,
   type SkipStudyTaskRequest,
   type StartStudySessionRequest,
   type StudyPlan,
   type StudyPlanningSummary,
+  type PreparationSummary,
   type SaveStudyPlanningRequest,
+  type SaveAppPreferencesRequest,
   type StudyPlanningPreparationRequest,
+  type StudyHistoryEntry,
   type SubjectSummary,
+  type SetMaterialSubjectsRequest,
+  type SetMaterialTagsRequest,
   type SetSubjectStudyStatusRequest,
   type StudyProgressSummary,
   type StudyReviewSummary,
@@ -90,6 +113,7 @@ import {
   type SyncDestinationSettings,
   type UpdateMaterialPageRequest,
   type WorkspaceRequest,
+  type WorkspaceDataExportResult,
   type WorkspaceSummary,
 } from "./contracts";
 
@@ -114,6 +138,14 @@ let mockSyncDestinationSettings: SyncDestinationSettings = {
   destinationPath: null,
 };
 
+let mockAppPreferences: AppPreferences = {
+  theme: "dark",
+  reducedMotion: false,
+  highContrast: false,
+  timezone: "system",
+  gamificationVisible: true,
+};
+
 let mockStudyPlan: StudyPlan = {
   preparations: [
     {
@@ -123,14 +155,16 @@ let mockStudyPlan: StudyPlan = {
       role: "Analista Legislativo - TI",
       examDate: "2026-11-15",
       isPrimary: true,
+      referenceMaterialId: "mat-1",
+      examRulesMarkdown: "- Cada questão vale 1 ponto.\n- Consulte o edital antes de ajustar o plano.",
     },
   ],
   subjects: [
-    { id: "subj-1", preparationId: "prep-1", parentId: null, name: "Direito Constitucional", position: 1, priority: 1, studyStatus: "not_started" },
-    { id: "subj-2", preparationId: "prep-1", parentId: null, name: "Engenharia de Software", position: 2, priority: 2, studyStatus: "not_started" },
-    { id: "subj-3", preparationId: "prep-1", parentId: null, name: "Língua Portuguesa", position: 3, priority: 3, studyStatus: "not_started" },
-    { id: "subj-4", preparationId: "prep-1", parentId: null, name: "Bancos de Dados & SQL", position: 4, priority: 4, studyStatus: "not_started" },
-    { id: "subj-5", preparationId: "prep-1", parentId: null, name: "Direito Administrativo", position: 5, priority: 5, studyStatus: "not_started" },
+    { id: "subj-1", preparationId: "prep-1", parentId: null, name: "Direito Constitucional", position: 1, priority: 1, studyStatus: "not_started", examWeight: 2 },
+    { id: "subj-2", preparationId: "prep-1", parentId: null, name: "Engenharia de Software", position: 2, priority: 2, studyStatus: "not_started", examWeight: 2 },
+    { id: "subj-3", preparationId: "prep-1", parentId: null, name: "Língua Portuguesa", position: 3, priority: 3, studyStatus: "not_started", examWeight: 1 },
+    { id: "subj-4", preparationId: "prep-1", parentId: null, name: "Bancos de Dados & SQL", position: 4, priority: 4, studyStatus: "not_started", examWeight: 1 },
+    { id: "subj-5", preparationId: "prep-1", parentId: null, name: "Direito Administrativo", position: 5, priority: 5, studyStatus: "not_started", examWeight: null },
   ],
   subjectCoverage: [],
 };
@@ -221,6 +255,7 @@ let mockTasks: StudyTaskSummary[] = [
 let mockActiveSession: StudySessionSummary | null = null;
 let mockStudyReviews: StudyReviewSummary[] = [];
 let mockXp = 480;
+let mockRecentSessions: StudyHistoryEntry[] = [];
 const MOCK_REVIEW_XP_PER_OCCURRENCE = 5;
 const MOCK_REVIEW_XP_DAILY_CAP = 30;
 let mockNotebookEntries: Record<string, QuestionNotebookEntry[]> = {
@@ -238,6 +273,32 @@ let mockNotebooks: NotebookSummary[] = [
   },
 ];
 let mockManualContests: ManualContestSummary[] = [];
+let mockMaterials: MaterialSummary[] = [
+  {
+    id: "mat-1",
+    originalName: "Constituicao-Federal-1988-CF88.pdf",
+    contentHash: "hash-123",
+    mimeType: "application/pdf",
+    sourceUrl: null,
+    byteSize: 2450000,
+    importedAt: "2026-01-12T14:00:00Z",
+    currentPage: 42,
+    subjects: [{ id: "subj-1", name: "Direito Constitucional" }],
+    tags: ["base", "constitucional"],
+  },
+  {
+    id: "mat-2",
+    originalName: "Engenharia-de-Software-Pressman-Anotacoes.pdf",
+    contentHash: "hash-456",
+    mimeType: "application/pdf",
+    sourceUrl: null,
+    byteSize: 5200000,
+    importedAt: "2026-01-15T11:00:00Z",
+    currentPage: 88,
+    subjects: [{ id: "subj-2", name: "Engenharia de Software" }],
+    tags: ["referência"],
+  },
+];
 
 // ---------------------------------------------------------------------------
 // IPC Core Wrappers
@@ -247,6 +308,75 @@ export async function getActiveWorkspace(): Promise<WorkspaceSummary | null> {
   if (!isTauri()) return mockWorkspace;
   const response = await invoke<unknown>("get_active_workspace");
   return parseOptionalWorkspaceSummary(response);
+}
+
+export async function getAppPreferences(): Promise<AppPreferences> {
+  if (!isTauri()) return { ...mockAppPreferences };
+  const response = await invoke<unknown>("get_app_preferences");
+  return parseAppPreferences(response);
+}
+
+export async function saveAppPreferences(
+  request: SaveAppPreferencesRequest,
+): Promise<AppPreferences> {
+  if (!isTauri()) {
+    mockAppPreferences = { ...request };
+    return { ...mockAppPreferences };
+  }
+  const response = await invoke<unknown>("save_app_preferences", { request });
+  return parseAppPreferences(response);
+}
+
+export async function getAppDiagnostic(): Promise<DiagnosticSnapshot> {
+  if (!isTauri()) {
+    return {
+      appVersion: "0.1.0",
+      platform: "web-preview",
+      architecture: "browser",
+      workspaceFormatVersion: 1,
+      schemaVersion: 24,
+      counts: {
+        preparations: mockStudyPlan.preparations.length,
+        subjects: mockStudyPlan.subjects.length,
+        materials: mockMaterials.length,
+        notes: 0,
+        questions: 3,
+        questionAttempts: 0,
+        studySessions: mockRecentSessions.length,
+      },
+    };
+  }
+  const response = await invoke<unknown>("get_app_diagnostic");
+  return parseDiagnosticSnapshot(response);
+}
+
+export async function exportDiagnostic(
+  destinationParentPath: string,
+): Promise<DiagnosticExportResult> {
+  if (!isTauri()) {
+    return {
+      path: `${destinationParentPath}/cursoucon-diagnostic-demo.json`,
+      snapshot: await getAppDiagnostic(),
+    };
+  }
+  const response = await invoke<unknown>("export_diagnostic", {
+    request: { destinationParentPath },
+  });
+  return parseDiagnosticExportResult(response);
+}
+
+export async function exportWorkspaceData(): Promise<WorkspaceDataExportResult> {
+  if (!isTauri()) {
+    return {
+      path: "exports/data-demo",
+      schemaVersion: 1,
+      exportedRecords: 0,
+      exportedNotes: 0,
+      exportedAttachments: 0,
+    };
+  }
+  const response = await invoke<unknown>("export_workspace_data");
+  return parseWorkspaceDataExportResult(response);
 }
 
 export async function getRecentWorkspaces(): Promise<WorkspaceSummary[]> {
@@ -583,6 +713,8 @@ export async function createPreparation(request: CreatePreparationRequest): Prom
       role: request.role,
       examDate: request.examDate,
       isPrimary: request.makePrimary,
+      referenceMaterialId: null,
+      examRulesMarkdown: null,
     });
     return;
   }
@@ -599,10 +731,45 @@ export async function createSubject(request: CreateSubjectRequest): Promise<void
       position: mockStudyPlan.subjects.length + 1,
       priority: 3,
       studyStatus: "not_started",
+      examWeight: null,
     });
     return;
   }
   await invoke("create_subject", { request });
+}
+
+export async function savePreparationExamConfig(
+  request: SavePreparationExamConfigRequest,
+): Promise<PreparationSummary> {
+  if (!isTauri()) {
+    const preparation = mockStudyPlan.preparations.find(
+      (item) => item.id === request.preparationId,
+    );
+    if (!preparation) throw new Error("A preparação escolhida não existe mais.");
+    mockStudyPlan.preparations = mockStudyPlan.preparations.map((item) =>
+      item.id === request.preparationId
+        ? {
+            ...item,
+            referenceMaterialId: request.referenceMaterialId,
+            examRulesMarkdown: request.examRulesMarkdown?.trim() || null,
+          }
+        : item,
+    );
+    for (const subjectWeight of request.subjectExamWeights) {
+      mockStudyPlan.subjects = mockStudyPlan.subjects.map((subject) =>
+        subject.id === subjectWeight.subjectId
+          ? { ...subject, examWeight: subjectWeight.examWeight }
+          : subject,
+      );
+    }
+    const updatedPreparation = mockStudyPlan.preparations.find(
+      (item) => item.id === request.preparationId,
+    );
+    if (!updatedPreparation) throw new Error("A preparação escolhida não existe mais.");
+    return updatedPreparation;
+  }
+  const response = await invoke<unknown>("save_preparation_exam_config", { request });
+  return parsePreparationSummary(response);
 }
 
 export async function setSubjectStudyStatus(
@@ -642,6 +809,8 @@ export async function saveManualContest(
       ...request,
       id: request.id ?? `contest-${Date.now()}`,
       isFavorite: existing?.isFavorite ?? false,
+      noticeMaterialId: existing?.noticeMaterialId ?? null,
+      noticeMaterialName: existing?.noticeMaterialName ?? null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -667,6 +836,31 @@ export async function setManualContestFavorite(
     return saved;
   }
   const response = await invoke<unknown>("set_manual_contest_favorite", { request });
+  return parseManualContest(response);
+}
+
+export async function setManualContestNotice(
+  request: SetManualContestNoticeRequest,
+): Promise<ManualContestSummary> {
+  if (!isTauri()) {
+    const contest = mockManualContests.find((item) => item.id === request.contestId);
+    if (!contest) throw new Error("O concurso escolhido não existe mais.");
+    const material = request.materialId
+      ? mockMaterials.find((item) => item.id === request.materialId)
+      : null;
+    if (request.materialId && (!material || material.sourceUrl || material.mimeType !== "application/pdf")) {
+      throw new Error("Escolha um PDF importado localmente para usar como edital offline.");
+    }
+    const saved = {
+      ...contest,
+      noticeMaterialId: material?.id ?? null,
+      noticeMaterialName: material?.originalName ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+    mockManualContests = mockManualContests.map((item) => item.id === saved.id ? saved : item);
+    return saved;
+  }
+  const response = await invoke<unknown>("set_manual_contest_notice", { request });
   return parseManualContest(response);
 }
 
@@ -746,28 +940,11 @@ export async function pickMaterialFile(): Promise<string | null> {
 
 export async function getMaterials(): Promise<MaterialSummary[]> {
   if (!isTauri()) {
-    return [
-      {
-        id: "mat-1",
-        originalName: "Constituicao-Federal-1988-CF88.pdf",
-        contentHash: "hash-123",
-        mimeType: "application/pdf",
-        byteSize: 2450000,
-        importedAt: "2026-01-12T14:00:00Z",
-        currentPage: 42,
-        subjects: [{ id: "subj-1", name: "Direito Constitucional" }],
-      },
-      {
-        id: "mat-2",
-        originalName: "Engenharia-de-Software-Pressman-Anotacoes.pdf",
-        contentHash: "hash-456",
-        mimeType: "application/pdf",
-        byteSize: 5200000,
-        importedAt: "2026-01-15T11:00:00Z",
-        currentPage: 88,
-        subjects: [{ id: "subj-2", name: "Engenharia de Software" }],
-      },
-    ];
+    return mockMaterials.map((material) => ({
+      ...material,
+      subjects: [...material.subjects],
+      tags: [...material.tags],
+    }));
   }
   const response = await invoke<unknown>("get_materials");
   return parseMaterials(response);
@@ -775,19 +952,108 @@ export async function getMaterials(): Promise<MaterialSummary[]> {
 
 export async function importMaterial(request: ImportMaterialRequest): Promise<MaterialSummary> {
   if (!isTauri()) {
-    return {
+    const originalName = request.sourcePath.split(/[\\/]/).pop() || "Material.pdf";
+    const importedMaterial: MaterialSummary = {
       id: `mat-${Date.now()}`,
-      originalName: request.sourcePath.split("/").pop() || "Material.pdf",
+      originalName,
       contentHash: `hash-${Date.now()}`,
-      mimeType: "application/pdf",
+      mimeType: mimeTypeForMaterialName(originalName),
+      sourceUrl: null,
       byteSize: 1024000,
       importedAt: new Date().toISOString(),
       currentPage: 1,
       subjects: request.subjectId ? [{ id: request.subjectId, name: "Disciplina Selecionada" }] : [],
+      tags: [],
     };
+    mockMaterials = [importedMaterial, ...mockMaterials];
+    return importedMaterial;
   }
   const response = await invoke<unknown>("import_material", { request });
   return parseMaterial(response);
+}
+
+export async function registerMaterialLink(
+  request: RegisterMaterialLinkRequest,
+): Promise<MaterialSummary> {
+  if (!isTauri()) {
+    const url = request.url.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error("Informe um link HTTP ou HTTPS válido.");
+    }
+    const existing = mockMaterials.find((material) => material.sourceUrl === url);
+    if (existing) {
+      if (request.subjectId && !existing.subjects.some((subject) => subject.id === request.subjectId)) {
+        const updatedExisting = {
+          ...existing,
+          subjects: [
+            ...existing.subjects,
+            { id: request.subjectId, name: "Disciplina Selecionada" },
+          ],
+        };
+        mockMaterials = mockMaterials.map((material) =>
+          material.id === existing.id ? updatedExisting : material,
+        );
+        return updatedExisting;
+      }
+      return existing;
+    }
+
+    let fallbackName = url;
+    try {
+      fallbackName = new URL(url).hostname || url;
+    } catch {
+      // O núcleo nativo faz a validação definitiva no aplicativo desktop.
+    }
+    const linkedMaterial: MaterialSummary = {
+      id: `mat-link-${Date.now()}`,
+      originalName: request.title?.trim() || fallbackName,
+      contentHash: `link-${Date.now()}`,
+      mimeType: "text/html",
+      sourceUrl: url,
+      byteSize: 0,
+      importedAt: new Date().toISOString(),
+      currentPage: 1,
+      subjects: request.subjectId ? [{ id: request.subjectId, name: "Disciplina Selecionada" }] : [],
+      tags: [],
+    };
+    mockMaterials = [linkedMaterial, ...mockMaterials];
+    return linkedMaterial;
+  }
+  const response = await invoke<unknown>("register_material_link", { request });
+  return parseMaterial(response);
+}
+
+function mimeTypeForMaterialName(fileName: string): string | null {
+  const extension = fileName.split(".").pop()?.toLowerCase();
+  switch (extension) {
+    case "pdf":
+      return "application/pdf";
+    case "md":
+      return "text/markdown";
+    case "txt":
+      return "text/plain";
+    case "csv":
+      return "text/csv";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "webp":
+      return "image/webp";
+    case "svg":
+      return "image/svg+xml";
+    case "doc":
+      return "application/msword";
+    case "docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case "xls":
+      return "application/vnd.ms-excel";
+    case "xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    default:
+      return null;
+  }
 }
 
 export async function openMaterial(request: OpenMaterialRequest): Promise<void> {
@@ -806,18 +1072,55 @@ export async function getMaterialSource(request: OpenMaterialRequest): Promise<s
 
 export async function updateMaterialPage(request: UpdateMaterialPageRequest): Promise<MaterialSummary> {
   if (!isTauri()) {
-    return {
-      id: request.materialId,
-      originalName: "Material Local",
-      contentHash: "hash-local",
-      mimeType: "application/pdf",
-      byteSize: 1024000,
-      importedAt: new Date().toISOString(),
-      currentPage: request.page,
-      subjects: [{ id: "subj-1", name: "Direito Constitucional" }],
-    };
+    const material = mockMaterials.find((item) => item.id === request.materialId);
+    if (!material) {
+      throw new Error("O material escolhido não existe mais.");
+    }
+    const updatedMaterial = { ...material, currentPage: request.page };
+    mockMaterials = mockMaterials.map((item) =>
+      item.id === request.materialId ? updatedMaterial : item,
+    );
+    return updatedMaterial;
   }
   const response = await invoke<unknown>("update_material_page", { request });
+  return parseMaterial(response);
+}
+
+export async function setMaterialTags(request: SetMaterialTagsRequest): Promise<MaterialSummary> {
+  if (!isTauri()) {
+    const material = mockMaterials.find((item) => item.id === request.materialId);
+    if (!material) {
+      throw new Error("O material escolhido não existe mais.");
+    }
+    const updatedMaterial = { ...material, tags: [...request.tags] };
+    mockMaterials = mockMaterials.map((item) =>
+      item.id === request.materialId ? updatedMaterial : item,
+    );
+    return updatedMaterial;
+  }
+  const response = await invoke<unknown>("set_material_tags", { request });
+  return parseMaterial(response);
+}
+
+export async function setMaterialSubjects(
+  request: SetMaterialSubjectsRequest,
+): Promise<MaterialSummary> {
+  if (!isTauri()) {
+    const material = mockMaterials.find((item) => item.id === request.materialId);
+    if (!material) {
+      throw new Error("O material escolhido não existe mais.");
+    }
+    const subjects = request.subjectIds.map((subjectId) => {
+      const subject = mockStudyPlan.subjects.find((item) => item.id === subjectId);
+      return { id: subjectId, name: subject?.name ?? "Disciplina selecionada" };
+    });
+    const updatedMaterial = { ...material, subjects };
+    mockMaterials = mockMaterials.map((item) =>
+      item.id === request.materialId ? updatedMaterial : item,
+    );
+    return updatedMaterial;
+  }
+  const response = await invoke<unknown>("set_material_subjects", { request });
   return parseMaterial(response);
 }
 
@@ -1109,6 +1412,7 @@ export async function startStudySession(request: StartStudySessionRequest): Prom
       activeStartedAt: nowIso,
       effectiveSeconds: 0,
       summaryMarkdown: null,
+      origin: "timer",
       difficulty: null,
       nextSteps: null,
     };
@@ -1116,6 +1420,95 @@ export async function startStudySession(request: StartStudySessionRequest): Prom
   }
   const response = await invoke<unknown>("start_study_session", { request });
   return parseStudySession(response);
+}
+
+export async function createManualStudy(
+  request: CreateManualStudyRequest,
+): Promise<CreateManualStudyResult> {
+  if (!isTauri()) {
+    const studiedAt = `${request.studiedOn}T12:00:00Z`;
+    const session: StudySessionSummary = {
+      id: `manual-session-${Date.now()}`,
+      taskId: `manual-task-${Date.now()}`,
+      subjectId: request.subjectId,
+      startedAt: studiedAt,
+      activeStartedAt: null,
+      effectiveSeconds: request.effectiveSeconds,
+      status: "completed",
+      origin: "manual",
+      summaryMarkdown: request.summaryMarkdown,
+      difficulty: request.difficulty,
+      nextSteps: request.nextSteps,
+    };
+    const xpGranted = Math.floor(request.effectiveSeconds / 60);
+    const history: StudyHistoryEntry = {
+      sessionId: session.id,
+      taskId: session.taskId,
+      taskTitle: request.title,
+      subjectName:
+        mockStudyPlan.subjects.find((subject) => subject.id === request.subjectId)?.name ?? null,
+      endedAt: studiedAt,
+      effectiveSeconds: request.effectiveSeconds,
+      taskStatus: "completed",
+      origin: "manual",
+      xpGranted,
+      durationCorrectionCount: 0,
+      lastDurationCorrectionAt: null,
+      summaryMarkdown: request.summaryMarkdown,
+      difficulty: request.difficulty,
+      nextSteps: request.nextSteps,
+    };
+    mockRecentSessions = [history, ...mockRecentSessions];
+    mockXp += xpGranted;
+    return { session, xpGranted };
+  }
+  const response = await invoke<unknown>("create_manual_study", { request });
+  return parseCreateManualStudyResult(response);
+}
+
+export async function correctStudySessionDuration(
+  request: CorrectStudySessionDurationRequest,
+): Promise<CorrectStudySessionDurationResult> {
+  if (!isTauri()) {
+    const history = mockRecentSessions.find((item) => item.sessionId === request.sessionId);
+    if (!history) throw new Error("A sessão escolhida não existe mais.");
+    const previousXp = history.xpGranted;
+    const correctedXp = Math.floor(request.effectiveSeconds / 60);
+    const correctedAt = new Date().toISOString();
+    mockRecentSessions = mockRecentSessions.map((item) =>
+      item.sessionId === request.sessionId
+        ? {
+            ...item,
+            effectiveSeconds: request.effectiveSeconds,
+            xpGranted: correctedXp,
+            durationCorrectionCount: item.durationCorrectionCount + 1,
+            lastDurationCorrectionAt: correctedAt,
+          }
+        : item,
+    );
+    mockXp += correctedXp - previousXp;
+    return {
+      session: {
+        id: request.sessionId,
+        taskId: history.taskId,
+        subjectId: null,
+        startedAt: history.endedAt,
+        activeStartedAt: null,
+        effectiveSeconds: request.effectiveSeconds,
+        status: "completed",
+        origin: history.origin,
+        summaryMarkdown: history.summaryMarkdown,
+        difficulty: history.difficulty,
+        nextSteps: history.nextSteps,
+      },
+      previousEffectiveSeconds: history.effectiveSeconds,
+      previousXp,
+      correctedXp,
+      xpDelta: correctedXp - previousXp,
+    };
+  }
+  const response = await invoke<unknown>("correct_study_session_duration", { request });
+  return parseCorrectStudySessionDurationResult(response);
 }
 
 export async function pauseStudySession(request: PauseStudySessionRequest): Promise<StudySessionSummary> {
@@ -1139,6 +1532,16 @@ export async function resumeStudySession(request: ResumeStudySessionRequest): Pr
     return mockActiveSession!;
   }
   const response = await invoke<unknown>("resume_study_session", { request });
+  return parseStudySession(response);
+}
+
+export async function heartbeatStudySession(
+  request: HeartbeatStudySessionRequest,
+): Promise<StudySessionSummary> {
+  if (!isTauri()) {
+    return mockActiveSession!;
+  }
+  const response = await invoke<unknown>("heartbeat_study_session", { request });
   return parseStudySession(response);
 }
 
@@ -1175,6 +1578,7 @@ export async function finishStudySession(request: FinishStudySessionRequest): Pr
       activeStartedAt: null,
       effectiveSeconds: request.effectiveSeconds,
       status: "completed" as const,
+      origin: "timer" as const,
       summaryMarkdown: request.summaryMarkdown,
       difficulty: request.difficulty,
       nextSteps: request.nextSteps,
@@ -1266,43 +1670,52 @@ export async function completeStudyReview(
 
 export async function getStudyProgress(request: GetStudyProgressRequest): Promise<StudyProgressSummary> {
   if (!isTauri()) {
+    const seededSessions: StudyHistoryEntry[] = [
+      {
+        sessionId: "sess-1",
+        taskId: "task-101",
+        taskTitle: "Controle de Constitucionalidade",
+        subjectName: "Direito Constitucional",
+        endedAt: "2026-02-20T14:00:00Z",
+        effectiveSeconds: 2700,
+        taskStatus: "completed",
+        origin: "timer",
+        xpGranted: 50,
+        durationCorrectionCount: 0,
+        lastDurationCorrectionAt: null,
+        summaryMarkdown: null,
+        difficulty: null,
+        nextSteps: null,
+      },
+      {
+        sessionId: "sess-2",
+        taskId: "task-102",
+        taskTitle: "Arquitetura Hexagonal & DDD",
+        subjectName: "Engenharia de Software",
+        endedAt: "2026-02-21T10:00:00Z",
+        effectiveSeconds: 3600,
+        taskStatus: "completed",
+        origin: "timer",
+        xpGranted: 50,
+        durationCorrectionCount: 0,
+        lastDurationCorrectionAt: null,
+        summaryMarkdown: null,
+        difficulty: null,
+        nextSteps: null,
+      },
+    ];
+    const recentSessions = [...mockRecentSessions, ...seededSessions];
     return {
       totalXp: mockXp,
-      completedSessions: 32,
-      effectiveSeconds: 67200, // 112h
+      completedSessions: 32 + mockRecentSessions.length,
+      effectiveSeconds:
+        67200 + mockRecentSessions.reduce((total, session) => total + session.effectiveSeconds, 0),
       streak: {
         currentPlannedDays: 4,
         longestPlannedDays: 9,
         lastStudyDay: request.asOfDate,
       },
-      recentSessions: [
-        {
-          sessionId: "sess-1",
-          taskId: "task-101",
-          taskTitle: "Controle de Constitucionalidade",
-          subjectName: "Direito Constitucional",
-          endedAt: "2026-02-20T14:00:00Z",
-          effectiveSeconds: 2700,
-          taskStatus: "completed",
-          xpGranted: 50,
-          summaryMarkdown: null,
-          difficulty: null,
-          nextSteps: null,
-        },
-        {
-          sessionId: "sess-2",
-          taskId: "task-102",
-          taskTitle: "Arquitetura Hexagonal & DDD",
-          subjectName: "Engenharia de Software",
-          endedAt: "2026-02-21T10:00:00Z",
-          effectiveSeconds: 3600,
-          taskStatus: "completed",
-          xpGranted: 50,
-          summaryMarkdown: null,
-          difficulty: null,
-          nextSteps: null,
-        },
-      ],
+      recentSessions,
     };
   }
   const response = await invoke<unknown>("get_study_progress", { request });

@@ -18,11 +18,7 @@ export function useThemePreference() {
     }
   }, [theme]);
 
-  const toggleTheme = () => {
-    setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"));
-  };
-
-  return { theme, toggleTheme };
+  return { theme, setTheme };
 }
 
 function readStoredTheme(): Theme {

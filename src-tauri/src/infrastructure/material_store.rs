@@ -2,7 +2,9 @@ use super::{map_database_error, map_io_error, workspace_store::LocalWorkspaceSto
 use crate::application::material_service::MaterialStore;
 use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
 use crate::domain::material::{
-    ImportMaterialInput, MaterialSubjectSummary, MaterialSummary, UpdateMaterialPageInput,
+    normalize_external_url, ImportMaterialInput, MaterialSubjectSummary, MaterialSummary,
+    RegisterMaterialLinkInput, SetMaterialSubjectsInput, SetMaterialTagsInput,
+    UpdateMaterialPageInput,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -18,6 +20,7 @@ type MaterialRow = (
     String,
     Option<String>,
     i64,
+    Option<String>,
     String,
     i64,
     Option<String>,
@@ -53,16 +56,80 @@ impl MaterialStore for LocalWorkspaceStore {
         result
     }
 
+    fn register_material_link(
+        &self,
+        input: &RegisterMaterialLinkInput,
+    ) -> Result<MaterialSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar cadastro do link", error))?;
+        if let Some(subject_id) = input.subject_id.as_deref() {
+            ensure_subject_exists(&transaction, subject_id)?;
+        }
+
+        let existing_id: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM materials WHERE source_url = ?1",
+                params![input.url.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_database_error("localizar link existente", error))?;
+        let material_id = if let Some(material_id) = existing_id {
+            material_id
+        } else {
+            let original_name = input
+                .title
+                .clone()
+                .unwrap_or_else(|| link_display_name(&input.url));
+            validate_original_name(&original_name)?;
+            let content_hash = link_content_hash(&input.url);
+            let material_id = Uuid::new_v4().to_string();
+            transaction
+                .execute(
+                    "INSERT INTO materials
+                     (id, original_name, content_hash, mime_type, source_url, byte_size)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                    params![
+                        material_id.as_str(),
+                        original_name.as_str(),
+                        content_hash.as_str(),
+                        "text/html",
+                        input.url.as_str(),
+                    ],
+                )
+                .map_err(|error| map_database_error("registrar link", error))?;
+            material_id
+        };
+
+        if let Some(subject_id) = input.subject_id.as_deref() {
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO material_subjects (material_id, subject_id)
+                     VALUES (?1, ?2)",
+                    params![material_id.as_str(), subject_id],
+                )
+                .map_err(|error| map_database_error("vincular link ao assunto", error))?;
+        }
+
+        let summary = load_material(&transaction, &material_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar cadastro do link", error))?;
+        Ok(summary)
+    }
+
     fn material_path(&self, material_id: &str) -> Result<PathBuf, WorkspaceError> {
         let workspace = self
             .active_workspace()?
             .ok_or(WorkspaceError::NoActiveWorkspace)?;
         let connection = self.active_database()?;
-        let content_hash: String = connection
+        let (content_hash, source_url): (String, Option<String>) = connection
             .query_row(
-                "SELECT content_hash FROM materials WHERE id = ?1",
+                "SELECT content_hash, source_url FROM materials WHERE id = ?1",
                 params![material_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|error| match error {
                 rusqlite::Error::QueryReturnedNoRows => WorkspaceError::InvalidInput(
@@ -70,6 +137,11 @@ impl MaterialStore for LocalWorkspaceStore {
                 ),
                 other => map_database_error("localizar material", other),
             })?;
+        if source_url.is_some() {
+            return Err(WorkspaceError::InvalidInput(
+                "Este material é um link externo e não possui arquivo local.".to_string(),
+            ));
+        }
         let material_path = workspace.path.join("blobs").join(content_hash);
 
         if !material_path.is_file() {
@@ -79,6 +151,26 @@ impl MaterialStore for LocalWorkspaceStore {
         }
 
         Ok(material_path)
+    }
+
+    fn material_url(&self, material_id: &str) -> Result<Option<String>, WorkspaceError> {
+        let connection = self.active_database()?;
+        let source_url: Option<String> = connection
+            .query_row(
+                "SELECT source_url FROM materials WHERE id = ?1",
+                params![material_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => WorkspaceError::InvalidInput(
+                    "O material escolhido não existe mais.".to_string(),
+                ),
+                other => map_database_error("localizar link do material", other),
+            })?;
+
+        source_url
+            .map(|url| normalize_external_url(&url).map_err(WorkspaceError::InvalidInput))
+            .transpose()
     }
 
     fn update_material_page(
@@ -100,6 +192,99 @@ impl MaterialStore for LocalWorkspaceStore {
         }
 
         load_material(&connection, &input.material_id)
+    }
+
+    fn set_material_tags(
+        &self,
+        input: &SetMaterialTagsInput,
+    ) -> Result<MaterialSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar atualização das etiquetas", error))?;
+        let exists: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM materials WHERE id = ?1",
+                params![input.material_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_database_error("verificar material das etiquetas", error))?;
+        if exists.is_none() {
+            return Err(WorkspaceError::InvalidInput(
+                "O material escolhido não existe mais.".to_string(),
+            ));
+        }
+
+        transaction
+            .execute(
+                "DELETE FROM material_tags WHERE material_id = ?1",
+                params![input.material_id.as_str()],
+            )
+            .map_err(|error| map_database_error("limpar etiquetas do material", error))?;
+        for (position, tag) in input.tags.iter().enumerate() {
+            transaction
+                .execute(
+                    "INSERT INTO material_tags (material_id, position, tag)
+                     VALUES (?1, ?2, ?3)",
+                    params![input.material_id.as_str(), position as i64, tag.as_str()],
+                )
+                .map_err(|error| map_database_error("gravar etiqueta do material", error))?;
+        }
+
+        let summary = load_material(&transaction, &input.material_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar etiquetas do material", error))?;
+        Ok(summary)
+    }
+
+    fn set_material_subjects(
+        &self,
+        input: &SetMaterialSubjectsInput,
+    ) -> Result<MaterialSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar atualização dos assuntos", error))?;
+        let exists: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM materials WHERE id = ?1",
+                params![input.material_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_database_error("verificar material dos assuntos", error))?;
+        if exists.is_none() {
+            return Err(WorkspaceError::InvalidInput(
+                "O material escolhido não existe mais.".to_string(),
+            ));
+        }
+
+        for subject_id in &input.subject_ids {
+            ensure_subject_exists(&transaction, subject_id)?;
+        }
+        transaction
+            .execute(
+                "DELETE FROM material_subjects WHERE material_id = ?1",
+                params![input.material_id.as_str()],
+            )
+            .map_err(|error| map_database_error("limpar assuntos do material", error))?;
+        for subject_id in &input.subject_ids {
+            transaction
+                .execute(
+                    "INSERT INTO material_subjects (material_id, subject_id)
+                     VALUES (?1, ?2)",
+                    params![input.material_id.as_str(), subject_id.as_str()],
+                )
+                .map_err(|error| map_database_error("gravar assunto do material", error))?;
+        }
+
+        let summary = load_material(&transaction, &input.material_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar assuntos do material", error))?;
+        Ok(summary)
     }
 }
 
@@ -261,7 +446,7 @@ fn load_materials(connection: &Connection) -> Result<Vec<MaterialSummary>, Works
     let mut statement = connection
         .prepare(
             "SELECT m.id, m.original_name, m.content_hash, m.mime_type, m.byte_size,
-                    m.imported_at, m.current_page, s.id, s.name
+                    m.source_url, m.imported_at, m.current_page, s.id, s.name
              FROM materials m
              LEFT JOIN material_subjects ms ON ms.material_id = m.id
              LEFT JOIN subjects s ON s.id = ms.subject_id
@@ -280,6 +465,7 @@ fn load_materials(connection: &Connection) -> Result<Vec<MaterialSummary>, Works
                 row.get(6)?,
                 row.get(7)?,
                 row.get(8)?,
+                row.get(9)?,
             ))
         })
         .map_err(|error| map_database_error("consultar materiais", error))?;
@@ -294,6 +480,7 @@ fn load_materials(connection: &Connection) -> Result<Vec<MaterialSummary>, Works
             content_hash,
             mime_type,
             byte_size,
+            source_url,
             imported_at,
             current_page,
             subject_id,
@@ -309,10 +496,12 @@ fn load_materials(connection: &Connection) -> Result<Vec<MaterialSummary>, Works
                 original_name,
                 content_hash,
                 mime_type,
+                source_url,
                 byte_size,
                 imported_at,
                 current_page,
                 subjects: Vec::new(),
+                tags: Vec::new(),
             });
             index
         };
@@ -323,6 +512,29 @@ fn load_materials(connection: &Connection) -> Result<Vec<MaterialSummary>, Works
                 name: subject_name,
             });
         }
+    }
+
+    let mut tag_statement = connection
+        .prepare(
+            "SELECT material_id, tag
+             FROM material_tags
+             ORDER BY material_id, position",
+        )
+        .map_err(|error| map_database_error("preparar leitura das etiquetas", error))?;
+    let tag_rows = tag_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| map_database_error("consultar etiquetas dos materiais", error))?;
+    for row in tag_rows {
+        let (material_id, tag) =
+            row.map_err(|error| map_database_error("ler etiqueta do material", error))?;
+        let Some(index) = indexes.get(&material_id).copied() else {
+            return Err(WorkspaceError::Database(
+                "uma etiqueta aponta para um material inexistente".to_string(),
+            ));
+        };
+        materials[index].tags.push(tag);
     }
 
     Ok(materials)
@@ -393,10 +605,27 @@ fn mime_type_for_path(path: &Path) -> Option<String> {
     Some(mime_type.to_string())
 }
 
+fn link_content_hash(url: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"cursoucon-link\0");
+    hasher.update(url.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn link_display_name(url: &str) -> String {
+    url.split_once("://")
+        .and_then(|(_, remainder)| remainder.split(['/', '?', '#']).next())
+        .filter(|host| !host.is_empty())
+        .unwrap_or(url)
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::study_plan_service::StudyPlanStore;
     use crate::application::workspace_service::WorkspaceStore;
+    use crate::domain::study_plan::{CreatePreparationInput, CreateSubjectInput};
     use std::fs;
 
     #[test]
@@ -413,6 +642,29 @@ mod tests {
         store
             .create_workspace(&workspace_path, "Materiais de teste")
             .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação de materiais".to_string(),
+                organization: None,
+                role: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let first_subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Direito Constitucional".to_string(),
+                parent_id: None,
+            })
+            .expect("o primeiro assunto deve ser criado");
+        let second_subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id,
+                name: "Direito Administrativo".to_string(),
+                parent_id: None,
+            })
+            .expect("o segundo assunto deve ser criado");
 
         let input = ImportMaterialInput {
             source_path: source_path.to_string_lossy().to_string(),
@@ -433,6 +685,51 @@ mod tests {
                 page: 3,
             })
             .expect("a página deve ser persistida");
+        let tagged = store
+            .set_material_tags(&SetMaterialTagsInput {
+                material_id: imported.id.clone(),
+                tags: vec!["teoria".to_string(), "revisão".to_string()],
+            })
+            .expect("as etiquetas devem ser persistidas");
+        let linked = store
+            .set_material_subjects(&SetMaterialSubjectsInput {
+                material_id: imported.id.clone(),
+                subject_ids: vec![first_subject.id.clone(), second_subject.id.clone()],
+            })
+            .expect("os assuntos devem ser vinculados");
+        let registered_link = store
+            .register_material_link(&RegisterMaterialLinkInput {
+                url: "https://example.com/edital".to_string(),
+                title: Some("Edital de referência".to_string()),
+                subject_id: Some(first_subject.id.clone()),
+            })
+            .expect("o link deve ser registrado");
+        let duplicate_link = store
+            .register_material_link(&RegisterMaterialLinkInput {
+                url: "https://example.com/edital".to_string(),
+                title: None,
+                subject_id: Some(second_subject.id.clone()),
+            })
+            .expect("o segundo cadastro deve reutilizar o link");
+        let link_url = store
+            .material_url(&registered_link.id)
+            .expect("o link deve ser localizado")
+            .expect("o material deve preservar sua URL");
+        assert_eq!(linked.subjects.len(), 2);
+        assert_eq!(
+            registered_link.source_url.as_deref(),
+            Some("https://example.com/edital")
+        );
+        assert_eq!(duplicate_link.id, registered_link.id);
+        assert_eq!(duplicate_link.subjects.len(), 2);
+        assert_eq!(link_url, "https://example.com/edital");
+        assert!(store.material_path(&registered_link.id).is_err());
+        assert!(store
+            .set_material_subjects(&SetMaterialSubjectsInput {
+                material_id: imported.id.clone(),
+                subject_ids: vec![first_subject.id.clone(), Uuid::new_v4().to_string()],
+            })
+            .is_err());
 
         fs::remove_file(&source_path).expect("a origem deve poder ser removida");
         let materials = store
@@ -442,8 +739,24 @@ mod tests {
         assert_eq!(imported.id, duplicate.id);
         assert_eq!(imported.content_hash.len(), 64);
         assert_eq!(updated.current_page, 3);
-        assert_eq!(materials.len(), 1);
-        assert_eq!(materials[0].current_page, 3);
+        assert_eq!(tagged.tags, vec!["teoria", "revisão"]);
+        assert_eq!(materials.len(), 2);
+        let stored_file = materials
+            .iter()
+            .find(|material| material.id == imported.id)
+            .expect("o arquivo deve continuar listado");
+        let stored_link = materials
+            .iter()
+            .find(|material| material.id == registered_link.id)
+            .expect("o link deve continuar listado");
+        assert_eq!(stored_file.current_page, 3);
+        assert_eq!(stored_file.tags, vec!["teoria", "revisão"]);
+        assert_eq!(stored_file.subjects.len(), 2);
+        assert_eq!(
+            stored_link.source_url.as_deref(),
+            Some("https://example.com/edital")
+        );
+        assert_eq!(stored_link.byte_size, 0);
         assert!(copied_path.is_file());
 
         let _ = fs::remove_dir_all(workspace_path);

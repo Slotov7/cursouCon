@@ -4,15 +4,19 @@ import {
   createStudyTask,
   createSubject,
   getStudyPlanning,
+  getMaterials,
   getDesktopErrorMessage,
+  savePreparationExamConfig,
   setSubjectStudyStatus,
 } from "../../shared/desktop/commands";
 import type {
+  MaterialSummary,
   StudyPlan,
   StudyPlanningSummary,
   SubjectStudyStatus,
 } from "../../shared/desktop/contracts";
 import { StudyCyclePanel } from "./StudyCyclePanel";
+import { dateKeyForTimezone } from "../../shared/date";
 import {
   buttonOutlineLightClass,
   buttonPrimaryClass,
@@ -26,6 +30,7 @@ import {
 } from "../../shared/ui/primitives";
 
 type PlanViewProps = {
+  timezone: string;
   plan: StudyPlan | null;
   isLoading: boolean;
   error: string | null;
@@ -36,6 +41,7 @@ type PlanViewProps = {
 type ActiveModal = "none" | "preparation" | "subject" | "task";
 
 export function PlanView({
+  timezone,
   plan,
   isLoading,
   error,
@@ -59,7 +65,7 @@ export function PlanView({
   const [taskTitle, setTaskTitle] = useState("");
   const [taskObjective, setTaskObjective] = useState("");
   const [taskMinutes, setTaskMinutes] = useState("45");
-  const [taskDate, setTaskDate] = useState(getLocalDateKey());
+  const [taskDate, setTaskDate] = useState(() => dateKeyForTimezone(timezone));
   const [taskSubjectId, setTaskSubjectId] = useState("");
 
   const [formError, setFormError] = useState<string | null>(null);
@@ -68,6 +74,14 @@ export function PlanView({
   const [updatingSubjectId, setUpdatingSubjectId] = useState<string | null>(null);
   const [studyPlanning, setStudyPlanning] = useState<StudyPlanningSummary | null>(null);
   const [studyPlanningError, setStudyPlanningError] = useState<string | null>(null);
+  const [materials, setMaterials] = useState<MaterialSummary[]>([]);
+  const [materialsError, setMaterialsError] = useState<string | null>(null);
+  const [referenceMaterialId, setReferenceMaterialId] = useState("");
+  const [examRulesMarkdown, setExamRulesMarkdown] = useState("");
+  const [examWeights, setExamWeights] = useState<Record<string, string>>({});
+  const [examConfigError, setExamConfigError] = useState<string | null>(null);
+  const [examConfigMessage, setExamConfigMessage] = useState<string | null>(null);
+  const [isSavingExamConfig, setIsSavingExamConfig] = useState(false);
 
   const currentPlan: StudyPlan = plan ?? { preparations: [], subjects: [], subjectCoverage: [] };
   const selectedPreparation =
@@ -88,7 +102,7 @@ export function PlanView({
     ? Math.round((completedSubjects / totalSubjects) * 100)
     : 0;
   const examDateLabel = formatExamDate(selectedPreparation?.examDate ?? null);
-  const examCountdownLabel = formatExamCountdown(selectedPreparation?.examDate ?? null);
+  const examCountdownLabel = formatExamCountdown(selectedPreparation?.examDate ?? null, timezone);
 
   useEffect(() => {
     const preparationId = selectedPreparation?.id;
@@ -112,6 +126,36 @@ export function PlanView({
       cancelled = true;
     };
   }, [selectedPreparation?.id, currentPlan.subjects.length]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getMaterials()
+      .then((loadedMaterials) => {
+        if (!cancelled) {
+          setMaterials(loadedMaterials);
+          setMaterialsError(null);
+        }
+      })
+      .catch((materialError: unknown) => {
+        if (!cancelled) setMaterialsError(getDesktopErrorMessage(materialError));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setReferenceMaterialId(selectedPreparation?.referenceMaterialId ?? "");
+    setExamRulesMarkdown(selectedPreparation?.examRulesMarkdown ?? "");
+    setExamWeights(
+      Object.fromEntries(
+        subjects.map((subject) => [subject.id, subject.examWeight?.toString() ?? ""]),
+      ),
+    );
+    setExamConfigError(null);
+    setExamConfigMessage(null);
+  }, [plan, selectedPreparation?.id]);
 
   const handleSubjectStudyStatusChange = async (
     subjectId: string,
@@ -215,6 +259,47 @@ export function PlanView({
       setFormError(getDesktopErrorMessage(err));
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleExamConfigSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!selectedPreparation) {
+      setExamConfigError("Crie uma preparação primeiro.");
+      return;
+    }
+
+    const subjectExamWeights: Array<{ subjectId: string; examWeight: number | null }> = [];
+    for (const subject of subjects) {
+      const rawWeight = examWeights[subject.id]?.trim() ?? "";
+      if (!rawWeight) {
+        subjectExamWeights.push({ subjectId: subject.id, examWeight: null });
+        continue;
+      }
+      const examWeight = Number(rawWeight);
+      if (!Number.isFinite(examWeight) || examWeight <= 0) {
+        setExamConfigError(`Informe um peso maior que zero para ${subject.name}.`);
+        return;
+      }
+      subjectExamWeights.push({ subjectId: subject.id, examWeight });
+    }
+
+    setExamConfigError(null);
+    setExamConfigMessage(null);
+    setIsSavingExamConfig(true);
+    try {
+      await savePreparationExamConfig({
+        preparationId: selectedPreparation.id,
+        referenceMaterialId: referenceMaterialId || null,
+        examRulesMarkdown: examRulesMarkdown.trim() || null,
+        subjectExamWeights,
+      });
+      setExamConfigMessage("Documento, regras e pesos salvos localmente.");
+      onPlanChanged();
+    } catch (configError: unknown) {
+      setExamConfigError(getDesktopErrorMessage(configError));
+    } finally {
+      setIsSavingExamConfig(false);
     }
   };
 
@@ -373,6 +458,125 @@ export function PlanView({
             onPlanChanged();
           }}
         />
+      )}
+
+      {selectedPreparation && (
+        <section className="glass-card rounded-2xl p-5 shadow-xs" aria-labelledby="exam-config-title">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-blue-600">Referência da prova</p>
+              <h3 id="exam-config-title" className="mt-1 font-heading text-xl font-bold text-ink">
+                Edital, regras e pesos
+              </h3>
+              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted">
+                O peso oficial é separado da prioridade de estudo usada no ciclo. As alterações ficam no espaço local desta preparação.
+              </p>
+            </div>
+            <span className="rounded-full border border-line bg-paper px-3 py-1 text-[11px] font-semibold text-muted">
+              {subjects.filter((subject) => subject.examWeight !== null).length} peso(s) informado(s)
+            </span>
+          </div>
+
+          <form className="mt-4 grid gap-4" onSubmit={handleExamConfigSubmit}>
+            {materialsError && (
+              <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">
+                Não foi possível carregar os materiais: {materialsError}
+              </p>
+            )}
+            {examConfigError && (
+              <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">
+                {examConfigError}
+              </p>
+            )}
+            {examConfigMessage && (
+              <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-300" role="status">
+                {examConfigMessage}
+              </p>
+            )}
+
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+              <label className={fieldClass}>
+                Documento de referência
+                <select
+                  className={selectClass}
+                  value={referenceMaterialId}
+                  onChange={(event) => setReferenceMaterialId(event.target.value)}
+                  disabled={isSavingExamConfig}
+                >
+                  <option value="">Nenhum edital selecionado</option>
+                  {selectedPreparation.referenceMaterialId &&
+                    !materials.some((material) => material.id === selectedPreparation.referenceMaterialId) && (
+                      <option value={selectedPreparation.referenceMaterialId}>
+                        Documento salvo (não carregado)
+                      </option>
+                    )}
+                  {materials.map((material) => (
+                    <option key={material.id} value={material.id}>
+                      {material.originalName}{material.sourceUrl ? " · link externo" : ""}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[11px] font-normal text-muted">
+                  Importe o PDF ou registre o link na área Materiais antes de selecionar aqui.
+                </span>
+              </label>
+
+              <label className={fieldClass}>
+                Regras da prova
+                <textarea
+                  className={`${textareaClass} min-h-28`}
+                  value={examRulesMarkdown}
+                  onChange={(event) => setExamRulesMarkdown(event.target.value)}
+                  maxLength={20_000}
+                  disabled={isSavingExamConfig}
+                  placeholder="Ex.: cada questão vale 1 ponto; penalidade por erro; critérios de desempate..."
+                />
+                <span className="text-[11px] font-normal text-muted">Markdown opcional para preservar as observações da banca.</span>
+              </label>
+            </div>
+
+            <div className="grid gap-3">
+              <div>
+                <h4 className="text-sm font-bold text-ink">Peso oficial por disciplina</h4>
+                <p className="mt-1 text-[11px] text-muted">Deixe em branco quando o edital não informar peso para a disciplina.</p>
+              </div>
+              {subjects.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-line p-3 text-xs text-muted">
+                  Cadastre disciplinas para informar os pesos da prova.
+                </p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {subjects.map((subject) => (
+                    <label key={subject.id} className={`${fieldClass} rounded-xl border border-line bg-paper/50 p-3`}>
+                      <span className="truncate" title={subject.name}>{subject.name}</span>
+                      <input
+                        className={inputClass}
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={examWeights[subject.id] ?? ""}
+                        onChange={(event) =>
+                          setExamWeights((currentWeights) => ({
+                            ...currentWeights,
+                            [subject.id]: event.target.value,
+                          }))
+                        }
+                        disabled={isSavingExamConfig}
+                        placeholder="Sem peso"
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end border-t border-line pt-3">
+              <button type="submit" className={buttonPrimaryClass} disabled={isSavingExamConfig}>
+                {isSavingExamConfig ? "Salvando..." : "Salvar regras e pesos"}
+              </button>
+            </div>
+          </form>
+        </section>
       )}
 
       {/* 3. Modal / Drawer Forms for adding content */}
@@ -702,14 +906,6 @@ export function PlanView({
   );
 }
 
-function getLocalDateKey(): string {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function parseLocalDate(dateKey: string | null): Date | null {
   if (!dateKey) return null;
 
@@ -728,13 +924,13 @@ function formatExamDate(dateKey: string | null): string {
   }).format(date);
 }
 
-function formatExamCountdown(dateKey: string | null): string {
+function formatExamCountdown(dateKey: string | null, timezone: string): string {
   const examDate = parseLocalDate(dateKey);
   if (!examDate) return "Informe uma data para acompanhar o prazo";
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const daysUntilExam = Math.ceil((examDate.getTime() - today.getTime()) / 86_400_000);
+  const today = parseLocalDate(dateKeyForTimezone(timezone));
+  if (!today) return "Não foi possível calcular o prazo";
+  const daysUntilExam = Math.round((examDate.getTime() - today.getTime()) / 86_400_000);
 
   if (daysUntilExam < 0) return "A data informada já passou";
   if (daysUntilExam === 0) return "A prova é hoje";

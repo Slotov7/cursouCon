@@ -3,11 +3,13 @@ use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study::{
     normalize_task_completion, AcceptStudyCycleActionInput, AcceptStudyCycleActionResult,
-    CompleteStudyReviewInput, CompleteStudyReviewResult, CreateStudyTaskInput, DailyPlan,
-    FinishStudySessionInput, FinishStudySessionResult, PauseStudySessionInput,
-    RescheduleStudyReviewInput, RescheduleStudyTaskInput, ResumeStudySessionInput,
-    SaveStudySessionReflectionInput, SessionDifficulty, SkipStudyTaskInput, StartStudySessionInput,
-    StudyProgressSummary, StudyReviewSummary, StudySessionSummary, StudyTaskSummary,
+    CompleteStudyReviewInput, CompleteStudyReviewResult, CorrectStudySessionDurationInput,
+    CorrectStudySessionDurationResult, CreateManualStudyInput, CreateManualStudyResult,
+    CreateStudyTaskInput, DailyPlan, FinishStudySessionInput, FinishStudySessionResult,
+    HeartbeatStudySessionInput, PauseStudySessionInput, RescheduleStudyReviewInput,
+    RescheduleStudyTaskInput, ResumeStudySessionInput, SaveStudySessionReflectionInput,
+    SessionDifficulty, SkipStudyTaskInput, StartStudySessionInput, StudyProgressSummary,
+    StudyReviewSummary, StudySessionSummary, StudyTaskSummary,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -59,6 +61,27 @@ pub struct StartStudySessionRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateManualStudyRequest {
+    pub preparation_id: String,
+    pub subject_id: Option<String>,
+    pub title: String,
+    pub studied_on: String,
+    pub effective_seconds: i64,
+    pub summary_markdown: Option<String>,
+    pub difficulty: Option<SessionDifficulty>,
+    pub next_steps: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectStudySessionDurationRequest {
+    pub session_id: String,
+    pub effective_seconds: i64,
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PauseStudySessionRequest {
     pub session_id: String,
     pub effective_seconds: i64,
@@ -67,6 +90,12 @@ pub struct PauseStudySessionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResumeStudySessionRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeartbeatStudySessionRequest {
     pub session_id: String,
 }
 
@@ -198,6 +227,41 @@ pub fn start_study_session(
 }
 
 #[tauri::command]
+pub fn create_manual_study(
+    app: AppHandle,
+    request: CreateManualStudyRequest,
+) -> Result<CreateManualStudyResult, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .create_manual_study(CreateManualStudyInput {
+            preparation_id: request.preparation_id,
+            subject_id: request.subject_id,
+            title: request.title,
+            studied_on: request.studied_on,
+            effective_seconds: request.effective_seconds,
+            summary_markdown: request.summary_markdown,
+            difficulty: request.difficulty,
+            next_steps: request.next_steps,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn correct_study_session_duration(
+    app: AppHandle,
+    request: CorrectStudySessionDurationRequest,
+) -> Result<CorrectStudySessionDurationResult, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .correct_session_duration(CorrectStudySessionDurationInput {
+            session_id: request.session_id,
+            effective_seconds: request.effective_seconds,
+            reason: request.reason,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub fn pause_study_session(
     app: AppHandle,
     request: PauseStudySessionRequest,
@@ -219,6 +283,19 @@ pub fn resume_study_session(
     let store = local_workspace_store(&app)?;
     StudyService::new(store)
         .resume_session(ResumeStudySessionInput {
+            session_id: request.session_id,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn heartbeat_study_session(
+    app: AppHandle,
+    request: HeartbeatStudySessionRequest,
+) -> Result<StudySessionSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyService::new(store)
+        .heartbeat_session(HeartbeatStudySessionInput {
             session_id: request.session_id,
         })
         .map_err(CommandError::from)

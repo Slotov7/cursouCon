@@ -6,6 +6,50 @@ export type WorkspaceSummary = {
   storageStatus: "local";
 };
 
+export type AppTheme = "light" | "dark";
+
+export type AppPreferences = {
+  theme: AppTheme;
+  reducedMotion: boolean;
+  highContrast: boolean;
+  timezone: string;
+  gamificationVisible: boolean;
+};
+
+export type SaveAppPreferencesRequest = AppPreferences;
+
+export type DiagnosticCounts = {
+  preparations: number;
+  subjects: number;
+  materials: number;
+  notes: number;
+  questions: number;
+  questionAttempts: number;
+  studySessions: number;
+};
+
+export type DiagnosticSnapshot = {
+  appVersion: string;
+  platform: string;
+  architecture: string;
+  workspaceFormatVersion: number;
+  schemaVersion: number;
+  counts: DiagnosticCounts;
+};
+
+export type DiagnosticExportResult = {
+  path: string;
+  snapshot: DiagnosticSnapshot;
+};
+
+export type WorkspaceDataExportResult = {
+  path: string;
+  schemaVersion: number;
+  exportedRecords: number;
+  exportedNotes: number;
+  exportedAttachments: number;
+};
+
 export type WorkspaceRequest = {
   workspacePath: string;
   name: string;
@@ -59,6 +103,8 @@ export type PreparationSummary = {
   role: string | null;
   examDate: string | null;
   isPrimary: boolean;
+  referenceMaterialId: string | null;
+  examRulesMarkdown: string | null;
 };
 
 export type SubjectSummary = {
@@ -69,6 +115,7 @@ export type SubjectSummary = {
   position: number;
   priority: number;
   studyStatus: SubjectStudyStatus;
+  examWeight: number | null;
 };
 
 export type SubjectStudyStatus = "not_started" | "in_progress" | "theory_completed";
@@ -148,6 +195,16 @@ export type CreateSubjectRequest = {
   parentId: string | null;
 };
 
+export type SavePreparationExamConfigRequest = {
+  preparationId: string;
+  referenceMaterialId: string | null;
+  examRulesMarkdown: string | null;
+  subjectExamWeights: Array<{
+    subjectId: string;
+    examWeight: number | null;
+  }>;
+};
+
 export type SetSubjectStudyStatusRequest = {
   subjectId: string;
   status: SubjectStudyStatus;
@@ -177,9 +234,11 @@ export type ManualContestSummary = {
   isFavorite: boolean;
   createdAt: string;
   updatedAt: string;
+  noticeMaterialId: string | null;
+  noticeMaterialName: string | null;
 };
 
-export type SaveManualContestRequest = Omit<ManualContestSummary, "id" | "createdAt" | "updatedAt" | "isFavorite"> & {
+export type SaveManualContestRequest = Omit<ManualContestSummary, "id" | "createdAt" | "updatedAt" | "isFavorite" | "noticeMaterialId" | "noticeMaterialName"> & {
   id: string | null;
 };
 
@@ -188,9 +247,15 @@ export type SetManualContestFavoriteRequest = {
   isFavorite: boolean;
 };
 
+export type SetManualContestNoticeRequest = {
+  contestId: string;
+  materialId: string | null;
+};
+
 export type StudyTaskStatus = "pending" | "partial" | "completed" | "skipped";
 
 export type StudySessionStatus = "active" | "paused" | "completed" | "interrupted";
+export type StudySessionOrigin = "timer" | "manual";
 export type StudySessionDifficulty = "easy" | "normal" | "hard";
 
 export type StudyTaskSummary = {
@@ -213,6 +278,7 @@ export type StudySessionSummary = {
   activeStartedAt: string | null;
   effectiveSeconds: number;
   status: StudySessionStatus;
+  origin: StudySessionOrigin;
   summaryMarkdown: string | null;
   difficulty: StudySessionDifficulty | null;
   nextSteps: string | null;
@@ -268,6 +334,36 @@ export type FinishStudySessionResult = {
   review: StudyReviewSummary | null;
 };
 
+export type CreateManualStudyRequest = {
+  preparationId: string;
+  subjectId: string | null;
+  title: string;
+  studiedOn: string;
+  effectiveSeconds: number;
+  summaryMarkdown: string | null;
+  difficulty: StudySessionDifficulty | null;
+  nextSteps: string | null;
+};
+
+export type CreateManualStudyResult = {
+  session: StudySessionSummary;
+  xpGranted: number;
+};
+
+export type CorrectStudySessionDurationRequest = {
+  sessionId: string;
+  effectiveSeconds: number;
+  reason: string;
+};
+
+export type CorrectStudySessionDurationResult = {
+  session: StudySessionSummary;
+  previousEffectiveSeconds: number;
+  previousXp: number;
+  correctedXp: number;
+  xpDelta: number;
+};
+
 export type CompleteStudyReviewResult = {
   review: StudyReviewSummary;
   xpGranted: number;
@@ -281,7 +377,10 @@ export type StudyHistoryEntry = {
   endedAt: string;
   effectiveSeconds: number;
   taskStatus: StudyTaskStatus;
+  origin: StudySessionOrigin;
   xpGranted: number;
+  durationCorrectionCount: number;
+  lastDurationCorrectionAt: string | null;
   summaryMarkdown: string | null;
   difficulty: StudySessionDifficulty | null;
   nextSteps: string | null;
@@ -311,10 +410,12 @@ export type MaterialSummary = {
   originalName: string;
   contentHash: string;
   mimeType: string | null;
+  sourceUrl: string | null;
   byteSize: number;
   importedAt: string;
   currentPage: number;
   subjects: MaterialSubjectSummary[];
+  tags: string[];
 };
 
 export type NoteSummary = {
@@ -476,6 +577,12 @@ export type ImportMaterialRequest = {
   subjectId: string | null;
 };
 
+export type RegisterMaterialLinkRequest = {
+  url: string;
+  title: string | null;
+  subjectId: string | null;
+};
+
 export type OpenMaterialRequest = {
   materialId: string;
 };
@@ -483,6 +590,16 @@ export type OpenMaterialRequest = {
 export type UpdateMaterialPageRequest = {
   materialId: string;
   page: number;
+};
+
+export type SetMaterialTagsRequest = {
+  materialId: string;
+  tags: string[];
+};
+
+export type SetMaterialSubjectsRequest = {
+  materialId: string;
+  subjectIds: string[];
 };
 
 export type GetQuestionsRequest = {
@@ -540,6 +657,10 @@ export type ResumeStudySessionRequest = {
   sessionId: string;
 };
 
+export type HeartbeatStudySessionRequest = {
+  sessionId: string;
+};
+
 export type FinishStudySessionRequest = {
   sessionId: string;
   effectiveSeconds: number;
@@ -594,6 +715,117 @@ export function parseWorkspaceSummary(value: unknown): WorkspaceSummary {
     formatVersion: value.formatVersion,
     path: value.path,
     storageStatus: "local",
+  };
+}
+
+export function parseAppPreferences(value: unknown): AppPreferences {
+  if (
+    !isRecord(value) ||
+    (value.theme !== "light" && value.theme !== "dark") ||
+    typeof value.reducedMotion !== "boolean" ||
+    typeof value.highContrast !== "boolean" ||
+    typeof value.timezone !== "string" ||
+    !["system", "America/Sao_Paulo", "UTC", "America/New_York", "Europe/Lisbon"].includes(value.timezone) ||
+    typeof value.gamificationVisible !== "boolean"
+  ) {
+    throw new Error("O núcleo local devolveu preferências inválidas.");
+  }
+
+  return {
+    theme: value.theme,
+    reducedMotion: value.reducedMotion,
+    highContrast: value.highContrast,
+    timezone: value.timezone,
+    gamificationVisible: value.gamificationVisible,
+  };
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function parseDiagnosticCounts(value: unknown): DiagnosticCounts {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeInteger(value.preparations) ||
+    !isNonNegativeInteger(value.subjects) ||
+    !isNonNegativeInteger(value.materials) ||
+    !isNonNegativeInteger(value.notes) ||
+    !isNonNegativeInteger(value.questions) ||
+    !isNonNegativeInteger(value.questionAttempts) ||
+    !isNonNegativeInteger(value.studySessions)
+  ) {
+    throw new Error("O núcleo local devolveu contagens de diagnóstico inválidas.");
+  }
+
+  return {
+    preparations: value.preparations,
+    subjects: value.subjects,
+    materials: value.materials,
+    notes: value.notes,
+    questions: value.questions,
+    questionAttempts: value.questionAttempts,
+    studySessions: value.studySessions,
+  };
+}
+
+export function parseDiagnosticSnapshot(value: unknown): DiagnosticSnapshot {
+  if (
+    !isRecord(value) ||
+    typeof value.appVersion !== "string" ||
+    typeof value.platform !== "string" ||
+    typeof value.architecture !== "string" ||
+    !isNonNegativeInteger(value.workspaceFormatVersion) ||
+    value.workspaceFormatVersion < 1 ||
+    !isNonNegativeInteger(value.schemaVersion) ||
+    value.schemaVersion < 1
+  ) {
+    throw new Error("O núcleo local devolveu um diagnóstico inválido.");
+  }
+
+  return {
+    appVersion: value.appVersion,
+    platform: value.platform,
+    architecture: value.architecture,
+    workspaceFormatVersion: value.workspaceFormatVersion,
+    schemaVersion: value.schemaVersion,
+    counts: parseDiagnosticCounts(value.counts),
+  };
+}
+
+export function parseDiagnosticExportResult(value: unknown): DiagnosticExportResult {
+  if (!isRecord(value) || typeof value.path !== "string") {
+    throw new Error("O núcleo local devolveu uma exportação de diagnóstico inválida.");
+  }
+  return { path: value.path, snapshot: parseDiagnosticSnapshot(value.snapshot) };
+}
+
+export function parseWorkspaceDataExportResult(value: unknown): WorkspaceDataExportResult {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== "string" ||
+    typeof value.schemaVersion !== "number" ||
+    !Number.isInteger(value.schemaVersion) ||
+    value.schemaVersion < 1 ||
+    typeof value.exportedRecords !== "number" ||
+    !Number.isInteger(value.exportedRecords) ||
+    value.exportedRecords < 0 ||
+    typeof value.exportedNotes !== "number" ||
+    !Number.isInteger(value.exportedNotes) ||
+    value.exportedNotes < 0 ||
+    typeof value.exportedAttachments !== "number" ||
+    !Number.isInteger(value.exportedAttachments) ||
+    value.exportedAttachments < 0
+  ) {
+    throw new Error("O núcleo local devolveu um resultado de exportação inválido.");
+  }
+
+  return {
+    path: value.path,
+    schemaVersion: value.schemaVersion,
+    exportedRecords: value.exportedRecords,
+    exportedNotes: value.exportedNotes,
+    exportedAttachments: value.exportedAttachments,
   };
 }
 
@@ -670,7 +902,7 @@ function parseOptionalString(value: unknown, fieldName: string): string | null {
   return value;
 }
 
-function parsePreparation(value: unknown): PreparationSummary {
+export function parsePreparationSummary(value: unknown): PreparationSummary {
   if (!isRecord(value)) {
     throw new Error("O núcleo local devolveu uma preparação inválida.");
   }
@@ -678,7 +910,9 @@ function parsePreparation(value: unknown): PreparationSummary {
   if (
     typeof value.id !== "string" ||
     typeof value.name !== "string" ||
-    typeof value.isPrimary !== "boolean"
+    typeof value.isPrimary !== "boolean" ||
+    (value.referenceMaterialId !== null && typeof value.referenceMaterialId !== "string") ||
+    (value.examRulesMarkdown !== null && typeof value.examRulesMarkdown !== "string")
   ) {
     throw new Error("O núcleo local devolveu uma preparação inválida.");
   }
@@ -690,6 +924,8 @@ function parsePreparation(value: unknown): PreparationSummary {
     role: parseOptionalString(value.role, "o cargo"),
     examDate: parseOptionalString(value.examDate, "a data da prova"),
     isPrimary: value.isPrimary,
+    referenceMaterialId: parseOptionalString(value.referenceMaterialId, "o edital de referência"),
+    examRulesMarkdown: parseOptionalString(value.examRulesMarkdown, "as regras da prova"),
   };
 }
 
@@ -714,7 +950,11 @@ export function parseSubject(value: unknown): SubjectSummary {
     typeof value.priority !== "number" ||
     !Number.isInteger(value.priority) ||
     value.priority < 1 ||
-    value.priority > 5
+    value.priority > 5 ||
+    (value.examWeight !== null &&
+      (typeof value.examWeight !== "number" ||
+        !Number.isFinite(value.examWeight) ||
+        value.examWeight <= 0))
   ) {
     throw new Error("O núcleo local devolveu um assunto inválido.");
   }
@@ -727,6 +967,7 @@ export function parseSubject(value: unknown): SubjectSummary {
     position: value.position,
     priority: value.priority,
     studyStatus: parseSubjectStudyStatus(value.studyStatus),
+    examWeight: value.examWeight,
   };
 }
 
@@ -767,7 +1008,7 @@ export function parseStudyPlan(value: unknown): StudyPlan {
   }
 
   return {
-    preparations: value.preparations.map(parsePreparation),
+    preparations: value.preparations.map(parsePreparationSummary),
     subjects: value.subjects.map(parseSubject),
     subjectCoverage: value.subjectCoverage.map(parseSubjectCoverage),
   };
@@ -924,6 +1165,8 @@ export function parseManualContest(value: unknown): ManualContestSummary {
     isFavorite: value.isFavorite,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
+    noticeMaterialId: parseOptionalString(value.noticeMaterialId, "o edital local do concurso"),
+    noticeMaterialName: parseOptionalString(value.noticeMaterialName, "o nome do edital local"),
   };
 }
 
@@ -948,6 +1191,11 @@ function parseStudySessionStatus(value: unknown): StudySessionStatus {
   }
 
   throw new Error("O núcleo local devolveu um status de sessão inválido.");
+}
+
+function parseStudySessionOrigin(value: unknown): StudySessionOrigin {
+  if (value === "timer" || value === "manual") return value;
+  throw new Error("O núcleo local devolveu uma origem de sessão inválida.");
 }
 
 function parseOptionalStudySessionDifficulty(value: unknown): StudySessionDifficulty | null {
@@ -993,6 +1241,13 @@ function parseMaterialSubject(value: unknown): MaterialSubjectSummary {
   return { id: value.id, name: value.name };
 }
 
+function parseMaterialTag(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("O núcleo local devolveu uma etiqueta de material inválida.");
+  }
+  return value;
+}
+
 export function parseMaterial(value: unknown): MaterialSummary {
   if (
     !isRecord(value) ||
@@ -1006,7 +1261,8 @@ export function parseMaterial(value: unknown): MaterialSummary {
     typeof value.currentPage !== "number" ||
     !Number.isInteger(value.currentPage) ||
     value.currentPage < 1 ||
-    !Array.isArray(value.subjects)
+    !Array.isArray(value.subjects) ||
+    !Array.isArray(value.tags)
   ) {
     throw new Error("O núcleo local devolveu um material inválido.");
   }
@@ -1016,10 +1272,12 @@ export function parseMaterial(value: unknown): MaterialSummary {
     originalName: value.originalName,
     contentHash: value.contentHash,
     mimeType: parseOptionalString(value.mimeType, "o tipo do material"),
+    sourceUrl: parseOptionalString(value.sourceUrl, "o link externo do material"),
     byteSize: value.byteSize,
     importedAt: value.importedAt,
     currentPage: value.currentPage,
     subjects: value.subjects.map(parseMaterialSubject),
+    tags: value.tags.map(parseMaterialTag),
   };
 }
 
@@ -1394,6 +1652,7 @@ export function parseStudySession(value: unknown): StudySessionSummary {
     activeStartedAt: parseOptionalString(value.activeStartedAt, "o início ativo da sessão"),
     effectiveSeconds: value.effectiveSeconds,
     status: parseStudySessionStatus(value.status),
+    origin: parseStudySessionOrigin(value.origin),
     summaryMarkdown: parseOptionalString(value.summaryMarkdown, "o resumo da sessão"),
     difficulty: parseOptionalStudySessionDifficulty(value.difficulty),
     nextSteps: parseOptionalString(value.nextSteps, "os próximos passos da sessão"),
@@ -1514,6 +1773,41 @@ export function parseFinishStudySessionResult(value: unknown): FinishStudySessio
   };
 }
 
+export function parseCreateManualStudyResult(value: unknown): CreateManualStudyResult {
+  if (!isRecord(value) || typeof value.xpGranted !== "number" || !Number.isInteger(value.xpGranted)) {
+    throw new Error("O núcleo local devolveu um resultado de estudo manual inválido.");
+  }
+  return {
+    session: parseStudySession(value.session),
+    xpGranted: value.xpGranted,
+  };
+}
+
+export function parseCorrectStudySessionDurationResult(
+  value: unknown,
+): CorrectStudySessionDurationResult {
+  if (
+    !isRecord(value) ||
+    typeof value.previousEffectiveSeconds !== "number" ||
+    !Number.isInteger(value.previousEffectiveSeconds) ||
+    typeof value.previousXp !== "number" ||
+    !Number.isInteger(value.previousXp) ||
+    typeof value.correctedXp !== "number" ||
+    !Number.isInteger(value.correctedXp) ||
+    typeof value.xpDelta !== "number" ||
+    !Number.isInteger(value.xpDelta)
+  ) {
+    throw new Error("O núcleo local devolveu uma correção de duração inválida.");
+  }
+  return {
+    session: parseStudySession(value.session),
+    previousEffectiveSeconds: value.previousEffectiveSeconds,
+    previousXp: value.previousXp,
+    correctedXp: value.correctedXp,
+    xpDelta: value.xpDelta,
+  };
+}
+
 export function parseCompleteStudyReviewResult(value: unknown): CompleteStudyReviewResult {
   if (
     !isRecord(value) ||
@@ -1543,7 +1837,10 @@ function parseStudyHistoryEntry(value: unknown): StudyHistoryEntry {
     typeof value.effectiveSeconds !== "number" ||
     !Number.isInteger(value.effectiveSeconds) ||
     typeof value.xpGranted !== "number" ||
-    !Number.isInteger(value.xpGranted)
+    !Number.isInteger(value.xpGranted) ||
+    typeof value.durationCorrectionCount !== "number" ||
+    !Number.isInteger(value.durationCorrectionCount) ||
+    value.durationCorrectionCount < 0
   ) {
     throw new Error("O núcleo local devolveu um registro de histórico inválido.");
   }
@@ -1556,7 +1853,13 @@ function parseStudyHistoryEntry(value: unknown): StudyHistoryEntry {
     endedAt: value.endedAt,
     effectiveSeconds: value.effectiveSeconds,
     taskStatus: parseStudyTaskStatus(value.taskStatus),
+    origin: parseStudySessionOrigin(value.origin),
     xpGranted: value.xpGranted,
+    durationCorrectionCount: value.durationCorrectionCount,
+    lastDurationCorrectionAt: parseOptionalString(
+      value.lastDurationCorrectionAt,
+      "a data da última correção de duração",
+    ),
     summaryMarkdown: parseOptionalString(value.summaryMarkdown, "o resumo do histórico"),
     difficulty: parseOptionalStudySessionDifficulty(value.difficulty),
     nextSteps: parseOptionalString(value.nextSteps, "os próximos passos do histórico"),
