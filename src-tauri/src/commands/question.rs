@@ -43,6 +43,11 @@ pub struct ListQuestionsRequest {
     pub subject_id: Option<String>,
     pub question_type: Option<String>,
     pub status: Option<String>,
+    pub board: Option<String>,
+    pub exam_year: Option<i64>,
+    pub attempt_status: Option<String>,
+    pub notebook_id: Option<String>,
+    pub search_text: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -121,6 +126,11 @@ pub fn get_questions(
             subject_id: request.subject_id,
             question_type: request.question_type,
             status: request.status,
+            board: request.board,
+            exam_year: request.exam_year,
+            attempt_status: request.attempt_status,
+            notebook_id: request.notebook_id,
+            search_text: request.search_text,
             limit: request.limit,
             offset: request.offset,
         })

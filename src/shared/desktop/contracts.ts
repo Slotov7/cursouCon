@@ -660,6 +660,11 @@ export type GetQuestionsRequest = {
   subjectId: string | null;
   questionType: QuestionType | null;
   status: QuestionSummary["status"] | null;
+  board: string | null;
+  examYear: number | null;
+  attemptStatus: "unanswered" | "answered" | "first_correct" | "first_incorrect" | "last_correct" | "last_incorrect" | "repeated" | null;
+  notebookId: string | null;
+  searchText: string | null;
   limit: number;
   offset: number;
 };

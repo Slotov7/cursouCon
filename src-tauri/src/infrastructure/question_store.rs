@@ -43,15 +43,45 @@ impl QuestionStore for LocalWorkspaceStore {
         let connection = self.active_database()?;
         let mut statement = connection
             .prepare(
-                "SELECT q.id
-                 FROM questions q
-                 LEFT JOIN question_subjects qsub ON qsub.question_id = q.id
-                 WHERE (?1 IS NULL OR qsub.subject_id = ?1)
-                   AND (?2 IS NULL OR q.question_type = ?2)
-                   AND (?3 IS NULL OR q.status = ?3)
-                 GROUP BY q.id
-                 ORDER BY q.updated_at DESC, q.id
-                 LIMIT ?4 OFFSET ?5",
+                "WITH candidates AS (
+                     SELECT q.id, q.updated_at,
+                            (SELECT COUNT(*) FROM question_attempts a WHERE a.question_id = q.id) AS attempt_count,
+                            (SELECT a.result FROM question_attempts a WHERE a.question_id = q.id
+                             ORDER BY a.answered_at, a.rowid LIMIT 1) AS first_result,
+                            (SELECT a.result FROM question_attempts a WHERE a.question_id = q.id
+                             ORDER BY a.answered_at DESC, a.rowid DESC LIMIT 1) AS last_result
+                     FROM questions q
+                     WHERE (?1 IS NULL OR EXISTS (
+                         SELECT 1 FROM question_subjects qs WHERE qs.question_id = q.id AND qs.subject_id = ?1
+                     ))
+                       AND (?2 IS NULL OR q.question_type = ?2)
+                       AND (?3 IS NULL OR q.status = ?3)
+                       AND (?4 IS NULL OR q.board = ?4 COLLATE NOCASE)
+                       AND (?5 IS NULL OR q.exam_year = ?5)
+                       AND (?6 IS NULL OR EXISTS (
+                         SELECT 1 FROM notebook_questions nq WHERE nq.question_id = q.id AND nq.notebook_id = ?6
+                     ))
+                       AND (?7 IS NULL OR INSTR(LOWER(q.statement_markdown), LOWER(?7)) > 0
+                         OR INSTR(LOWER(COALESCE(q.board, '')), LOWER(?7)) > 0
+                         OR INSTR(LOWER(COALESCE(q.organization, '')), LOWER(?7)) > 0
+                         OR INSTR(LOWER(COALESCE(q.role, '')), LOWER(?7)) > 0
+                         OR EXISTS (
+                             SELECT 1 FROM question_subjects qs
+                             JOIN subjects s ON s.id = qs.subject_id
+                             WHERE qs.question_id = q.id AND INSTR(LOWER(s.name), LOWER(?7)) > 0
+                         ))
+                 )
+                 SELECT id FROM candidates
+                 WHERE (?8 IS NULL
+                     OR (?8 = 'unanswered' AND attempt_count = 0)
+                     OR (?8 = 'answered' AND attempt_count > 0)
+                     OR (?8 = 'repeated' AND attempt_count > 1)
+                     OR (?8 = 'first_correct' AND first_result = 'correct')
+                     OR (?8 = 'first_incorrect' AND first_result = 'incorrect')
+                     OR (?8 = 'last_correct' AND last_result = 'correct')
+                     OR (?8 = 'last_incorrect' AND last_result = 'incorrect'))
+                 ORDER BY updated_at DESC, id
+                 LIMIT ?9 OFFSET ?10",
             )
             .map_err(|error| map_database_error("preparar lista de questões", error))?;
         let ids = statement
@@ -60,6 +90,11 @@ impl QuestionStore for LocalWorkspaceStore {
                     input.subject_id.as_deref(),
                     input.question_type.as_deref(),
                     input.status.as_deref(),
+                    input.board.as_deref(),
+                    input.exam_year,
+                    input.notebook_id.as_deref(),
+                    input.search_text.as_deref(),
+                    input.attempt_status.as_deref(),
                     input.limit,
                     input.offset,
                 ],
@@ -1213,10 +1248,10 @@ fn load_question(
                     (SELECT COUNT(*) FROM question_attempts qa WHERE qa.question_id = q.id),
                     (SELECT qa.result FROM question_attempts qa
                      WHERE qa.question_id = q.id
-                     ORDER BY qa.answered_at ASC, qa.id ASC LIMIT 1),
+                      ORDER BY qa.answered_at ASC, qa.rowid ASC LIMIT 1),
                     (SELECT qa.result FROM question_attempts qa
                      WHERE qa.question_id = q.id
-                     ORDER BY qa.answered_at DESC, qa.id DESC LIMIT 1)
+                      ORDER BY qa.answered_at DESC, qa.rowid DESC LIMIT 1)
              FROM questions q
              LEFT JOIN question_subjects qsub ON qsub.question_id = q.id
              LEFT JOIN subjects s ON s.id = qsub.subject_id
@@ -1347,6 +1382,152 @@ mod tests {
     use crate::domain::study_plan::{CreatePreparationInput, CreateSubjectInput};
     use sha2::{Digest, Sha256};
     use std::fs;
+
+    #[test]
+    fn filters_question_bank_before_pagination_including_history_and_secondary_subject() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-filters-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-filters-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Filtros")
+            .expect("o espaço deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let first_subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Redes".to_string(),
+                parent_id: None,
+            })
+            .expect("o primeiro assunto deve ser criado");
+        let second_subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id,
+                name: "Segurança".to_string(),
+                parent_id: None,
+            })
+            .expect("o segundo assunto deve ser criado");
+        let connection = store.active_database().expect("o banco deve abrir");
+        let mut first_question_id = String::new();
+        for index in 0..60 {
+            let id = Uuid::new_v4().to_string();
+            if index == 0 {
+                first_question_id = id.clone();
+            }
+            connection
+                .execute(
+                    "INSERT INTO questions(id, question_type, statement_markdown, board, exam_year)
+                 VALUES (?1, 'multiple_choice', ?2, 'FGV', 2024)",
+                    params![id, format!("Rede-abc {index}")],
+                )
+                .expect("a questão deve ser criada");
+            connection
+                .execute(
+                    "INSERT INTO question_subjects(question_id, subject_id) VALUES (?1, ?2)",
+                    params![id, first_subject.id],
+                )
+                .expect("o assunto deve ser ligado");
+            if index == 0 {
+                connection
+                    .execute(
+                        "INSERT INTO question_subjects(question_id, subject_id) VALUES (?1, ?2)",
+                        params![id, second_subject.id],
+                    )
+                    .expect("o assunto secundário deve ser ligado");
+            }
+        }
+        for (selected_key, result, answered_at) in [
+            ("A", "correct", "2032-01-01 12:00:00"),
+            ("B", "incorrect", "2032-01-02 12:00:00"),
+        ] {
+            connection.execute(
+                "INSERT INTO question_attempts(id,question_id,selected_key,confidence,elapsed_seconds,result,answered_at)
+                 VALUES(?1,?2,?3,'certain',10,?4,?5)",
+                params![Uuid::new_v4().to_string(), first_question_id, selected_key, result, answered_at],
+            ).expect("a tentativa deve ser criada");
+        }
+        connection.execute(
+            "INSERT INTO notebook_questions(notebook_id,question_id) VALUES('notebook-errors',?1)",
+            params![first_question_id],
+        ).expect("a questão deve ser marcada no caderno");
+        let annulled_id = Uuid::new_v4().to_string();
+        connection
+            .execute(
+                "INSERT INTO questions(id,question_type,statement_markdown,status,board,exam_year)
+             VALUES(?1,'true_false','Anulada','annulled','Cebraspe',2022)",
+                params![annulled_id],
+            )
+            .expect("a questão anulada deve ser criada");
+        drop(connection);
+
+        let base = ListQuestionsInput {
+            subject_id: None,
+            question_type: Some("multiple_choice".to_string()),
+            status: Some("active".to_string()),
+            board: Some("fgv".to_string()),
+            exam_year: Some(2024),
+            attempt_status: None,
+            notebook_id: None,
+            search_text: None,
+            limit: 50,
+            offset: 0,
+        };
+        let first_page = store
+            .list_questions(&base)
+            .expect("a primeira página deve abrir");
+        let second_page = store
+            .list_questions(&ListQuestionsInput {
+                offset: 50,
+                ..base.clone()
+            })
+            .expect("a segunda página deve abrir");
+        assert_eq!(first_page.len(), 50);
+        assert_eq!(second_page.len(), 10);
+        let all_ids = first_page
+            .iter()
+            .chain(second_page.iter())
+            .map(|q| q.id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(all_ids.len(), 60);
+
+        let matched = store
+            .list_questions(&ListQuestionsInput {
+                subject_id: Some(second_subject.id),
+                attempt_status: Some("last_incorrect".to_string()),
+                notebook_id: Some("notebook-errors".to_string()),
+                search_text: Some("rede-abc 0".to_string()),
+                ..base.clone()
+            })
+            .expect("filtros combinados devem localizar a questão pelo segundo assunto");
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].id, first_question_id);
+        assert_eq!(matched[0].first_attempt_result.as_deref(), Some("correct"));
+
+        let annulled = store
+            .list_questions(&ListQuestionsInput {
+                question_type: None,
+                status: Some("annulled".to_string()),
+                board: None,
+                exam_year: None,
+                ..base
+            })
+            .expect("o filtro explícito deve permitir consultar anuladas");
+        assert_eq!(annulled.len(), 1);
+        assert_eq!(annulled[0].id, annulled_id);
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
 
     #[test]
     fn separates_external_batches_from_first_attempts_and_repeats() {

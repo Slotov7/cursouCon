@@ -48,6 +48,8 @@ type PracticeViewProps = {
 };
 
 type StatusFilter = "all" | "flagged" | "unsolved" | "correct";
+type HistoryFilter = "" | "unanswered" | "answered" | "first_correct" | "first_incorrect" | "last_correct" | "last_incorrect" | "repeated";
+const QUESTION_PAGE_SIZE = 50;
 
 function formatAnswerKey(key: string | null): string {
   if (!key) return "Não informado";
@@ -63,6 +65,13 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
   const [typeFilter, setTypeFilter] = useState<"" | QuestionType>("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [boardFilter, setBoardFilter] = useState("");
+  const [yearFilter, setYearFilter] = useState("");
+  const [questionStatusFilter, setQuestionStatusFilter] = useState<QuestionSummary["status"] | "">("active");
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("");
+  const [hasMoreQuestions, setHasMoreQuestions] = useState(false);
+  const [resultsDirty, setResultsDirty] = useState(false);
+  const queryVersionRef = useRef(0);
 
   const [notebooks, setNotebooks] = useState<NotebookSummary[]>([]);
   const [activeNotebookId, setActiveNotebookId] = useState(ERROR_NOTEBOOK_ID);
@@ -158,6 +167,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
           : [updatedEntry, ...previous];
       });
       setMessage(successMessage);
+      if (statusFilter === "flagged") setResultsDirty(true);
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -197,35 +207,72 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
     });
   };
 
-  const loadQuestions = () => {
+  const loadQuestions = (offset = 0) => {
+    const queryVersion = offset === 0 ? ++queryVersionRef.current : queryVersionRef.current;
     setIsLoading(true);
     let cancelled = false;
+    if (yearFilter && (!/^\d{4}$/.test(yearFilter) || Number(yearFilter) < 1900 || Number(yearFilter) > 2200)) {
+      setQuestions([]);
+      setHasMoreQuestions(false);
+      setError("Informe um ano entre 1900 e 2200 ou deixe o campo vazio.");
+      setIsLoading(false);
+      return () => { cancelled = true; };
+    }
+    const dynamicFilter = activeNotebook?.kind === "dynamic" ? activeNotebook.filter : null;
+    if ((subjectFilter && dynamicFilter?.subjectId && subjectFilter !== dynamicFilter.subjectId) ||
+      (typeFilter && dynamicFilter?.questionType && typeFilter !== dynamicFilter.questionType)) {
+      setQuestions([]);
+      setHasMoreQuestions(false);
+      setSelectedQuestionId(null);
+      setIsLoading(false);
+      return () => { cancelled = true; };
+    }
+    const dynamicHistory: HistoryFilter = dynamicFilter?.attemptStatus === "incorrect"
+      ? "last_incorrect" : dynamicFilter?.attemptStatus === "correct"
+        ? "last_correct" : dynamicFilter?.attemptStatus === "unanswered" ? "unanswered" : "";
+    const requestedHistory: HistoryFilter = statusFilter === "unsolved" ? "unanswered"
+      : statusFilter === "correct" ? "last_correct" : historyFilter || dynamicHistory;
+    if (offset === 0) {
+      setQuestions([]);
+      setHasMoreQuestions(false);
+    }
+    setError(null);
     getQuestions({
-      subjectId: subjectFilter || null,
-      questionType: typeFilter || null,
-      status: "active",
-      limit: 100,
-      offset: 0,
+      subjectId: subjectFilter || dynamicFilter?.subjectId || null,
+      questionType: typeFilter || dynamicFilter?.questionType || null,
+      status: questionStatusFilter || null,
+      board: boardFilter.trim() || null,
+      examYear: yearFilter ? Number(yearFilter) : null,
+      attemptStatus: requestedHistory || null,
+      notebookId: statusFilter === "flagged" && activeNotebook?.kind !== "dynamic" ? activeNotebookId : null,
+      searchText: searchQuery.trim() || null,
+      limit: QUESTION_PAGE_SIZE,
+      offset,
     })
       .then((loadedQuestions) => {
-        if (!cancelled) {
-          setQuestions(loadedQuestions);
-          if (loadedQuestions.length > 0) {
+        if (!cancelled && queryVersion === queryVersionRef.current) {
+          setQuestions((previous) => offset === 0
+            ? loadedQuestions
+            : [...previous, ...loadedQuestions.filter((question) => !previous.some((item) => item.id === question.id))]);
+          setHasMoreQuestions(loadedQuestions.length === QUESTION_PAGE_SIZE);
+          if (offset === 0) setResultsDirty(false);
+          setError(null);
+          if (offset === 0 && loadedQuestions.length > 0) {
             setSelectedQuestionId((curr) =>
               curr && loadedQuestions.some((q) => q.id === curr) ? curr : loadedQuestions[0].id
             );
-          } else {
+          } else if (offset === 0) {
             setSelectedQuestionId(null);
           }
         }
       })
       .catch((operationError: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && queryVersion === queryVersionRef.current) {
           setError(getDesktopErrorMessage(operationError));
         }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && queryVersion === queryVersionRef.current) {
           setIsLoading(false);
         }
       });
@@ -237,7 +284,10 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
 
   useEffect(() => {
     return loadQuestions();
-  }, [refreshKey, subjectFilter, typeFilter]);
+  }, [refreshKey, subjectFilter, typeFilter, questionStatusFilter, boardFilter, yearFilter,
+    statusFilter, historyFilter, searchQuery, activeNotebookId, activeNotebook?.kind,
+    activeNotebook?.filter?.subjectId, activeNotebook?.filter?.questionType,
+    activeNotebook?.filter?.attemptStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -283,67 +333,30 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
     };
   }, [refreshKey, activeNotebookId]);
 
-  // Filtering across status, subject, type, and keyword search
+  // Reavaliar apenas o histórico que pode mudar após responder sem recarregar a tela.
   const filteredQuestions = useMemo(() => {
     return questions.filter((q) => {
       const dynamicFilter = activeNotebook?.kind === "dynamic" ? activeNotebook.filter : null;
-      if (dynamicFilter) {
-        if (dynamicFilter.subjectId && q.subjectId !== dynamicFilter.subjectId) {
-          return false;
-        }
-        if (dynamicFilter.questionType && q.questionType !== dynamicFilter.questionType) {
-          return false;
-        }
-        if (dynamicFilter.attemptStatus === "incorrect" && q.lastAttemptResult !== "incorrect") {
-          return false;
-        }
-        if (dynamicFilter.attemptStatus === "correct" && q.lastAttemptResult !== "correct") {
-          return false;
-        }
-        if (dynamicFilter.attemptStatus === "unanswered" && (q.attemptsCount ?? 0) > 0) {
-          return false;
-        }
-      }
-      if (subjectFilter && q.subjectId !== subjectFilter) {
-        return false;
-      }
-      if (typeFilter && q.questionType !== typeFilter) {
-        return false;
-      }
-
-      if (statusFilter === "flagged") {
-        if (activeNotebook?.kind !== "dynamic" && !isQuestionFlagged(q)) return false;
-      } else if (statusFilter === "unsolved") {
-        if ((q.attemptsCount ?? 0) > 0) return false;
-      } else if (statusFilter === "correct") {
-        if (q.lastAttemptResult !== "correct") return false;
-      }
-
-      if (searchQuery.trim()) {
-        const term = searchQuery.toLowerCase().trim();
-        const matchStatement = q.statementMarkdown.toLowerCase().includes(term);
-        const matchSubject = q.subjectName?.toLowerCase().includes(term) ?? false;
-        const matchBoard = q.board?.toLowerCase().includes(term) ?? false;
-        const matchOrg = q.organization?.toLowerCase().includes(term) ?? false;
-        const matchRole = q.role?.toLowerCase().includes(term) ?? false;
-        if (!matchStatement && !matchSubject && !matchBoard && !matchOrg && !matchRole) {
-          return false;
-        }
-      }
-
+      const currentHistory = statusFilter === "unsolved" ? "unanswered"
+        : statusFilter === "correct" ? "last_correct"
+        : historyFilter || (dynamicFilter?.attemptStatus === "incorrect" ? "last_incorrect"
+          : dynamicFilter?.attemptStatus === "correct" ? "last_correct"
+          : dynamicFilter?.attemptStatus === "unanswered" ? "unanswered" : "");
+      if (currentHistory === "unanswered") return q.attemptsCount === 0;
+      if (currentHistory === "answered") return q.attemptsCount > 0;
+      if (currentHistory === "repeated") return q.attemptsCount > 1;
+      if (currentHistory === "first_correct") return q.firstAttemptResult === "correct";
+      if (currentHistory === "first_incorrect") return q.firstAttemptResult === "incorrect";
+      if (currentHistory === "last_correct") return q.lastAttemptResult === "correct";
+      if (currentHistory === "last_incorrect") return q.lastAttemptResult === "incorrect";
       return true;
     });
-  }, [
-    questions,
-    subjectFilter,
-    typeFilter,
-    statusFilter,
-    searchQuery,
-    notebookQuestionIds,
-    activeNotebook,
-  ]);
+  }, [questions, statusFilter, historyFilter, activeNotebook?.kind, activeNotebook?.filter?.attemptStatus]);
 
   const selectedQuestionIndex = filteredQuestions.findIndex((q) => q.id === selectedQuestionId);
+  const hasActiveQuestionFilters = Boolean(subjectFilter || typeFilter || boardFilter || yearFilter ||
+    searchQuery.trim() || historyFilter || statusFilter !== "all" || questionStatusFilter !== "active" ||
+    activeNotebook?.kind === "dynamic");
   const currentIndex =
     selectedQuestionIndex >= 0 ? selectedQuestionIndex : filteredQuestions.length > 0 ? 0 : -1;
   const selectedQuestion = filteredQuestions[currentIndex] ?? null;
@@ -366,16 +379,17 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
   };
 
   const handleQuestionCreated = (newQ: QuestionSummary) => {
-    setQuestions((prev) => [newQ, ...prev]);
     setSelectedQuestionId(newQ.id);
     setIsEditorOpen(false);
     setMessage("Questão cadastrada no banco de dados local.");
+    loadQuestions();
   };
 
   const handleQuestionAnswered = (res: AnswerQuestionResult) => {
     setQuestions((prev) =>
       prev.map((q) => (q.id === res.question.id ? res.question : q))
     );
+    setResultsDirty(true);
     setMessage(
       res.xpGranted > 0
         ? `Tentativa registrada com sucesso! +${res.xpGranted} XP adicionados.`
@@ -409,6 +423,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
       setNotebooks((previous) => [...previous, createdNotebook]);
       setActiveNotebookId(createdNotebook.id);
       setStatusFilter("all");
+      setHistoryFilter("");
       setNotebookEntries([]);
       setNotebookNameInput("");
       setNotebookKindInput("manual");
@@ -485,7 +500,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               Banco Local de Questões
             </span>
             <span className="text-xs font-medium text-slate-300/85">
-              {questions.length} questões cadastradas
+              {questions.length} questões carregadas
             </span>
           </div>
 
@@ -756,7 +771,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               <h3 className="font-heading text-lg font-bold text-ink">Banco de Questões</h3>
             </div>
             <span className="font-mono text-xs font-bold text-muted bg-paper-deep px-2.5 py-1 rounded-lg">
-              {filteredQuestions.length} de {questions.length}
+              {filteredQuestions.length} carregadas
             </span>
           </div>
 
@@ -764,6 +779,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
           <div className="mb-3">
             <input
               type="text"
+              aria-label="Buscar questões por texto, assunto, banca, órgão ou cargo"
               className={inputClass}
               placeholder="Buscar por enunciado, banca ou tema..."
               value={searchQuery}
@@ -775,7 +791,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mb-3.5 p-1 rounded-xl bg-paper border border-line">
             <button
               type="button"
-              onClick={() => setStatusFilter("all")}
+              onClick={() => { setStatusFilter("all"); setHistoryFilter(""); }}
               className={`rounded-lg py-1.5 text-xs font-semibold transition-all ${
                 statusFilter === "all"
                   ? "bg-card text-ink shadow-xs"
@@ -786,7 +802,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
             </button>
             <button
               type="button"
-              onClick={() => setStatusFilter("flagged")}
+              onClick={() => { setStatusFilter("flagged"); setHistoryFilter(""); }}
               className={`rounded-lg py-1.5 text-xs font-semibold transition-all ${
                 statusFilter === "flagged"
                   ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold shadow-xs"
@@ -798,7 +814,8 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
             </button>
             <button
               type="button"
-              onClick={() => setStatusFilter("unsolved")}
+              onClick={() => { setStatusFilter("unsolved"); setHistoryFilter(""); }}
+              disabled={activeNotebook?.kind === "dynamic"}
               className={`rounded-lg py-1.5 text-xs font-semibold transition-all ${
                 statusFilter === "unsolved"
                   ? "bg-card text-ink shadow-xs"
@@ -809,7 +826,8 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
             </button>
             <button
               type="button"
-              onClick={() => setStatusFilter("correct")}
+              onClick={() => { setStatusFilter("correct"); setHistoryFilter(""); }}
+              disabled={activeNotebook?.kind === "dynamic"}
               className={`rounded-lg py-1.5 text-xs font-semibold transition-all ${
                 statusFilter === "correct"
                   ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-bold shadow-xs"
@@ -829,6 +847,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                 onChange={(event) => {
                   setActiveNotebookId(event.target.value);
                   setStatusFilter("all");
+                  setHistoryFilter("");
                 }}
               >
                 {notebooks.map((notebook) => (
@@ -847,52 +866,76 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
             </button>
           </div>
 
-          {/* Subject and Type Dropdown Filters */}
+          {/* Filtros combinados aplicados no banco antes da paginação */}
           <div className="grid gap-2.5 sm:grid-cols-2 mb-4">
-            <select
-              className={selectClass}
-              value={subjectFilter}
-              onChange={(e) => setSubjectFilter(e.target.value)}
-            >
-              <option value="">Todas as matérias</option>
-              {(plan?.subjects ?? []).map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-
-            <select
-              className={selectClass}
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value as "" | QuestionType)}
-            >
-              <option value="">Todos os formatos</option>
-              <option value="multiple_choice">Múltipla escolha</option>
-              <option value="true_false">Certo / Errado</option>
-            </select>
+            <label className={fieldClass}>
+              Assunto
+              <select className={selectClass} value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}>
+                <option value="">Todos os assuntos</option>
+                {(plan?.subjects ?? []).map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
+              </select>
+            </label>
+            <label className={fieldClass}>
+              Formato
+              <select className={selectClass} value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as "" | QuestionType)}>
+                <option value="">Todos os formatos</option>
+                <option value="multiple_choice">Múltipla escolha</option>
+                <option value="true_false">Certo / Errado</option>
+              </select>
+            </label>
+            <label className={fieldClass}>
+              Banca
+              <input className={inputClass} value={boardFilter} onChange={(event) => setBoardFilter(event.target.value)} maxLength={120} placeholder="Ex.: Cebraspe" />
+            </label>
+            <label className={fieldClass}>
+              Ano da prova
+              <input className={inputClass} type="number" min="1900" max="2200" step="1" value={yearFilter} onChange={(event) => setYearFilter(event.target.value)} placeholder="Todos os anos" />
+            </label>
+            <label className={fieldClass}>
+              Situação da questão
+              <select className={selectClass} value={questionStatusFilter} onChange={(event) => setQuestionStatusFilter(event.target.value as QuestionSummary["status"] | "")}>
+                <option value="active">Ativas (padrão)</option>
+                <option value="">Todas as situações</option>
+                <option value="annulled">Anuladas</option>
+                <option value="outdated">Desatualizadas</option>
+                <option value="answer_changed">Gabarito alterado</option>
+              </select>
+            </label>
+            <label className={fieldClass}>
+              Histórico de resolução
+              <select className={selectClass} value={historyFilter} onChange={(event) => { setHistoryFilter(event.target.value as HistoryFilter); setStatusFilter("all"); }} disabled={activeNotebook?.kind === "dynamic"}>
+                <option value="">Todas as resoluções</option>
+                <option value="unanswered">Inéditas</option>
+                <option value="answered">Já respondidas</option>
+                <option value="first_correct">Acerto na primeira tentativa</option>
+                <option value="first_incorrect">Erro na primeira tentativa</option>
+                <option value="last_correct">Última tentativa correta</option>
+                <option value="last_incorrect">Última tentativa incorreta</option>
+                <option value="repeated">Repetidas</option>
+              </select>
+            </label>
           </div>
 
           {/* Questions Scrollable List */}
           <div className="grid gap-2 max-h-[520px] overflow-y-auto pr-1">
-            {isLoading ? (
+            {isLoading && questions.length === 0 ? (
               <div className="py-12 text-center text-xs text-muted">
                 Carregando banco de questões...
               </div>
             ) : filteredQuestions.length === 0 ? (
               <div className="rounded-xl border border-dashed border-line p-6 text-center text-muted">
                 <p className="text-xs font-semibold text-ink">
-                  {questions.length === 0
-                    ? "Nenhuma questão cadastrada ainda."
+                  {!hasActiveQuestionFilters && questions.length === 0
+                    ? "Nenhuma questão ativa encontrada."
                     : "Nenhuma questão encontrada com estes filtros."}
                 </p>
                 <p className="mt-1 text-[11px]">
-                  {questions.length === 0
-                    ? "Importe um lote JSON oficial ou cadastre sua primeira questão."
+                  {!hasActiveQuestionFilters && questions.length === 0
+                    ? "Cadastre ou importe questões; outras situações podem ser vistas no filtro de situação."
                     : "Tente redefinir os critérios de busca."}
                 </p>
                 <div className="mt-3 flex justify-center gap-2">
-                  {questions.length === 0 ? (
+                  {!hasActiveQuestionFilters && questions.length === 0 ? (
                     <>
                       <button
                         type="button"
@@ -917,6 +960,10 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                         setStatusFilter("all");
                         setSubjectFilter("");
                         setTypeFilter("");
+                        setBoardFilter("");
+                        setYearFilter("");
+                        setQuestionStatusFilter("active");
+                        setHistoryFilter("");
                       }}
                       className="text-xs font-bold text-blue-600 hover:underline cursor-pointer"
                     >
@@ -990,6 +1037,11 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               })
             )}
           </div>
+          {(hasMoreQuestions || resultsDirty) && (
+            <button type="button" className={`${buttonSecondaryClass} mt-3 w-full`} onClick={() => loadQuestions(resultsDirty ? 0 : questions.length)} disabled={isLoading}>
+              {isLoading ? "Carregando..." : resultsDirty ? "Atualizar resultados" : "Carregar mais questões"}
+            </button>
+          )}
         </section>
 
         {/* Right Question Resolution Canvas */}
@@ -1087,6 +1139,7 @@ function QuestionRunner({
   }, [question.id, notebookName, notebookEntry?.notebookId, notebookEntry?.reason, notebookEntry?.observation]);
 
   const handleAnswer = async (keyOverride?: string | null) => {
+    if (question.status !== "active") return;
     const keyToSubmit = keyOverride !== undefined ? keyOverride : selectedKey;
     if (keyToSubmit === null) {
       setSelectedKey(null);
@@ -1141,7 +1194,7 @@ function QuestionRunner({
             ← Anterior
           </button>
           <span className="font-mono text-xs font-bold text-ink px-1.5">
-            {currentIndex} de {totalCount}
+            {currentIndex} de {totalCount} carregadas
           </span>
           <button
             type="button"
@@ -1160,17 +1213,19 @@ function QuestionRunner({
         <button
           type="button"
           onClick={onToggleNotebook}
-          disabled={isNotebookPending || isNotebookDynamic}
+          disabled={isNotebookPending || isNotebookDynamic || question.status !== "active"}
           className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all duration-150 active:scale-[0.97] cursor-pointer ${
             isSavedNotebook
               ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 font-bold"
               : "border border-line text-muted hover:bg-paper"
           }`}
-           title={
-             isNotebookDynamic
-               ? "Este caderno é atualizado pelo filtro salvo"
-               : `Adicionar ou remover esta questão de ${notebookName}`
-           }
+          title={
+            question.status !== "active"
+              ? "Questões não ativas estão disponíveis somente para consulta"
+              : isNotebookDynamic
+                ? "Este caderno é atualizado pelo filtro salvo"
+                : `Adicionar ou remover esta questão de ${notebookName}`
+          }
         >
           {isNotebookDynamic
             ? "Filtro automático"
@@ -1210,7 +1265,7 @@ function QuestionRunner({
                     : (event.target.value as QuestionNotebookReason),
                 )
               }
-              disabled={isNotebookPending}
+              disabled={isNotebookPending || question.status !== "active"}
             >
               <option value="">Ainda não classificado</option>
               <option value="content">Conteúdo</option>
@@ -1227,7 +1282,7 @@ function QuestionRunner({
               maxLength={5000}
               onChange={(event) => setNotebookObservation(event.target.value)}
               placeholder="Anote o que revisar ou o motivo da dúvida..."
-              disabled={isNotebookPending}
+              disabled={isNotebookPending || question.status !== "active"}
             />
           </label>
           <div className="flex justify-end">
@@ -1240,7 +1295,7 @@ function QuestionRunner({
                   notebookObservation.trim() || null,
                 )
               }
-              disabled={isNotebookPending}
+              disabled={isNotebookPending || question.status !== "active"}
             >
               {isNotebookPending ? "Salvando..." : "Salvar anotação"}
             </button>
@@ -1250,6 +1305,11 @@ function QuestionRunner({
 
       {/* Meta tags badge bar */}
       <div className="flex flex-wrap items-center gap-2 text-xs">
+        {question.status !== "active" && (
+          <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-700 dark:text-amber-300">
+            {question.status === "annulled" ? "Anulada" : question.status === "outdated" ? "Desatualizada" : "Gabarito alterado"} · apenas consulta
+          </span>
+        )}
         {question.board && (
           <span className="rounded-md bg-blue-600/10 px-2.5 py-1 font-extrabold text-blue-600">
             {question.board}
@@ -1307,8 +1367,8 @@ function QuestionRunner({
             <button
               key={option.key}
               type="button"
-              onClick={() => !result && setSelectedKey(option.key)}
-              disabled={!!result}
+              onClick={() => !result && question.status === "active" && setSelectedKey(option.key)}
+              disabled={!!result || question.status !== "active"}
               className={`flex items-start gap-3.5 rounded-2xl border p-4 text-left text-xs transition-all duration-150 ease-out cursor-pointer active:scale-[0.99] ${optionStyle}`}
             >
               <span
@@ -1331,7 +1391,7 @@ function QuestionRunner({
       </div>
 
       {/* Confidence Level Selector (visible before answering) */}
-      {!result && (
+      {!result && question.status === "active" && (
         <div className="grid gap-2 border-t border-line pt-4">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-muted">
@@ -1383,7 +1443,9 @@ function QuestionRunner({
 
       {/* Answer Button & Resolution Feedback */}
       <div className="flex items-center justify-between border-t border-line pt-4">
-        {!result ? (
+        {!result && question.status !== "active" ? (
+          <p className="text-xs text-muted">Esta questão não aceita novas tentativas. O histórico permanece disponível.</p>
+        ) : !result ? (
           <div className="flex flex-wrap items-center justify-between gap-3 w-full">
             <button
               type="button"

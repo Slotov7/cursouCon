@@ -49,7 +49,7 @@ O primeiro protótipo vertical implementa:
 - concessão idempotente de XP por sessão, com teto diário e regras versionadas;
 - concessão de 2 XP pela primeira tentativa diária de cada questão, limitada a 60 XP/dia nessa categoria;
 - cadastro manual de questões de múltipla escolha e certo/errado;
-- filtros locais por assunto e tipo, resolução offline e tentativas imutáveis com confiança, tempo e resultado;
+- filtros paginados no SQLite por assunto, formato, banca, ano, situação, histórico de resolução e busca textual, com resolução offline e tentativas imutáveis;
 - registro de lotes de questões resolvidos fora do app, com indicadores separados de primeiras tentativas e repetições, sem XP adicional;
 - núcleo e ponte IPC para importação JSON versionada de questões, com prévia, diagnóstico de inválidas/duplicadas e gravação transacional;
 - núcleo e ponte IPC para exportação das questões ativas em pacotes locais de `exports/`, preservando referências e hashes de anexos;

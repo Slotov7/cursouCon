@@ -30,6 +30,11 @@ pub struct ListQuestionsInput {
     pub subject_id: Option<String>,
     pub question_type: Option<String>,
     pub status: Option<String>,
+    pub board: Option<String>,
+    pub exam_year: Option<i64>,
+    pub attempt_status: Option<String>,
+    pub notebook_id: Option<String>,
+    pub search_text: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -269,6 +274,21 @@ pub fn normalize_list_questions_input(
             .status
             .map(|value| normalize_status(&value))
             .transpose()?,
+        board: normalize_optional_text(input.board, "A banca", 120)?,
+        exam_year: normalize_exam_year(input.exam_year)?,
+        attempt_status: input
+            .attempt_status
+            .map(|value| match value.trim() {
+                "unanswered" | "answered" | "first_correct" | "first_incorrect"
+                | "last_correct" | "last_incorrect" | "repeated" => Ok(value.trim().to_string()),
+                _ => Err("O histórico escolhido não é válido.".to_string()),
+            })
+            .transpose()?,
+        notebook_id: input
+            .notebook_id
+            .map(|value| normalize_notebook_id(&value))
+            .transpose()?,
+        search_text: normalize_optional_text(input.search_text, "A busca", 160)?,
         limit,
         offset: input.offset,
     })
@@ -538,6 +558,42 @@ fn normalize_id(value: &str, label: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_combined_question_filters_and_page_size() {
+        let input = ListQuestionsInput {
+            subject_id: None,
+            question_type: Some("multiple_choice".to_string()),
+            status: Some("active".to_string()),
+            board: Some("  FGV  ".to_string()),
+            exam_year: Some(2024),
+            attempt_status: Some("last_incorrect".to_string()),
+            notebook_id: Some(ERROR_NOTEBOOK_ID.to_string()),
+            search_text: Some("  redes  ".to_string()),
+            limit: 50,
+            offset: 50,
+        };
+        let valid =
+            normalize_list_questions_input(input.clone()).expect("filtros devem ser válidos");
+        assert_eq!(valid.board.as_deref(), Some("FGV"));
+        assert_eq!(valid.search_text.as_deref(), Some("redes"));
+        assert_eq!(valid.offset, 50);
+        assert!(normalize_list_questions_input(ListQuestionsInput {
+            attempt_status: Some("unknown".to_string()),
+            ..input.clone()
+        })
+        .is_err());
+        assert!(normalize_list_questions_input(ListQuestionsInput {
+            exam_year: Some(1800),
+            ..input.clone()
+        })
+        .is_err());
+        assert!(normalize_list_questions_input(ListQuestionsInput {
+            limit: 101,
+            ..input
+        })
+        .is_err());
+    }
 
     #[test]
     fn validates_external_batch_counts_and_calendar_date() {
