@@ -11,6 +11,7 @@ import {
   importQuestions,
   pickQuestionImportFile,
   previewQuestionImport,
+  reviseQuestion,
   setNotebookEntry,
 } from "../../shared/desktop/commands";
 import { ERROR_NOTEBOOK_ID } from "../../shared/desktop/contracts";
@@ -25,6 +26,7 @@ import type {
   QuestionNotebookReason,
   QuestionSummary,
   QuestionType,
+  ReviseQuestionResult,
   NotebookAttemptStatus,
   NotebookFilter,
   NotebookSummary,
@@ -394,6 +396,18 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
       res.xpGranted > 0
         ? `Tentativa registrada com sucesso! +${res.xpGranted} XP adicionados.`
         : "Tentativa registrada no histórico local."
+    );
+  };
+
+  const handleQuestionRevised = (res: ReviseQuestionResult) => {
+    setQuestions((previous) =>
+      previous.map((question) => (question.id === res.question.id ? res.question : question)),
+    );
+    setResultsDirty(true);
+    setMessage(
+      res.revision
+        ? "Revisão da questão registrada no histórico local."
+        : "Questão atualizada no banco local.",
     );
   };
 
@@ -1063,10 +1077,11 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                onSaveNotebookDetails={(reason, observation) =>
                  handleSaveNotebookDetails(selectedQuestion.id, reason, observation)
                }
-              onPrevious={handlePreviousQuestion}
-              onNext={handleNextQuestion}
-              onAnswered={handleQuestionAnswered}
-            />
+               onPrevious={handlePreviousQuestion}
+               onNext={handleNextQuestion}
+               onAnswered={handleQuestionAnswered}
+               onRevised={handleQuestionRevised}
+             />
           ) : (
             <div className="rounded-2xl border border-line bg-card p-12 text-center text-muted">
               <p className="text-sm font-semibold">Nenhuma questão selecionada.</p>
@@ -1100,6 +1115,7 @@ type QuestionRunnerProps = {
   onPrevious: () => void;
   onNext: () => void;
   onAnswered: (result: AnswerQuestionResult) => void;
+  onRevised: (result: ReviseQuestionResult) => void;
 };
 
 function QuestionRunner({
@@ -1118,6 +1134,7 @@ function QuestionRunner({
   onPrevious,
   onNext,
   onAnswered,
+  onRevised,
 }: QuestionRunnerProps) {
   const startedAtRef = useRef(Date.now());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -1125,6 +1142,11 @@ function QuestionRunner({
   const [result, setResult] = useState<AnswerQuestionResult | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [runnerError, setRunnerError] = useState<string | null>(null);
+  const [isRevisionOpen, setIsRevisionOpen] = useState(false);
+  const [revisionStatus, setRevisionStatus] = useState<QuestionSummary["status"]>(question.status);
+  const [revisionAnswerKey, setRevisionAnswerKey] = useState(question.answerKey ?? "");
+  const [revisionReason, setRevisionReason] = useState("");
+  const [isRevisionSubmitting, setIsRevisionSubmitting] = useState(false);
   const [notebookReason, setNotebookReason] = useState<QuestionNotebookReason | null>(null);
   const [notebookObservation, setNotebookObservation] = useState("");
 
@@ -1134,9 +1156,54 @@ function QuestionRunner({
     setConfidence("certain");
     setResult(null);
     setRunnerError(null);
+    setIsRevisionOpen(false);
+    setRevisionStatus(question.status);
+    setRevisionAnswerKey(question.answerKey ?? "");
+    setRevisionReason("");
     setNotebookReason(notebookEntry?.reason ?? null);
     setNotebookObservation(notebookEntry?.observation ?? "");
-  }, [question.id, notebookName, notebookEntry?.notebookId, notebookEntry?.reason, notebookEntry?.observation]);
+  }, [
+    question.id,
+    question.status,
+    question.answerKey,
+    notebookName,
+    notebookEntry?.notebookId,
+    notebookEntry?.reason,
+    notebookEntry?.observation,
+  ]);
+
+  const handleRevise = async () => {
+    const nextAnswerKey = revisionAnswerKey || null;
+    if (!revisionReason.trim()) {
+      setRunnerError("Informe o motivo da revisão.");
+      return;
+    }
+    if (nextAnswerKey !== question.answerKey && revisionStatus !== "answer_changed") {
+      setRunnerError("Uma alteração de gabarito precisa usar a situação \"Gabarito alterado\".");
+      return;
+    }
+    if (nextAnswerKey === question.answerKey && revisionStatus === "answer_changed") {
+      setRunnerError("Informe um gabarito diferente para marcar a questão como alterada.");
+      return;
+    }
+    setIsRevisionSubmitting(true);
+    setRunnerError(null);
+    try {
+      const revised = await reviseQuestion({
+        questionId: question.id,
+        status: revisionStatus,
+        answerKey: nextAnswerKey,
+        reason: revisionReason.trim(),
+      });
+      onRevised(revised);
+      setIsRevisionOpen(false);
+      setRevisionReason("");
+    } catch (err: unknown) {
+      setRunnerError(getDesktopErrorMessage(err));
+    } finally {
+      setIsRevisionSubmitting(false);
+    }
+  };
 
   const handleAnswer = async (keyOverride?: string | null) => {
     if (question.status !== "active") return;
@@ -1242,6 +1309,94 @@ function QuestionRunner({
           {runnerError}
         </div>
       )}
+
+      <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xs font-bold text-ink">Auditoria da questão</h3>
+            <p className="mt-1 text-[11px] text-muted">
+              {question.revisionCount > 0
+                ? `${question.revisionCount} revisão(ões) registrada(s). Tentativas preservam o gabarito usado na época.`
+                : "Corrija o gabarito ou registre uma situação sem apagar as tentativas."}
+            </p>
+          </div>
+          <button
+            type="button"
+            className={`${buttonSecondaryClass} min-h-9 px-3 text-xs`}
+            onClick={() => setIsRevisionOpen((open) => !open)}
+            disabled={isRevisionSubmitting}
+          >
+            {isRevisionOpen ? "Fechar revisão" : "Corrigir / marcar situação"}
+          </button>
+        </div>
+
+        {question.revisionCount > 0 && question.attemptsCount > 0 && (
+          <p className="text-[11px] text-muted">
+            Primeira tentativa: <strong className="text-ink">{formatAnswerKey(question.firstAttemptResult)}</strong>
+            {question.firstAttemptCurrentResult !== question.firstAttemptResult && (
+              <>; com o gabarito atual: <strong className="text-ink">{formatAnswerKey(question.firstAttemptCurrentResult)}</strong></>
+            )}
+          </p>
+        )}
+
+        {isRevisionOpen && (
+          <div className="grid gap-3 border-t border-line pt-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className={fieldClass}>
+                Situação
+                <select
+                  className={selectClass}
+                  value={revisionStatus}
+                  onChange={(event) => setRevisionStatus(event.target.value as QuestionSummary["status"])}
+                  disabled={isRevisionSubmitting}
+                >
+                  <option value="active">Ativa</option>
+                  <option value="annulled">Anulada</option>
+                  <option value="outdated">Desatualizada</option>
+                  <option value="answer_changed">Gabarito alterado</option>
+                </select>
+              </label>
+              <label className={fieldClass}>
+                Gabarito atual
+                <select
+                  className={selectClass}
+                  value={revisionAnswerKey}
+                  onChange={(event) => setRevisionAnswerKey(event.target.value)}
+                  disabled={isRevisionSubmitting}
+                >
+                  <option value="">Sem gabarito / pendente</option>
+                  {question.options.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {formatAnswerKey(option.key)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label className={fieldClass}>
+              Motivo da alteração
+              <textarea
+                className={`${textareaClass} min-h-[76px]`}
+                value={revisionReason}
+                maxLength={500}
+                onChange={(event) => setRevisionReason(event.target.value)}
+                placeholder="Ex.: banca publicou errata no gabarito definitivo."
+                disabled={isRevisionSubmitting}
+              />
+            </label>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                className={`${buttonPrimaryClass} min-h-9 px-3 text-xs`}
+                onClick={() => void handleRevise()}
+                disabled={isRevisionSubmitting}
+              >
+                {isRevisionSubmitting ? "Registrando..." : "Registrar revisão"}
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
 
       {isSavedNotebook && !isNotebookDynamic && (
         <section className="grid gap-3 rounded-xl border border-amber-500/25 bg-amber-500/5 p-4" aria-labelledby="notebook-details-title">

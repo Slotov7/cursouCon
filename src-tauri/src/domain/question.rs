@@ -48,6 +48,34 @@ pub struct AnswerQuestionInput {
 }
 
 #[derive(Debug, Clone)]
+pub struct ReviseQuestionInput {
+    pub question_id: String,
+    pub status: String,
+    pub answer_key: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionRevisionSummary {
+    pub id: String,
+    pub question_id: String,
+    pub previous_answer_key: Option<String>,
+    pub current_answer_key: Option<String>,
+    pub previous_status: String,
+    pub current_status: String,
+    pub reason: String,
+    pub changed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviseQuestionResult {
+    pub question: QuestionSummary,
+    pub revision: Option<QuestionRevisionSummary>,
+}
+
+#[derive(Debug, Clone)]
 pub struct CreateExternalQuestionBatchInput {
     pub preparation_id: String,
     pub subject_id: Option<String>,
@@ -139,6 +167,23 @@ pub struct QuestionSummary {
     pub attempts_count: i64,
     pub first_attempt_result: Option<String>,
     pub last_attempt_result: Option<String>,
+    pub first_attempt_current_result: Option<String>,
+    pub last_attempt_current_result: Option<String>,
+    pub revision_count: i64,
+}
+
+pub fn normalize_revise_question_input(
+    input: ReviseQuestionInput,
+) -> Result<ReviseQuestionInput, String> {
+    Ok(ReviseQuestionInput {
+        question_id: normalize_id(&input.question_id, "A questão")?,
+        status: normalize_status(&input.status)?,
+        answer_key: input
+            .answer_key
+            .map(|key| normalize_selected_key(&key))
+            .transpose()?,
+        reason: normalize_markdown(input.reason, "O motivo da revisão", 500)?,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -615,6 +660,34 @@ mod tests {
         invalid_date.studied_on = "2031-02-29".to_string();
         assert!(normalize_external_question_batch_input(invalid_count).is_err());
         assert!(normalize_external_question_batch_input(invalid_date).is_err());
+    }
+
+    #[test]
+    fn normalizes_question_revision_and_requires_valid_reason() {
+        let normalized = normalize_revise_question_input(ReviseQuestionInput {
+            question_id: format!("  {}  ", Uuid::new_v4()),
+            status: " answer_changed ".to_string(),
+            answer_key: Some(" B ".to_string()),
+            reason: "  Errata publicada pela banca.  ".to_string(),
+        })
+        .expect("a revisão deve aceitar valores normalizáveis");
+        assert_eq!(normalized.status, "answer_changed");
+        assert_eq!(normalized.answer_key.as_deref(), Some("B"));
+        assert_eq!(normalized.reason, "Errata publicada pela banca.");
+        assert!(normalize_revise_question_input(ReviseQuestionInput {
+            question_id: Uuid::new_v4().to_string(),
+            status: "unknown".to_string(),
+            answer_key: None,
+            reason: "Motivo".to_string(),
+        })
+        .is_err());
+        assert!(normalize_revise_question_input(ReviseQuestionInput {
+            question_id: Uuid::new_v4().to_string(),
+            status: "active".to_string(),
+            answer_key: None,
+            reason: "   ".to_string(),
+        })
+        .is_err());
     }
 
     #[test]

@@ -5,7 +5,8 @@ use crate::domain::question::{
     AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
     CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
     NotebookFilter, NotebookSummary, QuestionNotebookEntrySummary, QuestionOptionInput,
-    QuestionPerformanceSummary, QuestionSummary, SetQuestionNotebookInput,
+    QuestionPerformanceSummary, QuestionSummary, ReviseQuestionInput, ReviseQuestionResult,
+    SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     QuestionExportResult, QuestionImportPreview, QuestionImportResult,
@@ -59,6 +60,15 @@ pub struct AnswerQuestionRequest {
     pub selected_key: Option<String>,
     pub confidence: String,
     pub elapsed_seconds: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviseQuestionRequest {
+    pub question_id: String,
+    pub status: String,
+    pub answer_key: Option<String>,
+    pub reason: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,6 +189,22 @@ pub fn answer_question(
             selected_key: request.selected_key,
             confidence: request.confidence,
             elapsed_seconds: request.elapsed_seconds,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn revise_question(
+    app: AppHandle,
+    request: ReviseQuestionRequest,
+) -> Result<ReviseQuestionResult, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .revise(ReviseQuestionInput {
+            question_id: request.question_id,
+            status: request.status,
+            answer_key: request.answer_key,
+            reason: request.reason,
         })
         .map_err(CommandError::from)
 }

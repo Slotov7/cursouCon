@@ -2,11 +2,12 @@ use crate::application::workspace_service::WorkspaceError;
 use crate::domain::question::{
     normalize_answer_question_input, normalize_create_notebook_input,
     normalize_create_question_input, normalize_external_question_batch_input,
-    normalize_list_questions_input, normalize_notebook_id, normalize_set_question_notebook_input,
-    AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
-    CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
-    NotebookSummary, QuestionNotebookEntrySummary, QuestionPerformanceSummary, QuestionSummary,
-    SetQuestionNotebookInput,
+    normalize_list_questions_input, normalize_notebook_id, normalize_revise_question_input,
+    normalize_set_question_notebook_input, AnswerQuestionInput, AnswerQuestionResult,
+    CreateExternalQuestionBatchInput, CreateNotebookInput, CreateQuestionInput,
+    ExternalQuestionBatchSummary, ListQuestionsInput, NotebookSummary,
+    QuestionNotebookEntrySummary, QuestionPerformanceSummary, QuestionSummary, ReviseQuestionInput,
+    ReviseQuestionResult, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     QuestionExportResult, QuestionImportPreview, QuestionImportResult,
@@ -26,6 +27,10 @@ pub trait QuestionStore {
         &self,
         input: &AnswerQuestionInput,
     ) -> Result<AnswerQuestionResult, WorkspaceError>;
+    fn revise_question(
+        &self,
+        input: &ReviseQuestionInput,
+    ) -> Result<ReviseQuestionResult, WorkspaceError>;
     fn list_notebooks(&self) -> Result<Vec<NotebookSummary>, WorkspaceError>;
     fn create_notebook(
         &self,
@@ -115,6 +120,15 @@ impl<S: QuestionStore> QuestionService<S> {
         let normalized =
             normalize_answer_question_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.answer_question(&normalized)
+    }
+
+    pub fn revise(
+        &self,
+        input: ReviseQuestionInput,
+    ) -> Result<ReviseQuestionResult, WorkspaceError> {
+        let normalized =
+            normalize_revise_question_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.revise_question(&normalized)
     }
 
     pub fn preview_import(

@@ -27,6 +27,7 @@ const EXPORT_TABLES: &[&str] = &[
     "question_options",
     "question_subjects",
     "question_attempts",
+    "question_revisions",
     "external_question_batches",
     "question_attachments",
     "notebooks",

@@ -5,7 +5,8 @@ use crate::domain::question::{
     AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
     CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
     NotebookSummary, QuestionAttemptSummary, QuestionNotebookEntrySummary, QuestionOptionSummary,
-    QuestionPerformanceSummary, QuestionSummary, SetQuestionNotebookInput,
+    QuestionPerformanceSummary, QuestionRevisionSummary, QuestionSummary, ReviseQuestionInput,
+    ReviseQuestionResult, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     duplicate_external_id, export_item_from_summary, new_export_document, parse_question_document,
@@ -410,6 +411,125 @@ impl QuestionStore for LocalWorkspaceStore {
             attempt,
             question,
             xp_granted,
+        })
+    }
+
+    fn revise_question(
+        &self,
+        input: &ReviseQuestionInput,
+    ) -> Result<ReviseQuestionResult, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar revisão da questão", error))?;
+        let question_data: Option<(Option<String>, String)> = transaction
+            .query_row(
+                "SELECT answer_key, status FROM questions WHERE id = ?1",
+                params![input.question_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| map_database_error("localizar questão para revisão", error))?;
+        let Some((previous_answer_key, previous_status)) = question_data else {
+            return Err(WorkspaceError::InvalidInput(
+                "A questão escolhida não existe mais.".to_string(),
+            ));
+        };
+
+        if let Some(answer_key) = input.answer_key.as_deref() {
+            let option_exists: Option<i64> = transaction
+                .query_row(
+                    "SELECT 1 FROM question_options
+                     WHERE question_id = ?1 AND option_key = ?2",
+                    params![input.question_id.as_str(), answer_key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| map_database_error("validar novo gabarito", error))?;
+            if option_exists.is_none() {
+                return Err(WorkspaceError::InvalidInput(
+                    "O novo gabarito precisa apontar para uma alternativa existente.".to_string(),
+                ));
+            }
+        }
+
+        let answer_key_changed = previous_answer_key != input.answer_key;
+        if answer_key_changed && input.status != "answer_changed" {
+            return Err(WorkspaceError::InvalidInput(
+                "Uma alteração de gabarito precisa usar a situação 'gabarito alterado'."
+                    .to_string(),
+            ));
+        }
+        if input.status == "answer_changed" && !answer_key_changed {
+            return Err(WorkspaceError::InvalidInput(
+                "Informe um gabarito diferente para marcar a questão como alterada.".to_string(),
+            ));
+        }
+        if previous_status == input.status && !answer_key_changed {
+            return Err(WorkspaceError::InvalidInput(
+                "A questão já está com essa situação e esse gabarito.".to_string(),
+            ));
+        }
+
+        let revision_id = Uuid::new_v4().to_string();
+        transaction
+            .execute(
+                "INSERT INTO question_revisions
+                    (id, question_id, previous_answer_key, current_answer_key,
+                     previous_status, current_status, reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    revision_id.as_str(),
+                    input.question_id.as_str(),
+                    previous_answer_key.as_deref(),
+                    input.answer_key.as_deref(),
+                    previous_status.as_str(),
+                    input.status.as_str(),
+                    input.reason.as_str(),
+                ],
+            )
+            .map_err(|error| map_database_error("gravar revisão da questão", error))?;
+        transaction
+            .execute(
+                "UPDATE questions
+                 SET answer_key = ?1, status = ?2, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?3",
+                params![
+                    input.answer_key.as_deref(),
+                    input.status.as_str(),
+                    input.question_id.as_str(),
+                ],
+            )
+            .map_err(|error| map_database_error("atualizar questão revisada", error))?;
+
+        let revision = transaction
+            .query_row(
+                "SELECT id, question_id, previous_answer_key, current_answer_key,
+                        previous_status, current_status, reason, changed_at
+                 FROM question_revisions WHERE id = ?1",
+                params![revision_id.as_str()],
+                |row| {
+                    Ok(QuestionRevisionSummary {
+                        id: row.get(0)?,
+                        question_id: row.get(1)?,
+                        previous_answer_key: row.get(2)?,
+                        current_answer_key: row.get(3)?,
+                        previous_status: row.get(4)?,
+                        current_status: row.get(5)?,
+                        reason: row.get(6)?,
+                        changed_at: row.get(7)?,
+                    })
+                },
+            )
+            .map_err(|error| map_database_error("ler revisão da questão", error))?;
+        let question = load_question(&transaction, &input.question_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar revisão da questão", error))?;
+
+        Ok(ReviseQuestionResult {
+            question,
+            revision: Some(revision),
         })
     }
 
@@ -1246,13 +1366,32 @@ fn load_question(
                     q.explanation_markdown, q.source_name, q.board, q.organization, q.role,
                     q.exam_year, qsub.subject_id, s.name, q.status,
                     (SELECT COUNT(*) FROM question_attempts qa WHERE qa.question_id = q.id),
+                     (SELECT qa.result FROM question_attempts qa
+                      WHERE qa.question_id = q.id
+                       ORDER BY qa.answered_at ASC, qa.rowid ASC LIMIT 1),
                     (SELECT qa.result FROM question_attempts qa
                      WHERE qa.question_id = q.id
-                      ORDER BY qa.answered_at ASC, qa.rowid ASC LIMIT 1),
-                    (SELECT qa.result FROM question_attempts qa
-                     WHERE qa.question_id = q.id
-                      ORDER BY qa.answered_at DESC, qa.rowid DESC LIMIT 1)
-             FROM questions q
+                      ORDER BY qa.answered_at DESC, qa.rowid DESC LIMIT 1),
+                    (SELECT CASE
+                          WHEN q.answer_key IS NULL THEN 'pending'
+                          WHEN qa.selected_key IS NULL THEN 'blank'
+                          WHEN qa.selected_key = q.answer_key THEN 'correct'
+                          ELSE 'incorrect'
+                        END
+                      FROM question_attempts qa
+                      WHERE qa.question_id = q.id
+                       ORDER BY qa.answered_at ASC, qa.rowid ASC LIMIT 1),
+                    (SELECT CASE
+                          WHEN q.answer_key IS NULL THEN 'pending'
+                          WHEN qa.selected_key IS NULL THEN 'blank'
+                          WHEN qa.selected_key = q.answer_key THEN 'correct'
+                          ELSE 'incorrect'
+                        END
+                      FROM question_attempts qa
+                      WHERE qa.question_id = q.id
+                       ORDER BY qa.answered_at DESC, qa.rowid DESC LIMIT 1),
+                    (SELECT COUNT(*) FROM question_revisions qr WHERE qr.question_id = q.id)
+              FROM questions q
              LEFT JOIN question_subjects qsub ON qsub.question_id = q.id
              LEFT JOIN subjects s ON s.id = qsub.subject_id
              WHERE q.id = ?1
@@ -1277,6 +1416,9 @@ fn load_question(
                     attempts_count: row.get(13)?,
                     first_attempt_result: row.get(14)?,
                     last_attempt_result: row.get(15)?,
+                    first_attempt_current_result: row.get(16)?,
+                    last_attempt_current_result: row.get(17)?,
+                    revision_count: row.get(18)?,
                 })
             },
         )
@@ -1802,6 +1944,126 @@ mod tests {
                 .attempt_status,
             "incorrect"
         );
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn revises_answer_key_without_rewriting_historical_attempts() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-question-revision-{}", Uuid::new_v4()));
+        let app_data_dir = std::env::temp_dir().join(format!(
+            "cursoucon-question-revision-data-{}",
+            Uuid::new_v4()
+        ));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Revisão de questões")
+            .expect("o espaço temporário deve ser criado");
+        let question = store
+            .create_question(&CreateQuestionInput {
+                question_type: "multiple_choice".to_string(),
+                statement_markdown: "Qual protocolo é orientado a conexão?".to_string(),
+                options: vec![
+                    QuestionOptionInput {
+                        key: "A".to_string(),
+                        text: "TCP".to_string(),
+                    },
+                    QuestionOptionInput {
+                        key: "B".to_string(),
+                        text: "UDP".to_string(),
+                    },
+                ],
+                answer_key: Some("A".to_string()),
+                explanation_markdown: None,
+                source_name: None,
+                board: None,
+                organization: None,
+                role: None,
+                exam_year: None,
+                subject_id: None,
+            })
+            .expect("a questão deve ser criada");
+        let first = store
+            .answer_question(&AnswerQuestionInput {
+                question_id: question.id.clone(),
+                selected_key: Some("B".to_string()),
+                confidence: "certain".to_string(),
+                elapsed_seconds: 10,
+            })
+            .expect("a primeira tentativa deve ser salva");
+        let last = store
+            .answer_question(&AnswerQuestionInput {
+                question_id: question.id.clone(),
+                selected_key: Some("A".to_string()),
+                confidence: "certain".to_string(),
+                elapsed_seconds: 10,
+            })
+            .expect("a repetição deve ser salva");
+
+        let revised = store
+            .revise_question(&ReviseQuestionInput {
+                question_id: question.id.clone(),
+                status: "answer_changed".to_string(),
+                answer_key: Some("B".to_string()),
+                reason: "Errata publicada pela banca.".to_string(),
+            })
+            .expect("a correção deve ser registrada");
+
+        assert_eq!(first.attempt.answer_key_at_attempt.as_deref(), Some("A"));
+        assert_eq!(first.attempt.result, "incorrect");
+        assert_eq!(last.attempt.answer_key_at_attempt.as_deref(), Some("A"));
+        assert_eq!(last.attempt.result, "correct");
+        assert_eq!(revised.question.answer_key.as_deref(), Some("B"));
+        assert_eq!(revised.question.status, "answer_changed");
+        assert_eq!(
+            revised.question.first_attempt_result.as_deref(),
+            Some("incorrect")
+        );
+        assert_eq!(
+            revised.question.last_attempt_result.as_deref(),
+            Some("correct")
+        );
+        assert_eq!(
+            revised.question.first_attempt_current_result.as_deref(),
+            Some("correct")
+        );
+        assert_eq!(
+            revised.question.last_attempt_current_result.as_deref(),
+            Some("incorrect")
+        );
+        assert_eq!(revised.question.revision_count, 1);
+        assert_eq!(
+            revised.revision.as_ref().map(|item| item.reason.as_str()),
+            Some("Errata publicada pela banca.")
+        );
+
+        let invalid_status = store.revise_question(&ReviseQuestionInput {
+            question_id: question.id,
+            status: "active".to_string(),
+            answer_key: Some("A".to_string()),
+            reason: "Tentativa de alteração sem situação explícita.".to_string(),
+        });
+        assert!(invalid_status.is_err());
+
+        let annulled = store
+            .revise_question(&ReviseQuestionInput {
+                question_id: revised.question.id.clone(),
+                status: "annulled".to_string(),
+                answer_key: Some("B".to_string()),
+                reason: "A questão foi anulada no resultado definitivo.".to_string(),
+            })
+            .expect("a situação anulada deve ser registrada");
+        assert_eq!(annulled.question.status, "annulled");
+        assert!(store
+            .answer_question(&AnswerQuestionInput {
+                question_id: annulled.question.id,
+                selected_key: Some("A".to_string()),
+                confidence: "certain".to_string(),
+                elapsed_seconds: 10,
+            })
+            .is_err());
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

@@ -31,6 +31,7 @@ import {
   parseNotebooks,
   parseNotebook,
   parseQuestions,
+  parseReviseQuestionResult,
   parseRevisionSummary,
   parseStudyPlanning,
   parseSyncDestinationSettings,
@@ -85,6 +86,8 @@ import {
   type PauseStudySessionRequest,
   type QuestionSummary,
   type QuestionResult,
+  type ReviseQuestionRequest,
+  type ReviseQuestionResult,
   type QuestionExportResult,
   type QuestionImportPreview,
   type QuestionImportResult,
@@ -354,7 +357,7 @@ export async function getAppDiagnostic(): Promise<DiagnosticSnapshot> {
       platform: "web-preview",
       architecture: "browser",
       workspaceFormatVersion: 1,
-      schemaVersion: 29,
+      schemaVersion: 30,
       counts: {
         preparations: mockStudyPlan.preparations.length,
         subjects: mockStudyPlan.subjects.length,
@@ -1439,6 +1442,9 @@ export async function createQuestion(request: CreateQuestionRequest): Promise<Qu
       attemptsCount: 0,
       firstAttemptResult: null,
       lastAttemptResult: null,
+      firstAttemptCurrentResult: null,
+      lastAttemptCurrentResult: null,
+      revisionCount: 0,
     };
   }
   const response = await invoke<unknown>("create_question", { request });
@@ -1470,6 +1476,11 @@ export async function answerQuestion(request: AnswerQuestionRequest): Promise<An
         request.selectedKey === null ? "blank" : request.selectedKey === "A" ? "correct" : "incorrect",
       lastAttemptResult:
         request.selectedKey === null ? "blank" : request.selectedKey === "A" ? "correct" : "incorrect",
+      firstAttemptCurrentResult:
+        request.selectedKey === null ? "blank" : request.selectedKey === "A" ? "correct" : "incorrect",
+      lastAttemptCurrentResult:
+        request.selectedKey === null ? "blank" : request.selectedKey === "A" ? "correct" : "incorrect",
+      revisionCount: 0,
     };
 
     const result =
@@ -1502,6 +1513,55 @@ export async function answerQuestion(request: AnswerQuestionRequest): Promise<An
   }
   const response = await invoke<unknown>("answer_question", { request });
   return parseAnswerQuestionResult(response);
+}
+
+export async function reviseQuestion(
+  request: ReviseQuestionRequest,
+): Promise<ReviseQuestionResult> {
+  if (!isTauri()) {
+    if (!request.reason.trim()) {
+      throw new Error("Informe o motivo da revisão.");
+    }
+    return {
+      question: {
+        id: request.questionId,
+        questionType: "multiple_choice",
+        statementMarkdown: "Questão revisada no modo de pré-visualização.",
+        options: [
+          { key: "A", text: "Alternativa de pré-visualização A" },
+          { key: "B", text: "Alternativa de pré-visualização B" },
+        ],
+        answerKey: request.answerKey,
+        explanationMarkdown: null,
+        sourceName: null,
+        board: null,
+        organization: null,
+        role: null,
+        examYear: null,
+        subjectId: null,
+        subjectName: null,
+        status: request.status,
+        attemptsCount: 0,
+        firstAttemptResult: null,
+        lastAttemptResult: null,
+        firstAttemptCurrentResult: null,
+        lastAttemptCurrentResult: null,
+        revisionCount: 1,
+      },
+      revision: {
+        id: `revision-${Date.now()}`,
+        questionId: request.questionId,
+        previousAnswerKey: "A",
+        currentAnswerKey: request.answerKey,
+        previousStatus: "active",
+        currentStatus: request.status,
+        reason: request.reason.trim(),
+        changedAt: new Date().toISOString(),
+      },
+    };
+  }
+  const response = await invoke<unknown>("revise_question", { request });
+  return parseReviseQuestionResult(response);
 }
 
 export async function createExternalQuestionBatch(

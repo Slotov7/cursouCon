@@ -509,6 +509,20 @@ export type QuestionSummary = {
   attemptsCount: number;
   firstAttemptResult: QuestionResult | null;
   lastAttemptResult: QuestionResult | null;
+  firstAttemptCurrentResult: QuestionResult | null;
+  lastAttemptCurrentResult: QuestionResult | null;
+  revisionCount: number;
+};
+
+export type QuestionRevisionSummary = {
+  id: string;
+  questionId: string;
+  previousAnswerKey: string | null;
+  currentAnswerKey: string | null;
+  previousStatus: QuestionSummary["status"];
+  currentStatus: QuestionSummary["status"];
+  reason: string;
+  changedAt: string;
 };
 
 export type QuestionAttemptSummary = {
@@ -526,6 +540,18 @@ export type AnswerQuestionResult = {
   attempt: QuestionAttemptSummary;
   question: QuestionSummary;
   xpGranted: number;
+};
+
+export type ReviseQuestionRequest = {
+  questionId: string;
+  status: QuestionSummary["status"];
+  answerKey: string | null;
+  reason: string;
+};
+
+export type ReviseQuestionResult = {
+  question: QuestionSummary;
+  revision: QuestionRevisionSummary | null;
 };
 
 export type CreateExternalQuestionBatchRequest = {
@@ -1395,15 +1421,27 @@ function parseQuestionOption(value: unknown): QuestionOptionSummary {
   return { key: value.key, text: value.text };
 }
 
+function parseOptionalQuestionResult(value: unknown, fieldName: string): QuestionResult | null {
+  if (value === null) return null;
+  try {
+    return parseQuestionResult(value);
+  } catch {
+    throw new Error(`O núcleo local devolveu ${fieldName} inválido.`);
+  }
+}
+
 export function parseQuestion(value: unknown): QuestionSummary {
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
     typeof value.statementMarkdown !== "string" ||
-    typeof value.attemptsCount !== "number" ||
-    !Number.isInteger(value.attemptsCount) ||
-    value.attemptsCount < 0 ||
-    !Array.isArray(value.options)
+     typeof value.attemptsCount !== "number" ||
+     !Number.isInteger(value.attemptsCount) ||
+     value.attemptsCount < 0 ||
+     typeof value.revisionCount !== "number" ||
+     !Number.isInteger(value.revisionCount) ||
+     value.revisionCount < 0 ||
+     !Array.isArray(value.options)
   ) {
     throw new Error("O núcleo local devolveu uma questão inválida.");
   }
@@ -1424,8 +1462,17 @@ export function parseQuestion(value: unknown): QuestionSummary {
     subjectName: parseOptionalString(value.subjectName, "o nome do assunto da questão"),
     status: parseQuestionStatus(value.status),
     attemptsCount: value.attemptsCount,
-    firstAttemptResult: value.firstAttemptResult === null ? null : parseQuestionResult(value.firstAttemptResult),
-    lastAttemptResult: value.lastAttemptResult === null ? null : parseQuestionResult(value.lastAttemptResult),
+    firstAttemptResult: parseOptionalQuestionResult(value.firstAttemptResult, "o primeiro resultado"),
+    lastAttemptResult: parseOptionalQuestionResult(value.lastAttemptResult, "o último resultado"),
+    firstAttemptCurrentResult: parseOptionalQuestionResult(
+      value.firstAttemptCurrentResult,
+      "o primeiro resultado reavaliado",
+    ),
+    lastAttemptCurrentResult: parseOptionalQuestionResult(
+      value.lastAttemptCurrentResult,
+      "o último resultado reavaliado",
+    ),
+    revisionCount: value.revisionCount,
   };
 }
 
@@ -1469,6 +1516,38 @@ export function parseAnswerQuestionResult(value: unknown): AnswerQuestionResult 
     attempt: parseQuestionAttempt(value.attempt),
     question: parseQuestion(value.question),
     xpGranted: value.xpGranted,
+  };
+}
+
+export function parseQuestionRevision(value: unknown): QuestionRevisionSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.questionId !== "string" ||
+    typeof value.reason !== "string" ||
+    typeof value.changedAt !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu uma revisão de questão inválida.");
+  }
+  return {
+    id: value.id,
+    questionId: value.questionId,
+    previousAnswerKey: parseOptionalString(value.previousAnswerKey, "o gabarito anterior"),
+    currentAnswerKey: parseOptionalString(value.currentAnswerKey, "o gabarito atual"),
+    previousStatus: parseQuestionStatus(value.previousStatus),
+    currentStatus: parseQuestionStatus(value.currentStatus),
+    reason: value.reason,
+    changedAt: value.changedAt,
+  };
+}
+
+export function parseReviseQuestionResult(value: unknown): ReviseQuestionResult {
+  if (!isRecord(value) || !("question" in value)) {
+    throw new Error("O núcleo local devolveu um resultado de revisão inválido.");
+  }
+  return {
+    question: parseQuestion(value.question),
+    revision: value.revision === null ? null : parseQuestionRevision(value.revision),
   };
 }
 
