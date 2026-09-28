@@ -647,6 +647,7 @@ mod tests {
                 name: "Preparação de materiais".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: true,
             })

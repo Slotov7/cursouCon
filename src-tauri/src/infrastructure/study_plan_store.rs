@@ -4,10 +4,10 @@ use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study_plan::{
     calculate_subject_coverage, default_study_availability, generate_cycle_slots,
     study_cycle_warning, validate_cycle_slots_capacity, CreatePreparationInput, CreateSubjectInput,
-    PreparationSummary, SavePreparationExamConfigInput, SaveStudyPlanningInput,
-    SetSubjectStudyStatusInput, StudyCycleSlotInput, StudyCycleSlotSummary, StudyCycleSubject,
-    StudyPlan, StudyPlanningSummary, SubjectPrioritySummary, SubjectStudyStatus, SubjectSummary,
-    DEFAULT_REVIEW_RESERVE_PERCENT,
+    PreparationSummary, ReferenceDocumentStatus, SavePreparationExamConfigInput,
+    SaveStudyPlanningInput, SetPrimaryPreparationInput, SetSubjectStudyStatusInput,
+    StudyCycleSlotInput, StudyCycleSlotSummary, StudyCycleSubject, StudyPlan, StudyPlanningSummary,
+    SubjectPrioritySummary, SubjectStudyStatus, SubjectSummary, DEFAULT_REVIEW_RESERVE_PERCENT,
 };
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
@@ -56,13 +56,14 @@ impl StudyPlanStore for LocalWorkspaceStore {
         transaction
             .execute(
                 "INSERT INTO preparations
-                    (id, name, organization, role, exam_date, is_primary)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (id, name, organization, role, board, exam_date, is_primary)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     id.as_str(),
                     &input.name,
                     input.organization.as_deref(),
                     input.role.as_deref(),
+                    input.board.as_deref(),
                     input.exam_date.as_deref(),
                     if is_primary { 1_i64 } else { 0_i64 },
                 ],
@@ -74,15 +75,45 @@ impl StudyPlanStore for LocalWorkspaceStore {
             name: input.name.clone(),
             organization: input.organization.clone(),
             role: input.role.clone(),
+            board: input.board.clone(),
             exam_date: input.exam_date.clone(),
             is_primary,
             reference_material_id: None,
+            reference_document_status: ReferenceDocumentStatus::Reference,
             exam_rules_markdown: None,
         };
         transaction
             .commit()
             .map_err(|error| map_database_error("confirmar preparação", error))?;
 
+        Ok(summary)
+    }
+
+    fn set_primary_preparation(
+        &self,
+        input: &SetPrimaryPreparationInput,
+    ) -> Result<PreparationSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar troca de preparação principal", error))?;
+        ensure_preparation_exists(&transaction, &input.preparation_id)?;
+        transaction
+            .execute(
+                "UPDATE preparations SET is_primary = 0 WHERE archived_at IS NULL",
+                [],
+            )
+            .map_err(|error| map_database_error("desmarcar preparação principal", error))?;
+        transaction
+            .execute(
+                "UPDATE preparations SET is_primary = 1 WHERE id = ?1 AND archived_at IS NULL",
+                params![input.preparation_id],
+            )
+            .map_err(|error| map_database_error("marcar preparação principal", error))?;
+        let summary = load_preparation(&transaction, &input.preparation_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar troca da preparação", error))?;
         Ok(summary)
     }
 
@@ -187,11 +218,13 @@ impl StudyPlanStore for LocalWorkspaceStore {
         transaction
             .execute(
                 "UPDATE preparations
-                 SET reference_material_id = ?1, exam_rules_markdown = ?2
-                 WHERE id = ?3 AND archived_at IS NULL",
+                 SET reference_material_id = ?1, exam_rules_markdown = ?2,
+                     reference_document_status = ?3
+                 WHERE id = ?4 AND archived_at IS NULL",
                 params![
                     input.reference_material_id,
                     input.exam_rules_markdown,
+                    input.reference_document_status.as_str(),
                     input.preparation_id
                 ],
             )
@@ -374,26 +407,14 @@ fn load_preparations(
     let mut statement = connection
         .prepare(
             "SELECT id, name, organization, role, exam_date, is_primary,
-                    reference_material_id, exam_rules_markdown
+                    reference_material_id, exam_rules_markdown, reference_document_status, board
              FROM preparations
              WHERE archived_at IS NULL
              ORDER BY is_primary DESC, name COLLATE NOCASE",
         )
         .map_err(|error| map_database_error("preparar leitura das preparações", error))?;
     let rows = statement
-        .query_map([], |row| {
-            let is_primary: i64 = row.get(5)?;
-            Ok(PreparationSummary {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                organization: row.get(2)?,
-                role: row.get(3)?,
-                exam_date: row.get(4)?,
-                is_primary: is_primary == 1,
-                reference_material_id: row.get(6)?,
-                exam_rules_markdown: row.get(7)?,
-            })
-        })
+        .query_map([], read_preparation_row)
         .map_err(|error| map_database_error("consultar as preparações", error))?;
 
     rows.map(|row| row.map_err(|error| map_database_error("ler uma preparação", error)))
@@ -407,29 +428,45 @@ fn load_preparation(
     connection
         .query_row(
             "SELECT id, name, organization, role, exam_date, is_primary,
-                    reference_material_id, exam_rules_markdown
+                    reference_material_id, exam_rules_markdown, reference_document_status, board
              FROM preparations
              WHERE id = ?1 AND archived_at IS NULL",
             params![preparation_id],
-            |row| {
-                let is_primary: i64 = row.get(5)?;
-                Ok(PreparationSummary {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    organization: row.get(2)?,
-                    role: row.get(3)?,
-                    exam_date: row.get(4)?,
-                    is_primary: is_primary == 1,
-                    reference_material_id: row.get(6)?,
-                    exam_rules_markdown: row.get(7)?,
-                })
-            },
+            read_preparation_row,
         )
         .optional()
         .map_err(|error| map_database_error("consultar preparação", error))?
         .ok_or_else(|| {
             WorkspaceError::InvalidInput("A preparação escolhida não existe mais.".to_string())
         })
+}
+
+fn read_preparation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PreparationSummary> {
+    let status: String = row.get(8)?;
+    let reference_document_status =
+        ReferenceDocumentStatus::from_storage(&status).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "a preparação possui uma classificação de edital inválida",
+                )),
+            )
+        })?;
+    let is_primary: i64 = row.get(5)?;
+    Ok(PreparationSummary {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        organization: row.get(2)?,
+        role: row.get(3)?,
+        board: row.get(9)?,
+        exam_date: row.get(4)?,
+        is_primary: is_primary == 1,
+        reference_material_id: row.get(6)?,
+        exam_rules_markdown: row.get(7)?,
+        reference_document_status,
+    })
 }
 
 fn load_subjects(connection: &rusqlite::Connection) -> Result<Vec<SubjectSummary>, WorkspaceError> {
@@ -846,6 +883,7 @@ mod tests {
                 name: "Analista de TI".to_string(),
                 organization: Some("Órgão".to_string()),
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: false,
             })
@@ -878,6 +916,74 @@ mod tests {
     }
 
     #[test]
+    fn persists_exam_board_and_switches_primary_preparation_atomically() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-primary-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-primary-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Preparações de teste")
+            .expect("o espaço deve ser criado");
+        let first = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Primeira".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a primeira preparação deve ser criada");
+        let second = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Segunda".to_string(),
+                organization: None,
+                role: None,
+                board: Some("Cebraspe".to_string()),
+                exam_date: None,
+                make_primary: false,
+            })
+            .expect("a segunda preparação deve ser criada");
+        assert_eq!(second.board.as_deref(), Some("Cebraspe"));
+        assert!(store
+            .set_primary_preparation(&SetPrimaryPreparationInput {
+                preparation_id: Uuid::new_v4().to_string(),
+            })
+            .is_err());
+        assert!(store
+            .study_plan()
+            .expect("o plano deve permanecer válido")
+            .preparations
+            .iter()
+            .any(|preparation| preparation.id == first.id && preparation.is_primary));
+
+        let switched = store
+            .set_primary_preparation(&SetPrimaryPreparationInput {
+                preparation_id: second.id.clone(),
+            })
+            .expect("a preparação principal deve ser trocada");
+        assert!(switched.is_primary);
+        store
+            .open_workspace(&workspace_path)
+            .expect("o espaço deve reabrir sem perder a escolha");
+        let plan = store.study_plan().expect("o plano deve ser relido");
+        assert_eq!(
+            plan.preparations
+                .iter()
+                .filter(|item| item.is_primary)
+                .count(),
+            1
+        );
+        assert!(plan.preparations.iter().any(|item| item.id == second.id
+            && item.is_primary
+            && item.board.as_deref() == Some("Cebraspe")));
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
     fn persists_editable_exam_reference_rules_and_weights_per_preparation() {
         let workspace_path =
             std::env::temp_dir().join(format!("cursoucon-exam-config-{}", Uuid::new_v4()));
@@ -892,6 +998,7 @@ mod tests {
                 name: "Preparação".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: true,
             })
@@ -932,6 +1039,7 @@ mod tests {
             .save_preparation_exam_config(&SavePreparationExamConfigInput {
                 preparation_id: preparation.id.clone(),
                 reference_material_id: Some(material_id.clone()),
+                reference_document_status: ReferenceDocumentStatus::Current,
                 exam_rules_markdown: Some("- Cada questão vale 1 ponto.".to_string()),
                 subject_exam_weights: vec![
                     SubjectExamWeightInput {
@@ -952,6 +1060,10 @@ mod tests {
             Some(material_id.as_str())
         );
         assert_eq!(
+            saved.reference_document_status,
+            ReferenceDocumentStatus::Current
+        );
+        assert_eq!(
             saved.exam_rules_markdown.as_deref(),
             Some("- Cada questão vale 1 ponto.")
         );
@@ -970,10 +1082,25 @@ mod tests {
             None
         );
 
+        let previous = store
+            .save_preparation_exam_config(&SavePreparationExamConfigInput {
+                preparation_id: preparation.id.clone(),
+                reference_material_id: Some(material_id.clone()),
+                reference_document_status: ReferenceDocumentStatus::Reference,
+                exam_rules_markdown: saved.exam_rules_markdown.clone(),
+                subject_exam_weights: Vec::new(),
+            })
+            .expect("o edital anterior deve continuar vinculado como referência");
+        assert_eq!(
+            previous.reference_document_status,
+            ReferenceDocumentStatus::Reference
+        );
+
         let cleared = store
             .save_preparation_exam_config(&SavePreparationExamConfigInput {
                 preparation_id: preparation.id,
                 reference_material_id: None,
+                reference_document_status: ReferenceDocumentStatus::Reference,
                 exam_rules_markdown: None,
                 subject_exam_weights: vec![SubjectExamWeightInput {
                     subject_id: first_subject.id,
@@ -1003,6 +1130,7 @@ mod tests {
                 name: "Preparação".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: true,
             })
@@ -1061,6 +1189,7 @@ mod tests {
                 name: "Preparação".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: true,
             })
@@ -1195,6 +1324,7 @@ mod tests {
                 name: "Primeira preparação".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: true,
             })
@@ -1204,6 +1334,7 @@ mod tests {
                 name: "Segunda preparação".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: false,
             })

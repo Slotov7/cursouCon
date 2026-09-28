@@ -101,9 +101,11 @@ export type PreparationSummary = {
   name: string;
   organization: string | null;
   role: string | null;
+  board: string | null;
   examDate: string | null;
   isPrimary: boolean;
   referenceMaterialId: string | null;
+  referenceDocumentStatus: "reference" | "current";
   examRulesMarkdown: string | null;
 };
 
@@ -185,8 +187,13 @@ export type CreatePreparationRequest = {
   name: string;
   organization: string | null;
   role: string | null;
+  board: string | null;
   examDate: string | null;
   makePrimary: boolean;
+};
+
+export type SetPrimaryPreparationRequest = {
+  preparationId: string;
 };
 
 export type CreateSubjectRequest = {
@@ -198,6 +205,7 @@ export type CreateSubjectRequest = {
 export type SavePreparationExamConfigRequest = {
   preparationId: string;
   referenceMaterialId: string | null;
+  referenceDocumentStatus: PreparationSummary["referenceDocumentStatus"];
   examRulesMarkdown: string | null;
   subjectExamWeights: Array<{
     subjectId: string;
@@ -912,6 +920,8 @@ export function parsePreparationSummary(value: unknown): PreparationSummary {
     typeof value.name !== "string" ||
     typeof value.isPrimary !== "boolean" ||
     (value.referenceMaterialId !== null && typeof value.referenceMaterialId !== "string") ||
+    (value.referenceDocumentStatus !== "reference" && value.referenceDocumentStatus !== "current") ||
+    (value.referenceDocumentStatus === "current" && value.referenceMaterialId === null) ||
     (value.examRulesMarkdown !== null && typeof value.examRulesMarkdown !== "string")
   ) {
     throw new Error("O núcleo local devolveu uma preparação inválida.");
@@ -922,9 +932,11 @@ export function parsePreparationSummary(value: unknown): PreparationSummary {
     name: value.name,
     organization: parseOptionalString(value.organization, "o órgão"),
     role: parseOptionalString(value.role, "o cargo"),
+    board: parseOptionalString(value.board, "a banca"),
     examDate: parseOptionalString(value.examDate, "a data da prova"),
     isPrimary: value.isPrimary,
     referenceMaterialId: parseOptionalString(value.referenceMaterialId, "o edital de referência"),
+    referenceDocumentStatus: value.referenceDocumentStatus,
     examRulesMarkdown: parseOptionalString(value.examRulesMarkdown, "as regras da prova"),
   };
 }

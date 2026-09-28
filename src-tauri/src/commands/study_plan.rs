@@ -2,10 +2,11 @@ use crate::application::study_plan_service::StudyPlanService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study_plan::{
-    CreatePreparationInput, CreateSubjectInput, PreparationSummary, SavePreparationExamConfigInput,
-    SaveStudyPlanningInput, SetSubjectStudyStatusInput, StudyCycleSlotInput, StudyDayAvailability,
-    StudyPlan, StudyPlanningSummary, SubjectExamWeightInput, SubjectPriorityInput,
-    SubjectStudyStatus, SubjectSummary, DEFAULT_REVIEW_RESERVE_PERCENT,
+    CreatePreparationInput, CreateSubjectInput, PreparationSummary, ReferenceDocumentStatus,
+    SavePreparationExamConfigInput, SaveStudyPlanningInput, SetPrimaryPreparationInput,
+    SetSubjectStudyStatusInput, StudyCycleSlotInput, StudyDayAvailability, StudyPlan,
+    StudyPlanningSummary, SubjectExamWeightInput, SubjectPriorityInput, SubjectStudyStatus,
+    SubjectSummary, DEFAULT_REVIEW_RESERVE_PERCENT,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -16,6 +17,7 @@ pub struct CreatePreparationRequest {
     pub name: String,
     pub organization: Option<String>,
     pub role: Option<String>,
+    pub board: Option<String>,
     pub exam_date: Option<String>,
     #[serde(default)]
     pub make_primary: bool,
@@ -31,6 +33,12 @@ pub struct CreateSubjectRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetPrimaryPreparationRequest {
+    pub preparation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SubjectExamWeightRequest {
     pub subject_id: String,
     pub exam_weight: Option<f64>,
@@ -41,6 +49,7 @@ pub struct SubjectExamWeightRequest {
 pub struct SavePreparationExamConfigRequest {
     pub preparation_id: String,
     pub reference_material_id: Option<String>,
+    pub reference_document_status: ReferenceDocumentStatus,
     pub exam_rules_markdown: Option<String>,
     pub subject_exam_weights: Vec<SubjectExamWeightRequest>,
 }
@@ -114,12 +123,26 @@ pub fn create_preparation(
         name: request.name,
         organization: request.organization,
         role: request.role,
+        board: request.board,
         exam_date: request.exam_date,
         make_primary: request.make_primary,
     };
 
     StudyPlanService::new(store)
         .create_preparation(input)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn set_primary_preparation(
+    app: AppHandle,
+    request: SetPrimaryPreparationRequest,
+) -> Result<PreparationSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyPlanService::new(store)
+        .set_primary_preparation(SetPrimaryPreparationInput {
+            preparation_id: request.preparation_id,
+        })
         .map_err(CommandError::from)
 }
 
@@ -150,6 +173,7 @@ pub fn save_preparation_exam_config(
         .save_preparation_exam_config(SavePreparationExamConfigInput {
             preparation_id: request.preparation_id,
             reference_material_id: request.reference_material_id,
+            reference_document_status: request.reference_document_status,
             exam_rules_markdown: request.exam_rules_markdown,
             subject_exam_weights: request
                 .subject_exam_weights

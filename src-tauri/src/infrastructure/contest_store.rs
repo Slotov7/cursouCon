@@ -480,6 +480,7 @@ mod tests {
                 name: "Preparação existente".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: true,
             })
@@ -511,9 +512,11 @@ mod tests {
                    ALTER TABLE materials DROP COLUMN source_url;
                    DROP TABLE material_tags;
                    DROP INDEX IF EXISTS idx_preparations_reference_material;
+                   ALTER TABLE preparations DROP COLUMN reference_document_status;
+                   ALTER TABLE preparations DROP COLUMN board;
                    ALTER TABLE preparations DROP COLUMN reference_material_id;
                    ALTER TABLE preparations DROP COLUMN exam_rules_markdown;
-                    ALTER TABLE subjects DROP COLUMN exam_weight;
+                   ALTER TABLE subjects DROP COLUMN exam_weight;
                     DROP INDEX IF EXISTS idx_manual_contests_notice_material;
                     ALTER TABLE manual_contests DROP COLUMN notice_material_id;
                     DELETE FROM schema_migrations WHERE version >= 20;",

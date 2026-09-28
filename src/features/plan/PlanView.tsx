@@ -7,10 +7,12 @@ import {
   getMaterials,
   getDesktopErrorMessage,
   savePreparationExamConfig,
+  setPrimaryPreparation,
   setSubjectStudyStatus,
 } from "../../shared/desktop/commands";
 import type {
   MaterialSummary,
+  PreparationSummary,
   StudyPlan,
   StudyPlanningSummary,
   SubjectStudyStatus,
@@ -55,6 +57,7 @@ export function PlanView({
   const [preparationName, setPreparationName] = useState("");
   const [organization, setOrganization] = useState("");
   const [role, setRole] = useState("");
+  const [board, setBoard] = useState("");
   const [examDate, setExamDate] = useState("");
   const [makePrimary, setMakePrimary] = useState(true);
 
@@ -77,11 +80,15 @@ export function PlanView({
   const [materials, setMaterials] = useState<MaterialSummary[]>([]);
   const [materialsError, setMaterialsError] = useState<string | null>(null);
   const [referenceMaterialId, setReferenceMaterialId] = useState("");
+  const [referenceDocumentStatus, setReferenceDocumentStatus] = useState<PreparationSummary["referenceDocumentStatus"]>("reference");
   const [examRulesMarkdown, setExamRulesMarkdown] = useState("");
   const [examWeights, setExamWeights] = useState<Record<string, string>>({});
   const [examConfigError, setExamConfigError] = useState<string | null>(null);
   const [examConfigMessage, setExamConfigMessage] = useState<string | null>(null);
   const [isSavingExamConfig, setIsSavingExamConfig] = useState(false);
+  const [primaryError, setPrimaryError] = useState<string | null>(null);
+  const [primaryMessage, setPrimaryMessage] = useState<string | null>(null);
+  const [isSettingPrimary, setIsSettingPrimary] = useState(false);
 
   const currentPlan: StudyPlan = plan ?? { preparations: [], subjects: [], subjectCoverage: [] };
   const selectedPreparation =
@@ -147,6 +154,7 @@ export function PlanView({
 
   useEffect(() => {
     setReferenceMaterialId(selectedPreparation?.referenceMaterialId ?? "");
+    setReferenceDocumentStatus(selectedPreparation?.referenceDocumentStatus ?? "reference");
     setExamRulesMarkdown(selectedPreparation?.examRulesMarkdown ?? "");
     setExamWeights(
       Object.fromEntries(
@@ -173,6 +181,22 @@ export function PlanView({
     }
   };
 
+  const handleSetPrimary = async () => {
+    if (!selectedPreparation || selectedPreparation.isPrimary) return;
+    setPrimaryError(null);
+    setPrimaryMessage(null);
+    setIsSettingPrimary(true);
+    try {
+      await setPrimaryPreparation({ preparationId: selectedPreparation.id });
+      setPrimaryMessage(`${selectedPreparation.name} agora é a preparação principal.`);
+      onPlanChanged();
+    } catch (operationError: unknown) {
+      setPrimaryError(getDesktopErrorMessage(operationError));
+    } finally {
+      setIsSettingPrimary(false);
+    }
+  };
+
   const handlePreparationSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!preparationName.trim()) {
@@ -186,12 +210,14 @@ export function PlanView({
         name: preparationName,
         organization: organization || null,
         role: role || null,
+        board: board || null,
         examDate: examDate || null,
         makePrimary,
       });
       setPreparationName("");
       setOrganization("");
       setRole("");
+      setBoard("");
       setExamDate("");
       setActiveModal("none");
       onPlanChanged();
@@ -291,10 +317,11 @@ export function PlanView({
       await savePreparationExamConfig({
         preparationId: selectedPreparation.id,
         referenceMaterialId: referenceMaterialId || null,
+        referenceDocumentStatus,
         examRulesMarkdown: examRulesMarkdown.trim() || null,
         subjectExamWeights,
       });
-      setExamConfigMessage("Documento, regras e pesos salvos localmente.");
+      setExamConfigMessage("Documento, classificação, regras e pesos salvos localmente.");
       onPlanChanged();
     } catch (configError: unknown) {
       setExamConfigError(getDesktopErrorMessage(configError));
@@ -330,6 +357,8 @@ export function PlanView({
           {subjectStatusError}
         </p>
       )}
+      {primaryError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">{primaryError}</p>}
+      {primaryMessage && <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-300" role="status">{primaryMessage}</p>}
 
       {/* 1. Hero Header Banner */}
       <section className="glass-hero relative overflow-hidden rounded-3xl p-6 text-white shadow-xl lg:p-8 border border-white/12">
@@ -355,6 +384,11 @@ export function PlanView({
                 Foco: {primaryPreparation.name} {primaryPreparation.role ? `(${primaryPreparation.role})` : ""}
               </span>
             ) : null}
+            {selectedPreparation?.board && (
+              <span className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-slate-100">
+                Banca: {selectedPreparation.board}
+              </span>
+            )}
           </div>
 
           <div>
@@ -398,6 +432,11 @@ export function PlanView({
             >
               + Novo Concurso
             </button>
+            {selectedPreparation && !selectedPreparation.isPrimary && (
+              <button type="button" className={buttonOutlineLightClass} onClick={() => void handleSetPrimary()} disabled={isSettingPrimary}>
+                {isSettingPrimary ? "Alternando..." : "Tornar preparação principal"}
+              </button>
+            )}
           </div>
         </div>
       </section>
@@ -468,6 +507,13 @@ export function PlanView({
               <h3 id="exam-config-title" className="mt-1 font-heading text-xl font-bold text-ink">
                 Edital, regras e pesos
               </h3>
+              <p className="mt-1 text-xs font-semibold text-blue-700 dark:text-blue-300">
+                {selectedPreparation.referenceMaterialId
+                  ? selectedPreparation.referenceDocumentStatus === "current"
+                    ? "Edital vigente confirmado por você"
+                    : "Pré-edital · documento anterior usado como referência"
+                  : "Nenhum edital associado"}
+              </p>
               <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted">
                 O peso oficial é separado da prioridade de estudo usada no ciclo. As alterações ficam no espaço local desta preparação.
               </p>
@@ -500,7 +546,10 @@ export function PlanView({
                 <select
                   className={selectClass}
                   value={referenceMaterialId}
-                  onChange={(event) => setReferenceMaterialId(event.target.value)}
+                  onChange={(event) => {
+                    setReferenceMaterialId(event.target.value);
+                    setReferenceDocumentStatus("reference");
+                  }}
                   disabled={isSavingExamConfig}
                 >
                   <option value="">Nenhum edital selecionado</option>
@@ -518,6 +567,22 @@ export function PlanView({
                 </select>
                 <span className="text-[11px] font-normal text-muted">
                   Importe o PDF ou registre o link na área Materiais antes de selecionar aqui.
+                </span>
+              </label>
+
+              <label className={fieldClass}>
+                Situação do documento
+                <select
+                  className={selectClass}
+                  value={referenceDocumentStatus}
+                  onChange={(event) => setReferenceDocumentStatus(event.target.value as PreparationSummary["referenceDocumentStatus"])}
+                  disabled={isSavingExamConfig || !referenceMaterialId}
+                >
+                  <option value="reference">Documento anterior · referência pré-edital</option>
+                  <option value="current">Edital vigente · confirmado por mim</option>
+                </select>
+                <span className="text-[11px] font-normal text-muted">
+                  Escolher um arquivo não confirma sua vigência. Classifique-o após conferir a publicação.
                 </span>
               </label>
 
@@ -638,6 +703,18 @@ export function PlanView({
                   value={role}
                   onChange={(e) => setRole(e.target.value)}
                   disabled={isSubmitting}
+                />
+              </label>
+              <label className={fieldClass}>
+                Banca <span className="text-muted font-normal">(opcional)</span>
+                <input
+                  className={inputClass}
+                  type="text"
+                  value={board}
+                  onChange={(event) => setBoard(event.target.value)}
+                  maxLength={120}
+                  disabled={isSubmitting}
+                  placeholder="Ex.: Cebraspe"
                 />
               </label>
               <label className={fieldClass}>

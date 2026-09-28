@@ -6,19 +6,50 @@ pub const STUDY_CYCLE_BLOCK_MINUTES: i64 = 30;
 pub const DEFAULT_REVIEW_RESERVE_PERCENT: i64 = 20;
 pub const MAX_CYCLE_SLOTS: usize = 500;
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceDocumentStatus {
+    Reference,
+    Current,
+}
+
+impl ReferenceDocumentStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reference => "reference",
+            Self::Current => "current",
+        }
+    }
+
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "reference" => Some(Self::Reference),
+            "current" => Some(Self::Current),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CreatePreparationInput {
     pub name: String,
     pub organization: Option<String>,
     pub role: Option<String>,
+    pub board: Option<String>,
     pub exam_date: Option<String>,
     pub make_primary: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SetPrimaryPreparationInput {
+    pub preparation_id: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct SavePreparationExamConfigInput {
     pub preparation_id: String,
     pub reference_material_id: Option<String>,
+    pub reference_document_status: ReferenceDocumentStatus,
     pub exam_rules_markdown: Option<String>,
     pub subject_exam_weights: Vec<SubjectExamWeightInput>,
 }
@@ -76,9 +107,11 @@ pub struct PreparationSummary {
     pub name: String,
     pub organization: Option<String>,
     pub role: Option<String>,
+    pub board: Option<String>,
     pub exam_date: Option<String>,
     pub is_primary: bool,
     pub reference_material_id: Option<String>,
+    pub reference_document_status: ReferenceDocumentStatus,
     pub exam_rules_markdown: Option<String>,
 }
 
@@ -196,6 +229,11 @@ pub fn normalize_preparation_id(value: &str) -> Result<String, String> {
 pub fn normalize_preparation_exam_config_input(
     input: SavePreparationExamConfigInput,
 ) -> Result<SavePreparationExamConfigInput, String> {
+    if input.reference_document_status == ReferenceDocumentStatus::Current
+        && input.reference_material_id.is_none()
+    {
+        return Err("Selecione um edital antes de marcá-lo como vigente.".to_string());
+    }
     let mut subject_ids = HashSet::new();
     let subject_exam_weights = input
         .subject_exam_weights
@@ -229,6 +267,7 @@ pub fn normalize_preparation_exam_config_input(
             .reference_material_id
             .map(|value| normalize_id(&value, "O material de referência"))
             .transpose()?,
+        reference_document_status: input.reference_document_status,
         exam_rules_markdown,
         subject_exam_weights,
     })
@@ -490,6 +529,7 @@ pub fn normalize_preparation_input(
         name: normalize_required_text(input.name, "O nome da preparação", 120)?,
         organization: normalize_optional_text(input.organization, "O órgão", 120)?,
         role: normalize_optional_text(input.role, "O cargo", 120)?,
+        board: normalize_optional_text(input.board, "A banca", 120)?,
         exam_date: normalize_optional_date(input.exam_date)?,
         make_primary: input.make_primary,
     })
@@ -625,6 +665,7 @@ mod tests {
             name: "  Analista de TI  ".to_string(),
             organization: Some("  Órgão  ".to_string()),
             role: Some("  Analista  ".to_string()),
+            board: Some("  Cebraspe  ".to_string()),
             exam_date: Some("2032-02-29".to_string()),
             make_primary: true,
         };
@@ -632,6 +673,7 @@ mod tests {
         let normalized = normalize_preparation_input(input).expect("a preparação deve ser válida");
 
         assert_eq!(normalized.name, "Analista de TI");
+        assert_eq!(normalized.board.as_deref(), Some("Cebraspe"));
         assert_eq!(normalized.exam_date.as_deref(), Some("2032-02-29"));
     }
 
@@ -641,6 +683,7 @@ mod tests {
             name: "Preparação".to_string(),
             organization: None,
             role: None,
+            board: None,
             exam_date: Some("2031-02-29".to_string()),
             make_primary: false,
         };
@@ -652,6 +695,18 @@ mod tests {
 
         assert!(normalize_preparation_input(preparation).is_err());
         assert!(normalize_subject_input(subject).is_err());
+    }
+
+    #[test]
+    fn requires_a_document_before_marking_the_notice_as_current() {
+        let input = SavePreparationExamConfigInput {
+            preparation_id: Uuid::new_v4().to_string(),
+            reference_material_id: None,
+            reference_document_status: ReferenceDocumentStatus::Current,
+            exam_rules_markdown: None,
+            subject_exam_weights: Vec::new(),
+        };
+        assert!(normalize_preparation_exam_config_input(input).is_err());
     }
 
     #[test]
@@ -774,9 +829,11 @@ mod tests {
             name: "Preparação".to_string(),
             organization: None,
             role: None,
+            board: None,
             exam_date: None,
             is_primary: true,
             reference_material_id: None,
+            reference_document_status: ReferenceDocumentStatus::Reference,
             exam_rules_markdown: None,
         }];
         let subjects = vec![

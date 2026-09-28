@@ -44,6 +44,7 @@ import {
   type AppPreferences,
   type BackupSummary,
   type CreatePreparationRequest,
+  type SetPrimaryPreparationRequest,
   type CreateBackupRequest,
   type CreateQuestionRequest,
   type CreateNotebookRequest,
@@ -153,9 +154,11 @@ let mockStudyPlan: StudyPlan = {
       name: "Senado Federal - Analista de TI",
       organization: "Senado Federal",
       role: "Analista Legislativo - TI",
+      board: null,
       examDate: "2026-11-15",
       isPrimary: true,
       referenceMaterialId: "mat-1",
+      referenceDocumentStatus: "reference",
       examRulesMarkdown: "- Cada questão vale 1 ponto.\n- Consulte o edital antes de ajustar o plano.",
     },
   ],
@@ -334,7 +337,7 @@ export async function getAppDiagnostic(): Promise<DiagnosticSnapshot> {
       platform: "web-preview",
       architecture: "browser",
       workspaceFormatVersion: 1,
-      schemaVersion: 24,
+      schemaVersion: 27,
       counts: {
         preparations: mockStudyPlan.preparations.length,
         subjects: mockStudyPlan.subjects.length,
@@ -706,19 +709,43 @@ export async function advanceStudyCycle(
 
 export async function createPreparation(request: CreatePreparationRequest): Promise<void> {
   if (!isTauri()) {
+    const makePrimary = request.makePrimary || mockStudyPlan.preparations.length === 0;
+    if (makePrimary) {
+      mockStudyPlan.preparations = mockStudyPlan.preparations.map((item) => ({ ...item, isPrimary: false }));
+    }
     mockStudyPlan.preparations.push({
       id: `prep-${Date.now()}`,
       name: request.name,
       organization: request.organization,
       role: request.role,
+      board: request.board,
       examDate: request.examDate,
-      isPrimary: request.makePrimary,
+      isPrimary: makePrimary,
       referenceMaterialId: null,
+      referenceDocumentStatus: "reference",
       examRulesMarkdown: null,
     });
     return;
   }
   await invoke("create_preparation", { request });
+}
+
+export async function setPrimaryPreparation(
+  request: SetPrimaryPreparationRequest,
+): Promise<PreparationSummary> {
+  if (!isTauri()) {
+    const existing = mockStudyPlan.preparations.find((item) => item.id === request.preparationId);
+    if (!existing) throw new Error("A preparação escolhida não existe mais.");
+    mockStudyPlan.preparations = mockStudyPlan.preparations.map((item) => ({
+      ...item,
+      isPrimary: item.id === request.preparationId,
+    }));
+    const updated = mockStudyPlan.preparations.find((item) => item.id === request.preparationId);
+    if (!updated) throw new Error("A preparação escolhida não existe mais.");
+    return updated;
+  }
+  const response = await invoke<unknown>("set_primary_preparation", { request });
+  return parsePreparationSummary(response);
 }
 
 export async function createSubject(request: CreateSubjectRequest): Promise<void> {
@@ -742,6 +769,9 @@ export async function savePreparationExamConfig(
   request: SavePreparationExamConfigRequest,
 ): Promise<PreparationSummary> {
   if (!isTauri()) {
+    if (request.referenceDocumentStatus === "current" && !request.referenceMaterialId) {
+      throw new Error("Selecione um edital antes de marcá-lo como vigente.");
+    }
     const preparation = mockStudyPlan.preparations.find(
       (item) => item.id === request.preparationId,
     );
@@ -751,6 +781,7 @@ export async function savePreparationExamConfig(
         ? {
             ...item,
             referenceMaterialId: request.referenceMaterialId,
+            referenceDocumentStatus: request.referenceDocumentStatus,
             examRulesMarkdown: request.examRulesMarkdown?.trim() || null,
           }
         : item,

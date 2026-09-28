@@ -16,6 +16,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::workspace::open_workspace,
             commands::study_plan::get_study_plan,
             commands::study_plan::create_preparation,
+            commands::study_plan::set_primary_preparation,
             commands::study_plan::create_subject,
             commands::study_plan::save_preparation_exam_config,
             commands::study_plan::set_subject_study_status,

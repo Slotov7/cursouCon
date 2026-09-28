@@ -20,10 +20,11 @@ O primeiro protótipo vertical implementa:
 - validação de formato, estrutura e permissão de escrita;
 - banco SQLite de trabalho fora da pasta portátil, em `appDataDir`;
 - migrações SQLite versionadas para preparações, assuntos, tarefas, sessões, estudo manual, correções de duração, materiais, links, etiquetas, notas, questões, tentativas, hashes de importação, Caderno de Erros, concursos manuais e planejamento;
-- cadastro persistente de preparações e árvore inicial de disciplinas/assuntos;
+- cadastro persistente de preparações com banca opcional, troca transacional da preparação principal e árvore inicial de disciplinas/assuntos;
 - estado de estudo independente de domínio e cálculo da cobertura por preparação;
 - disponibilidade semanal, prioridades por assunto, reserva de revisão e ciclo local editável em blocos de 30 minutos;
 - documento de referência, regras em Markdown e pesos oficiais editáveis por preparação, separados da prioridade de estudo;
+- classificação explícita do documento da preparação como referência pré-edital ou edital vigente confirmado;
 - preferências de tema, contraste, movimento, fuso do plano diário/revisões e visibilidade do painel de gamificação salvas no computador, fora das revisões portáteis;
 - tela de diagnóstico com versão e contagens agregadas, exportável em JSON sem conteúdo de materiais, notas ou caminhos locais;
 - criação de tarefas para uma data e plano diário local;

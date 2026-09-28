@@ -3,8 +3,8 @@ use crate::domain::study_plan::{
     normalize_preparation_exam_config_input, normalize_preparation_id, normalize_preparation_input,
     normalize_study_planning_input, normalize_subject_input, normalize_subject_study_status_input,
     CreatePreparationInput, CreateSubjectInput, PreparationSummary, SavePreparationExamConfigInput,
-    SaveStudyPlanningInput, SetSubjectStudyStatusInput, StudyPlan, StudyPlanningSummary,
-    SubjectSummary,
+    SaveStudyPlanningInput, SetPrimaryPreparationInput, SetSubjectStudyStatusInput, StudyPlan,
+    StudyPlanningSummary, SubjectSummary,
 };
 
 pub trait StudyPlanStore {
@@ -12,6 +12,10 @@ pub trait StudyPlanStore {
     fn create_preparation(
         &self,
         input: &CreatePreparationInput,
+    ) -> Result<PreparationSummary, WorkspaceError>;
+    fn set_primary_preparation(
+        &self,
+        input: &SetPrimaryPreparationInput,
     ) -> Result<PreparationSummary, WorkspaceError>;
     fn create_subject(&self, input: &CreateSubjectInput) -> Result<SubjectSummary, WorkspaceError>;
     fn save_preparation_exam_config(
@@ -53,6 +57,16 @@ impl<S: StudyPlanStore> StudyPlanService<S> {
         let normalized =
             normalize_preparation_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.create_preparation(&normalized)
+    }
+
+    pub fn set_primary_preparation(
+        &self,
+        input: SetPrimaryPreparationInput,
+    ) -> Result<PreparationSummary, WorkspaceError> {
+        let preparation_id = normalize_preparation_id(&input.preparation_id)
+            .map_err(WorkspaceError::InvalidInput)?;
+        self.store
+            .set_primary_preparation(&SetPrimaryPreparationInput { preparation_id })
     }
 
     pub fn create_subject(

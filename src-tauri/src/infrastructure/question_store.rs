@@ -1206,6 +1206,7 @@ mod tests {
                 name: "Preparação".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: true,
             })
@@ -1373,6 +1374,7 @@ mod tests {
                 name: "Preparação".to_string(),
                 organization: None,
                 role: None,
+                board: None,
                 exam_date: None,
                 make_primary: true,
             })
