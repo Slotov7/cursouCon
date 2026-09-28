@@ -8,13 +8,18 @@ import {
   getRecentWorkspaces,
   getSyncDestinationSettings,
   getWorkspaceRevisions,
+  inspectWorkspaceBackup,
   openWorkspace,
   pickDirectory,
   publishConfiguredWorkspaceRevision,
   restoreWorkspaceBackup,
   restoreWorkspaceRevision,
 } from "../../shared/desktop/commands";
-import type { RevisionSummary, WorkspaceSummary } from "../../shared/desktop/contracts";
+import type {
+  BackupInspectionSummary,
+  RevisionSummary,
+  WorkspaceSummary,
+} from "../../shared/desktop/contracts";
 import {
   buttonPrimaryClass,
   buttonQuietClass,
@@ -34,6 +39,7 @@ type PendingAction =
   | "pickingBackupDestination"
   | "creatingBackup"
   | "pickingBackup"
+  | "inspectingBackup"
   | "pickingRestoreDestination"
   | "restoringBackup"
   | "creatingRevision"
@@ -50,6 +56,7 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
   const [revisionDestinationPath, setRevisionDestinationPath] = useState("");
   const [syncDestinationEnabled, setSyncDestinationEnabled] = useState(false);
   const [backupPath, setBackupPath] = useState("");
+  const [backupPreview, setBackupPreview] = useState<BackupInspectionSummary | null>(null);
   const [restoreDestinationPath, setRestoreDestinationPath] = useState("");
   const [recentWorkspaces, setRecentWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [isLoadingRecent, setIsLoadingRecent] = useState(false);
@@ -202,8 +209,29 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
       const selectedPath = await pickDirectory("Escolha a pasta do backup");
       if (selectedPath) {
         setBackupPath(selectedPath);
+        setBackupPreview(null);
+        setMessage(null);
       }
     } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingAction("idle");
+    }
+  };
+
+  const handleInspectBackup = async () => {
+    if (!backupPath) {
+      return;
+    }
+    setError(null);
+    setMessage(null);
+    setPendingAction("inspectingBackup");
+    try {
+      const preview = await inspectWorkspaceBackup({ backupPath });
+      setBackupPreview(preview);
+      setMessage("Backup validado. Confira a prévia antes de restaurar.");
+    } catch (operationError: unknown) {
+      setBackupPreview(null);
       setError(getDesktopErrorMessage(operationError));
     } finally {
       setPendingAction("idle");
@@ -226,7 +254,7 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
   };
 
   const handleRestoreBackup = async () => {
-    if (!backupPath || !restoreDestinationPath) {
+    if (!backupPath || !restoreDestinationPath || !backupPreview) {
       return;
     }
     setError(null);
@@ -589,9 +617,49 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
                 </label>
                 <button
                   type="button"
+                  className={`${buttonSecondaryClass} justify-self-start`}
+                  onClick={handleInspectBackup}
+                  disabled={isBusy || !backupPath}
+                >
+                  {pendingAction === "inspectingBackup" ? "Validando backup..." : "Validar e mostrar prévia"}
+                </button>
+                {backupPreview ? (
+                  <section className="grid gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4" aria-labelledby="backup-preview-title">
+                    <div>
+                      <h4 id="backup-preview-title" className="font-heading font-bold text-ink">Prévia validada</h4>
+                      <p className="mt-1 text-xs leading-relaxed text-muted">
+                        Nenhum dado foi alterado. O espaço atual continuará intacto; a restauração criará outro espaço.
+                      </p>
+                    </div>
+                    <dl className="grid gap-2 text-xs sm:grid-cols-2">
+                      <div>
+                        <dt className="text-muted">Espaço de origem</dt>
+                        <dd className="font-semibold text-ink">{backupPreview.workspaceName}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted">Criado em</dt>
+                        <dd className="font-semibold text-ink">{formatRevisionTimestamp(backupPreview.createdAtEpochSeconds)}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted">Formato</dt>
+                        <dd className="font-semibold text-ink">Backup {backupPreview.backupFormatVersion} · espaço {backupPreview.workspaceFormatVersion}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted">Conteúdo portátil</dt>
+                        <dd className="font-semibold text-ink">{backupPreview.blobCount} blobs · {backupPreview.revisionFileCount} revisões · {backupPreview.exportFileCount} exportações</dd>
+                      </div>
+                    </dl>
+                    <dl>
+                      <dt className="text-[11px] text-muted">SHA-256 do banco</dt>
+                      <dd className="mt-1 break-all font-mono text-[11px] text-ink">{backupPreview.databaseSha256}</dd>
+                    </dl>
+                  </section>
+                ) : null}
+                <button
+                  type="button"
                   className={`${buttonPrimaryClass} justify-self-start`}
                   onClick={handleRestoreBackup}
-                  disabled={isBusy || !backupPath || !restoreDestinationPath}
+                  disabled={isBusy || !backupPath || !restoreDestinationPath || !backupPreview}
                 >
                   {pendingAction === "restoringBackup" ? "Validando e restaurando..." : "Restaurar em novo espaço"}
                 </button>

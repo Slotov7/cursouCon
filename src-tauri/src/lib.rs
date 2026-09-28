@@ -9,6 +9,7 @@ pub fn run() -> Result<(), tauri::Error> {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::backup::create_workspace_backup,
+            commands::backup::inspect_workspace_backup,
             commands::backup::restore_workspace_backup,
             commands::workspace::create_workspace,
             commands::workspace::get_active_workspace,

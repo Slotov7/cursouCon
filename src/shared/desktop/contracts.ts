@@ -61,6 +61,19 @@ export type BackupSummary = {
   createdAtEpochSeconds: number;
 };
 
+export type BackupInspectionSummary = {
+  path: string;
+  backupFormatVersion: number;
+  workspaceId: string;
+  workspaceName: string;
+  workspaceFormatVersion: number;
+  databaseSha256: string;
+  createdAtEpochSeconds: number;
+  blobCount: number;
+  revisionFileCount: number;
+  exportFileCount: number;
+};
+
 export type RevisionSummary = {
   revisionId: string;
   path: string;
@@ -89,6 +102,10 @@ export type ConfigureSyncDestinationRequest = {
 
 export type CreateBackupRequest = {
   destinationParentPath: string;
+};
+
+export type InspectBackupRequest = {
+  backupPath: string;
 };
 
 export type RestoreBackupRequest = {
@@ -930,6 +947,39 @@ export function parseBackupSummary(value: unknown): BackupSummary {
     path: value.path,
     workspaceName: value.workspaceName,
     createdAtEpochSeconds: value.createdAtEpochSeconds,
+  };
+}
+
+export function parseBackupInspectionSummary(value: unknown): BackupInspectionSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== "string" ||
+    !isNonNegativeInteger(value.backupFormatVersion) ||
+    typeof value.workspaceId !== "string" ||
+    typeof value.workspaceName !== "string" ||
+    !isNonNegativeInteger(value.workspaceFormatVersion) ||
+    typeof value.databaseSha256 !== "string" ||
+    typeof value.createdAtEpochSeconds !== "number" ||
+    !Number.isInteger(value.createdAtEpochSeconds) ||
+    value.createdAtEpochSeconds < 0 ||
+    !isNonNegativeInteger(value.blobCount) ||
+    !isNonNegativeInteger(value.revisionFileCount) ||
+    !isNonNegativeInteger(value.exportFileCount)
+  ) {
+    throw new Error("O núcleo local devolveu uma prévia de backup inválida.");
+  }
+
+  return {
+    path: value.path,
+    backupFormatVersion: value.backupFormatVersion,
+    workspaceId: value.workspaceId,
+    workspaceName: value.workspaceName,
+    workspaceFormatVersion: value.workspaceFormatVersion,
+    databaseSha256: value.databaseSha256,
+    createdAtEpochSeconds: value.createdAtEpochSeconds,
+    blobCount: value.blobCount,
+    revisionFileCount: value.revisionFileCount,
+    exportFileCount: value.exportFileCount,
   };
 }
 

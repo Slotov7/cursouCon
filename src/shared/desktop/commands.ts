@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   parseAnswerQuestionResult,
+  parseBackupInspectionSummary,
   parseBackupSummary,
   parseCompleteStudyReviewResult,
   parseAppPreferences,
@@ -46,9 +47,11 @@ import {
   type AnswerQuestionResult,
   type AppPreferences,
   type BackupSummary,
+  type BackupInspectionSummary,
   type CreatePreparationRequest,
   type SetPrimaryPreparationRequest,
   type CreateBackupRequest,
+  type InspectBackupRequest,
   type CreateQuestionRequest,
   type CreateNotebookRequest,
   type CreateStudyTaskRequest,
@@ -455,6 +458,27 @@ export async function createWorkspaceBackup(
   }
   const response = await invoke<unknown>("create_workspace_backup", { request });
   return parseBackupSummary(response);
+}
+
+export async function inspectWorkspaceBackup(
+  request: InspectBackupRequest,
+): Promise<BackupInspectionSummary> {
+  if (!isTauri()) {
+    return {
+      path: request.backupPath,
+      backupFormatVersion: 1,
+      workspaceId: mockWorkspace.workspaceId,
+      workspaceName: mockWorkspace.name,
+      workspaceFormatVersion: mockWorkspace.formatVersion,
+      databaseSha256: "0".repeat(64),
+      createdAtEpochSeconds: Math.floor(Date.now() / 1000),
+      blobCount: 0,
+      revisionFileCount: 0,
+      exportFileCount: 0,
+    };
+  }
+  const response = await invoke<unknown>("inspect_workspace_backup", { request });
+  return parseBackupInspectionSummary(response);
 }
 
 export async function createWorkspaceRevision(): Promise<RevisionSummary> {

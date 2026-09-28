@@ -1,7 +1,7 @@
 use crate::application::backup_service::BackupService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
-use crate::domain::backup::BackupSummary;
+use crate::domain::backup::{BackupInspectionSummary, BackupSummary};
 use crate::domain::workspace::WorkspaceSummary;
 use serde::Deserialize;
 use std::path::Path;
@@ -20,6 +20,12 @@ pub struct RestoreBackupRequest {
     pub destination_parent_path: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectBackupRequest {
+    pub backup_path: String,
+}
+
 #[tauri::command]
 pub fn create_workspace_backup(
     app: AppHandle,
@@ -28,6 +34,17 @@ pub fn create_workspace_backup(
     let store = local_workspace_store(&app)?;
     BackupService::new(store)
         .create(Path::new(&request.destination_parent_path))
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn inspect_workspace_backup(
+    app: AppHandle,
+    request: InspectBackupRequest,
+) -> Result<BackupInspectionSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    BackupService::new(store)
+        .inspect(Path::new(&request.backup_path))
         .map_err(CommandError::from)
 }
 

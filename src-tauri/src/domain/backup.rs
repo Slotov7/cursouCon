@@ -23,3 +23,18 @@ pub struct BackupSummary {
     pub workspace_name: String,
     pub created_at_epoch_seconds: i64,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupInspectionSummary {
+    pub path: String,
+    pub backup_format_version: u32,
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub workspace_format_version: u32,
+    pub database_sha256: String,
+    pub created_at_epoch_seconds: i64,
+    pub blob_count: i64,
+    pub revision_file_count: i64,
+    pub export_file_count: i64,
+}

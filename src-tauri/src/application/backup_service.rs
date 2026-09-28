@@ -1,10 +1,12 @@
 use crate::application::workspace_service::WorkspaceError;
-use crate::domain::backup::BackupSummary;
+use crate::domain::backup::{BackupInspectionSummary, BackupSummary};
 use crate::domain::workspace::WorkspaceSummary;
 use std::path::Path;
 
 pub trait BackupStore {
     fn create_backup(&self, destination_parent: &Path) -> Result<BackupSummary, WorkspaceError>;
+    fn inspect_backup(&self, backup_path: &Path)
+        -> Result<BackupInspectionSummary, WorkspaceError>;
     fn restore_backup(
         &self,
         backup_path: &Path,
@@ -23,6 +25,10 @@ impl<S: BackupStore> BackupService<S> {
 
     pub fn create(&self, destination_parent: &Path) -> Result<BackupSummary, WorkspaceError> {
         self.store.create_backup(destination_parent)
+    }
+
+    pub fn inspect(&self, backup_path: &Path) -> Result<BackupInspectionSummary, WorkspaceError> {
+        self.store.inspect_backup(backup_path)
     }
 
     pub fn restore(

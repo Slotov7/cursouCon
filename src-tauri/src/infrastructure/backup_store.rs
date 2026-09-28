@@ -5,8 +5,8 @@ use super::{
 use crate::application::backup_service::BackupStore;
 use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
 use crate::domain::backup::{
-    BackupManifest, BackupSummary, BACKUP_DATABASE_FILE, BACKUP_FORMAT_VERSION,
-    BACKUP_MANIFEST_FILE,
+    BackupInspectionSummary, BackupManifest, BackupSummary, BACKUP_DATABASE_FILE,
+    BACKUP_FORMAT_VERSION, BACKUP_MANIFEST_FILE,
 };
 use crate::domain::workspace::{WorkspaceManifest, WORKSPACE_MANIFEST_FILE};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -25,6 +25,26 @@ struct ValidatedBackup {
     path: PathBuf,
     manifest: BackupManifest,
     workspace_manifest: WorkspaceManifest,
+    blob_count: i64,
+    revision_file_count: i64,
+    export_file_count: i64,
+}
+
+impl ValidatedBackup {
+    fn summary(&self) -> Result<BackupInspectionSummary, WorkspaceError> {
+        Ok(BackupInspectionSummary {
+            path: path_to_string(&self.path)?,
+            backup_format_version: self.manifest.backup_format_version,
+            workspace_id: self.workspace_manifest.workspace_id.to_string(),
+            workspace_name: self.workspace_manifest.name.clone(),
+            workspace_format_version: self.workspace_manifest.format_version,
+            database_sha256: self.manifest.database_sha256.clone(),
+            created_at_epoch_seconds: self.manifest.created_at_epoch_seconds,
+            blob_count: self.blob_count,
+            revision_file_count: self.revision_file_count,
+            export_file_count: self.export_file_count,
+        })
+    }
 }
 
 impl BackupStore for LocalWorkspaceStore {
@@ -108,6 +128,13 @@ impl BackupStore for LocalWorkspaceStore {
         }
 
         result
+    }
+
+    fn inspect_backup(
+        &self,
+        backup_path: &Path,
+    ) -> Result<BackupInspectionSummary, WorkspaceError> {
+        inspect_backup(backup_path)?.summary()
     }
 
     fn restore_backup(
@@ -226,11 +253,19 @@ fn inspect_backup(path: &Path) -> Result<ValidatedBackup, WorkspaceError> {
     for directory_name in ["revisions", "exports"] {
         ensure_directory(&path.join(directory_name), "a pasta do backup")?;
     }
+    let blob_count = count_portable_files(&path.join("blobs"), "os blobs do backup")?;
+    let revision_file_count =
+        count_portable_files(&path.join("revisions"), "as revisões do backup")?;
+    let export_file_count =
+        count_portable_files(&path.join("exports"), "as exportações do backup")?;
 
     Ok(ValidatedBackup {
         path,
         manifest: backup_manifest,
         workspace_manifest,
+        blob_count,
+        revision_file_count,
+        export_file_count,
     })
 }
 
@@ -437,6 +472,41 @@ pub(crate) fn copy_directory_contents(source: &Path, target: &Path) -> Result<()
     Ok(())
 }
 
+fn count_portable_files(path: &Path, description: &str) -> Result<i64, WorkspaceError> {
+    let mut count = 0_u64;
+    for entry in fs::read_dir(path).map_err(|error| map_io_error(description, error))? {
+        let entry = entry.map_err(|error| map_io_error(description, error))?;
+        let entry_path = entry.path();
+        let metadata =
+            fs::symlink_metadata(&entry_path).map_err(|error| map_io_error(description, error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(WorkspaceError::InvalidBackup(format!(
+                "{description} contém um link simbólico não suportado"
+            )));
+        }
+        if metadata.is_dir() {
+            let nested = count_portable_files(&entry_path, description)?;
+            count = count
+                .checked_add(u64::try_from(nested).map_err(|_| {
+                    WorkspaceError::InvalidBackup(format!("{description} contém arquivos demais"))
+                })?)
+                .ok_or_else(|| {
+                    WorkspaceError::InvalidBackup(format!("{description} contém arquivos demais"))
+                })?;
+        } else if metadata.is_file() {
+            count = count.checked_add(1).ok_or_else(|| {
+                WorkspaceError::InvalidBackup(format!("{description} contém arquivos demais"))
+            })?;
+        } else {
+            return Err(WorkspaceError::InvalidBackup(format!(
+                "{description} contém um tipo de arquivo não suportado"
+            )));
+        }
+    }
+    i64::try_from(count)
+        .map_err(|_| WorkspaceError::InvalidBackup(format!("{description} contém arquivos demais")))
+}
+
 pub(crate) fn copy_verified_file(
     source: &Path,
     target: &Path,
@@ -627,6 +697,7 @@ pub(crate) fn path_to_string(path: &Path) -> Result<String, WorkspaceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::backup_service::BackupStore;
     use crate::application::workspace_service::WorkspaceStore;
 
     #[test]
@@ -659,6 +730,31 @@ mod tests {
         assert!(backup_path.join(BACKUP_MANIFEST_FILE).is_file());
         assert!(backup_path.join(BACKUP_DATABASE_FILE).is_file());
         assert!(backup_path.join("revisions/revision.json").is_file());
+
+        let inspection = store
+            .inspect_backup(&backup_path)
+            .expect("a prévia deve validar o backup");
+        assert_eq!(inspection.workspace_name, "Backup de teste");
+        assert_eq!(
+            inspection.workspace_id,
+            original.manifest.workspace_id.to_string()
+        );
+        assert_eq!(inspection.blob_count, 0);
+        assert_eq!(inspection.revision_file_count, 1);
+        assert_eq!(inspection.export_file_count, 0);
+        assert_eq!(inspection.database_sha256.len(), 64);
+
+        let manifest_path = backup_path.join(BACKUP_MANIFEST_FILE);
+        let original_manifest =
+            fs::read_to_string(&manifest_path).expect("o manifesto deve ser legível");
+        let corrupted_manifest = original_manifest.replace(
+            &inspection.database_sha256,
+            &"0".repeat(inspection.database_sha256.len()),
+        );
+        fs::write(&manifest_path, corrupted_manifest)
+            .expect("o manifesto corrompido deve ser salvo");
+        assert!(store.inspect_backup(&backup_path).is_err());
+        fs::write(&manifest_path, original_manifest).expect("o manifesto deve ser restaurado");
 
         let restored = store
             .restore_backup(&backup_path, &restore_parent)
