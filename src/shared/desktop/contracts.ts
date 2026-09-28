@@ -528,6 +528,33 @@ export type AnswerQuestionResult = {
   xpGranted: number;
 };
 
+export type CreateExternalQuestionBatchRequest = {
+  preparationId: string;
+  subjectId: string | null;
+  sourceName: string | null;
+  studiedOn: string;
+  answeredCount: number;
+  correctCount: number;
+};
+
+export type ExternalQuestionBatchSummary = CreateExternalQuestionBatchRequest & {
+  id: string;
+  preparationName: string;
+  subjectName: string | null;
+  createdAt: string;
+};
+
+export type QuestionPerformanceSummary = {
+  asOfDate: string;
+  firstAttemptGraded: number;
+  firstAttemptCorrect: number;
+  repeatGraded: number;
+  repeatCorrect: number;
+  externalBatches: number;
+  externalAnswered: number;
+  externalCorrect: number;
+};
+
 export type QuestionNotebookReason =
   | "content"
   | "interpretation"
@@ -1437,6 +1464,64 @@ export function parseAnswerQuestionResult(value: unknown): AnswerQuestionResult 
     attempt: parseQuestionAttempt(value.attempt),
     question: parseQuestion(value.question),
     xpGranted: value.xpGranted,
+  };
+}
+
+export function parseExternalQuestionBatch(value: unknown): ExternalQuestionBatchSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.preparationId !== "string" ||
+    typeof value.preparationName !== "string" ||
+    typeof value.studiedOn !== "string" ||
+    typeof value.createdAt !== "string" ||
+    !isNonNegativeInteger(value.answeredCount) ||
+    value.answeredCount === 0 ||
+    !isNonNegativeInteger(value.correctCount) ||
+    value.correctCount > value.answeredCount
+  ) {
+    throw new Error("O núcleo local devolveu um lote externo inválido.");
+  }
+  return {
+    id: value.id,
+    preparationId: value.preparationId,
+    preparationName: value.preparationName,
+    subjectId: parseOptionalString(value.subjectId, "o assunto do lote"),
+    subjectName: parseOptionalString(value.subjectName, "o nome do assunto do lote"),
+    sourceName: parseOptionalString(value.sourceName, "a origem do lote"),
+    studiedOn: value.studiedOn,
+    answeredCount: value.answeredCount,
+    correctCount: value.correctCount,
+    createdAt: value.createdAt,
+  };
+}
+
+export function parseQuestionPerformance(value: unknown): QuestionPerformanceSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.asOfDate !== "string" ||
+    !isNonNegativeInteger(value.firstAttemptGraded) ||
+    !isNonNegativeInteger(value.firstAttemptCorrect) ||
+    value.firstAttemptCorrect > value.firstAttemptGraded ||
+    !isNonNegativeInteger(value.repeatGraded) ||
+    !isNonNegativeInteger(value.repeatCorrect) ||
+    value.repeatCorrect > value.repeatGraded ||
+    !isNonNegativeInteger(value.externalBatches) ||
+    !isNonNegativeInteger(value.externalAnswered) ||
+    !isNonNegativeInteger(value.externalCorrect) ||
+    value.externalCorrect > value.externalAnswered
+  ) {
+    throw new Error("O núcleo local devolveu métricas de questões inválidas.");
+  }
+  return {
+    asOfDate: value.asOfDate,
+    firstAttemptGraded: value.firstAttemptGraded,
+    firstAttemptCorrect: value.firstAttemptCorrect,
+    repeatGraded: value.repeatGraded,
+    repeatCorrect: value.repeatCorrect,
+    externalBatches: value.externalBatches,
+    externalAnswered: value.externalAnswered,
+    externalCorrect: value.externalCorrect,
   };
 }
 

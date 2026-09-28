@@ -1,12 +1,17 @@
 import { useMemo, useState, useEffect } from "react";
 import {
+  createExternalQuestionBatch,
   correctStudySessionDuration,
   createManualStudy,
   getDesktopErrorMessage,
+  getExternalQuestionBatches,
+  getQuestionPerformance,
   getStudyPlan,
   getStudyProgress,
 } from "../../shared/desktop/commands";
 import type {
+  ExternalQuestionBatchSummary,
+  QuestionPerformanceSummary,
   StudyHistoryEntry,
   StudyPlan,
   StudyProgressSummary,
@@ -79,6 +84,17 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
   const [correctionMinutes, setCorrectionMinutes] = useState("");
   const [correctionReason, setCorrectionReason] = useState("");
   const [isSavingCorrection, setIsSavingCorrection] = useState(false);
+  const [questionPerformance, setQuestionPerformance] = useState<QuestionPerformanceSummary | null>(null);
+  const [externalBatches, setExternalBatches] = useState<ExternalQuestionBatchSummary[]>([]);
+  const [questionMetricsError, setQuestionMetricsError] = useState<string | null>(null);
+  const [isQuestionMetricsLoading, setIsQuestionMetricsLoading] = useState(true);
+  const [isExternalFormOpen, setIsExternalFormOpen] = useState(false);
+  const [externalDate, setExternalDate] = useState(() => dateKeyForTimezone(timezone));
+  const [externalSource, setExternalSource] = useState("");
+  const [externalSubjectId, setExternalSubjectId] = useState("");
+  const [externalAnswered, setExternalAnswered] = useState("");
+  const [externalCorrect, setExternalCorrect] = useState("");
+  const [isSavingExternal, setIsSavingExternal] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
@@ -107,6 +123,22 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
       })
       .catch(() => {
         if (!cancelled) setPlan(null);
+      });
+
+    setIsQuestionMetricsLoading(true);
+    Promise.all([getQuestionPerformance(new Date().toISOString().slice(0, 10)), getExternalQuestionBatches()])
+      .then(([performance, batches]) => {
+        if (!cancelled) {
+          setQuestionPerformance(performance);
+          setExternalBatches(batches);
+          setQuestionMetricsError(null);
+        }
+      })
+      .catch((operationError: unknown) => {
+        if (!cancelled) setQuestionMetricsError(getDesktopErrorMessage(operationError));
+      })
+      .finally(() => {
+        if (!cancelled) setIsQuestionMetricsLoading(false);
       });
 
     return () => {
@@ -163,6 +195,43 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
       setActionError(getDesktopErrorMessage(operationError));
     } finally {
       setIsSavingManual(false);
+    }
+  };
+
+  const handleCreateExternalBatch = async () => {
+    const answeredCount = Number(externalAnswered);
+    const correctCount = Number(externalCorrect);
+    if (!primaryPreparation) {
+      setActionError("Cadastre uma preparação antes de registrar questões externas.");
+      return;
+    }
+    if (!externalDate || !Number.isInteger(answeredCount) || answeredCount < 1 ||
+      !Number.isInteger(correctCount) || correctCount < 0 || correctCount > answeredCount) {
+      setActionError("Informe data, número de respondidas acima de zero e acertos entre zero e o total respondido.");
+      return;
+    }
+    setActionError(null);
+    setActionMessage(null);
+    setIsSavingExternal(true);
+    try {
+      await createExternalQuestionBatch({
+        preparationId: primaryPreparation.id,
+        subjectId: externalSubjectId || null,
+        sourceName: externalSource.trim() || null,
+        studiedOn: externalDate,
+        answeredCount,
+        correctCount,
+      });
+      setIsExternalFormOpen(false);
+      setExternalSource("");
+      setExternalAnswered("");
+      setExternalCorrect("");
+      setActionMessage("Lote externo salvo localmente, separado das tentativas individuais e sem XP.");
+      setRetryVersion((current) => current + 1);
+    } catch (operationError: unknown) {
+      setActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setIsSavingExternal(false);
     }
   };
 
@@ -273,6 +342,17 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
             }}
           >
             {isManualFormOpen ? "Fechar registro manual" : "Registrar estudo manual"}
+          </button>
+          <button
+            type="button"
+            className={`${buttonSecondaryClass} justify-self-start`}
+            onClick={() => {
+              setIsExternalFormOpen((current) => !current);
+              setActionError(null);
+              setActionMessage(null);
+            }}
+          >
+            {isExternalFormOpen ? "Fechar lote externo" : "Registrar questões externas"}
           </button>
         </div>
       </section>
@@ -401,6 +481,87 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
           </div>
         </section>
       ) : null}
+
+      {isExternalFormOpen && (
+        <section className="glass-card rounded-2xl p-5 lg:p-6" aria-labelledby="external-batch-heading">
+          <div className="border-b border-line pb-3">
+            <Eyebrow>Resolução fora do app</Eyebrow>
+            <h3 id="external-batch-heading" className="mt-1 font-heading text-lg font-bold text-ink">Lote de questões respondidas</h3>
+            <p className="mt-2 text-xs text-muted">Registre apenas totais conhecidos. Este lote não cria tentativas individuais nem concede XP.</p>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className={fieldClass}>
+              Data da resolução
+              <input className={inputClass} type="date" value={externalDate} onChange={(event) => setExternalDate(event.target.value)} disabled={isSavingExternal} />
+            </label>
+            <label className={fieldClass}>
+              Assunto <span className="font-normal text-muted">(opcional)</span>
+              <select className={selectClass} value={externalSubjectId} onChange={(event) => setExternalSubjectId(event.target.value)} disabled={isSavingExternal}>
+                <option value="">Geral da preparação</option>
+                {availableSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}
+              </select>
+            </label>
+            <label className={fieldClass}>
+              Questões respondidas
+              <input className={inputClass} type="number" min="1" step="1" value={externalAnswered} onChange={(event) => setExternalAnswered(event.target.value)} disabled={isSavingExternal} placeholder="Ex.: 40" />
+            </label>
+            <label className={fieldClass}>
+              Acertos
+              <input className={inputClass} type="number" min="0" step="1" max={externalAnswered || undefined} value={externalCorrect} onChange={(event) => setExternalCorrect(event.target.value)} disabled={isSavingExternal} placeholder="Ex.: 28" />
+            </label>
+            <label className={`${fieldClass} sm:col-span-2`}>
+              Origem <span className="font-normal text-muted">(opcional)</span>
+              <input className={inputClass} value={externalSource} onChange={(event) => setExternalSource(event.target.value)} maxLength={160} disabled={isSavingExternal} placeholder="Ex.: Caderno impresso" />
+            </label>
+          </div>
+          <div className="mt-4 flex justify-end gap-2 border-t border-line pt-3">
+            <button type="button" className={buttonQuietClass} onClick={() => setIsExternalFormOpen(false)} disabled={isSavingExternal}>Cancelar</button>
+            <button type="button" className={buttonPrimaryClass} onClick={() => void handleCreateExternalBatch()} disabled={isSavingExternal}>
+              {isSavingExternal ? "Salvando..." : "Salvar lote externo"}
+            </button>
+          </div>
+        </section>
+      )}
+
+      <section className="glass-card rounded-2xl p-5 lg:p-6" aria-labelledby="question-performance-title">
+        <div className="border-b border-line pb-3">
+          <Eyebrow>Questões</Eyebrow>
+          <h3 id="question-performance-title" className="mt-1 font-heading text-lg font-bold text-ink">Desempenho por origem</h3>
+          <p className="mt-1 text-xs text-muted">
+            {questionPerformance ? `Acumulado até ${questionPerformance.asOfDate}. ` : ""}
+            Tentativas individuais usam data UTC e o resultado registrado na época; anuladas, respostas em branco e pendentes não entram nas taxas.
+          </p>
+        </div>
+        {isQuestionMetricsLoading ? (
+          <p className="mt-4 text-sm text-muted" aria-live="polite">Carregando indicadores de questões...</p>
+        ) : questionMetricsError ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-danger" role="alert">
+            <span>{questionMetricsError}</span>
+            <button type="button" className={buttonSecondaryClass} onClick={() => setRetryVersion((current) => current + 1)}>Tentar novamente</button>
+          </div>
+        ) : questionPerformance && (
+          <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <QuestionMetric label="Primeiras tentativas" correct={questionPerformance.firstAttemptCorrect} total={questionPerformance.firstAttemptGraded} detail="Tentativas avaliadas pela primeira vez" />
+              <QuestionMetric label="Repetições" correct={questionPerformance.repeatCorrect} total={questionPerformance.repeatGraded} detail="Novas respostas à mesma questão" />
+              <QuestionMetric label="Lotes externos" correct={questionPerformance.externalCorrect} total={questionPerformance.externalAnswered} detail={`${questionPerformance.externalBatches} lote(s) registrados`} />
+            </div>
+            {externalBatches.length > 0 && (
+              <div className="mt-5 border-t border-line pt-4">
+                <h4 className="text-sm font-bold text-ink">Lotes externos recentes (até 20)</h4>
+                <ul className="mt-2 grid gap-2">
+                  {externalBatches.map((batch) => (
+                    <li key={batch.id} className="flex flex-wrap justify-between gap-2 rounded-xl border border-line bg-paper/50 px-3 py-2 text-xs text-ink">
+                      <span>{batch.studiedOn.split("-").reverse().join("/")} · {batch.preparationName}{batch.subjectName ? ` · ${batch.subjectName}` : ""}{batch.sourceName ? ` · ${batch.sourceName}` : ""}</span>
+                      <strong>{batch.correctCount} / {batch.answeredCount} acertos</strong>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+      </section>
 
       {/* 2. XP level and recent activity */}
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,.8fr)]">
@@ -722,6 +883,24 @@ function ProgressState({
         </button>
       )}
     </section>
+  );
+}
+
+function QuestionMetric({ label, correct, total, detail }: {
+  label: string;
+  correct: number;
+  total: number;
+  detail: string;
+}) {
+  return (
+    <div className="rounded-xl border border-line bg-paper/60 p-4">
+      <p className="text-xs font-bold text-ink">{label}</p>
+      <p className="mt-2 font-heading text-xl font-extrabold text-blue-600">
+        {total > 0 ? `${Math.round(correct * 100 / total)}%` : "Sem amostra"}
+      </p>
+      <p className="mt-1 text-xs text-muted">{correct} acertos / {total} respondidas avaliadas</p>
+      <p className="mt-1 text-[11px] text-muted">{detail}</p>
+    </div>
   );
 }
 

@@ -2,9 +2,10 @@ use crate::application::question_service::QuestionService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::question::{
-    AnswerQuestionInput, AnswerQuestionResult, CreateNotebookInput, CreateQuestionInput,
-    ListQuestionsInput, NotebookFilter, NotebookSummary, QuestionNotebookEntrySummary,
-    QuestionOptionInput, QuestionSummary, SetQuestionNotebookInput,
+    AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
+    CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
+    NotebookFilter, NotebookSummary, QuestionNotebookEntrySummary, QuestionOptionInput,
+    QuestionPerformanceSummary, QuestionSummary, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     QuestionExportResult, QuestionImportPreview, QuestionImportResult,
@@ -53,6 +54,23 @@ pub struct AnswerQuestionRequest {
     pub selected_key: Option<String>,
     pub confidence: String,
     pub elapsed_seconds: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateExternalQuestionBatchRequest {
+    pub preparation_id: String,
+    pub subject_id: Option<String>,
+    pub source_name: Option<String>,
+    pub studied_on: String,
+    pub answered_count: i64,
+    pub correct_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionPerformanceRequest {
+    pub as_of_date: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,6 +170,45 @@ pub fn answer_question(
             confidence: request.confidence,
             elapsed_seconds: request.elapsed_seconds,
         })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn create_external_question_batch(
+    app: AppHandle,
+    request: CreateExternalQuestionBatchRequest,
+) -> Result<ExternalQuestionBatchSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .create_external_batch(CreateExternalQuestionBatchInput {
+            preparation_id: request.preparation_id,
+            subject_id: request.subject_id,
+            source_name: request.source_name,
+            studied_on: request.studied_on,
+            answered_count: request.answered_count,
+            correct_count: request.correct_count,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_external_question_batches(
+    app: AppHandle,
+) -> Result<Vec<ExternalQuestionBatchSummary>, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .list_external_batches()
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_question_performance(
+    app: AppHandle,
+    request: QuestionPerformanceRequest,
+) -> Result<QuestionPerformanceSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .performance(&request.as_of_date)
         .map_err(CommandError::from)
 }
 

@@ -1,3 +1,4 @@
+use crate::domain::study_plan::normalize_date;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -39,6 +40,71 @@ pub struct AnswerQuestionInput {
     pub selected_key: Option<String>,
     pub confidence: String,
     pub elapsed_seconds: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateExternalQuestionBatchInput {
+    pub preparation_id: String,
+    pub subject_id: Option<String>,
+    pub source_name: Option<String>,
+    pub studied_on: String,
+    pub answered_count: i64,
+    pub correct_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalQuestionBatchSummary {
+    pub id: String,
+    pub preparation_id: String,
+    pub preparation_name: String,
+    pub subject_id: Option<String>,
+    pub subject_name: Option<String>,
+    pub source_name: Option<String>,
+    pub studied_on: String,
+    pub answered_count: i64,
+    pub correct_count: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionPerformanceSummary {
+    pub as_of_date: String,
+    pub first_attempt_graded: i64,
+    pub first_attempt_correct: i64,
+    pub repeat_graded: i64,
+    pub repeat_correct: i64,
+    pub external_batches: i64,
+    pub external_answered: i64,
+    pub external_correct: i64,
+}
+
+pub fn normalize_external_question_batch_input(
+    input: CreateExternalQuestionBatchInput,
+) -> Result<CreateExternalQuestionBatchInput, String> {
+    if input.answered_count < 1
+        || input.correct_count < 0
+        || input.correct_count > input.answered_count
+    {
+        return Err(
+            "Informe respondidas acima de zero e acertos entre zero e o total respondido."
+                .to_string(),
+        );
+    }
+    Ok(CreateExternalQuestionBatchInput {
+        preparation_id: normalize_id(&input.preparation_id, "A preparação")?,
+        subject_id: input
+            .subject_id
+            .map(|id| normalize_id(&id, "O assunto"))
+            .transpose()?,
+        source_name: normalize_optional_text(input.source_name, "A origem do lote", 160)?,
+        studied_on: normalize_date(&input.studied_on).map_err(|_| {
+            "A data do lote deve ser uma data válida no formato AAAA-MM-DD.".to_string()
+        })?,
+        answered_count: input.answered_count,
+        correct_count: input.correct_count,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -472,6 +538,28 @@ fn normalize_id(value: &str, label: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_external_batch_counts_and_calendar_date() {
+        let valid = CreateExternalQuestionBatchInput {
+            preparation_id: Uuid::new_v4().to_string(),
+            subject_id: None,
+            source_name: Some("  Caderno impresso  ".to_string()),
+            studied_on: "2032-02-29".to_string(),
+            answered_count: 20,
+            correct_count: 0,
+        };
+        let normalized = normalize_external_question_batch_input(valid.clone())
+            .expect("lote sem acertos é válido");
+        assert_eq!(normalized.source_name.as_deref(), Some("Caderno impresso"));
+
+        let mut invalid_count = valid.clone();
+        invalid_count.correct_count = 21;
+        let mut invalid_date = valid;
+        invalid_date.studied_on = "2031-02-29".to_string();
+        assert!(normalize_external_question_batch_input(invalid_count).is_err());
+        assert!(normalize_external_question_batch_input(invalid_date).is_err());
+    }
 
     #[test]
     fn normalizes_multiple_choice_with_pending_answer() {

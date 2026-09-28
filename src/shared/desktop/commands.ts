@@ -10,6 +10,8 @@ import {
   parseWorkspaceDataExportResult,
   parseAcceptStudyCycleActionResult,
   parseDailyPlan,
+  parseExternalQuestionBatch,
+  parseQuestionPerformance,
   parseDiagnosticExportResult,
   parseDiagnosticSnapshot,
   parseFinishStudySessionResult,
@@ -49,6 +51,9 @@ import {
   type CreateQuestionRequest,
   type CreateNotebookRequest,
   type CreateStudyTaskRequest,
+  type CreateExternalQuestionBatchRequest,
+  type ExternalQuestionBatchSummary,
+  type QuestionPerformanceSummary,
   type ConfigureSyncDestinationRequest,
   type CreateSubjectRequest,
   type UpdateSubjectRequest,
@@ -79,6 +84,7 @@ import {
   type OpenMaterialRequest,
   type PauseStudySessionRequest,
   type QuestionSummary,
+  type QuestionResult,
   type QuestionExportResult,
   type QuestionImportPreview,
   type QuestionImportResult,
@@ -268,6 +274,8 @@ let mockActiveSession: StudySessionSummary | null = null;
 let mockStudyReviews: StudyReviewSummary[] = [];
 let mockXp = 480;
 let mockRecentSessions: StudyHistoryEntry[] = [];
+let mockExternalQuestionBatches: ExternalQuestionBatchSummary[] = [];
+let mockIndividualAttempts: Array<{ questionId: string; result: QuestionResult; answeredAt: string }> = [];
 const MOCK_REVIEW_XP_PER_OCCURRENCE = 5;
 const MOCK_REVIEW_XP_DAILY_CAP = 30;
 let mockNotebookEntries: Record<string, QuestionNotebookEntry[]> = {
@@ -346,7 +354,7 @@ export async function getAppDiagnostic(): Promise<DiagnosticSnapshot> {
       platform: "web-preview",
       architecture: "browser",
       workspaceFormatVersion: 1,
-      schemaVersion: 28,
+      schemaVersion: 29,
       counts: {
         preparations: mockStudyPlan.preparations.length,
         subjects: mockStudyPlan.subjects.length,
@@ -1471,6 +1479,12 @@ export async function answerQuestion(request: AnswerQuestionRequest): Promise<An
         ? "correct"
         : "incorrect";
 
+    mockIndividualAttempts = [...mockIndividualAttempts, {
+      questionId: request.questionId,
+      result,
+      answeredAt: new Date().toISOString(),
+    }];
+
     return {
       attempt: {
         id: `att-${Date.now()}`,
@@ -1488,6 +1502,77 @@ export async function answerQuestion(request: AnswerQuestionRequest): Promise<An
   }
   const response = await invoke<unknown>("answer_question", { request });
   return parseAnswerQuestionResult(response);
+}
+
+export async function createExternalQuestionBatch(
+  request: CreateExternalQuestionBatchRequest,
+): Promise<ExternalQuestionBatchSummary> {
+  if (!isTauri()) {
+    if (!Number.isInteger(request.answeredCount) || request.answeredCount < 1 ||
+      !Number.isInteger(request.correctCount) || request.correctCount < 0 || request.correctCount > request.answeredCount) {
+      throw new Error("Informe respondidas acima de zero e acertos entre zero e o total respondido.");
+    }
+    const preparation = mockStudyPlan.preparations.find((item) => item.id === request.preparationId);
+    if (!preparation) throw new Error("A preparação escolhida não existe mais.");
+    const subject = request.subjectId
+      ? mockStudyPlan.subjects.find((item) => item.id === request.subjectId && item.preparationId === request.preparationId)
+      : null;
+    if (request.subjectId && !subject) throw new Error("O assunto escolhido não pertence à preparação.");
+    const saved: ExternalQuestionBatchSummary = {
+      ...request,
+      id: `external-batch-${Date.now()}-${mockExternalQuestionBatches.length}`,
+      preparationName: preparation.name,
+      subjectName: subject?.name ?? null,
+      createdAt: new Date().toISOString(),
+    };
+    mockExternalQuestionBatches = [saved, ...mockExternalQuestionBatches];
+    return saved;
+  }
+  const response = await invoke<unknown>("create_external_question_batch", { request });
+  return parseExternalQuestionBatch(response);
+}
+
+export async function getExternalQuestionBatches(): Promise<ExternalQuestionBatchSummary[]> {
+  if (!isTauri()) return mockExternalQuestionBatches.slice(0, 20);
+  const response = await invoke<unknown>("get_external_question_batches");
+  if (!Array.isArray(response)) throw new Error("O núcleo local devolveu lotes externos inválidos.");
+  return response.map(parseExternalQuestionBatch);
+}
+
+export async function getQuestionPerformance(asOfDate: string): Promise<QuestionPerformanceSummary> {
+  if (!isTauri()) {
+    const seen = new Set<string>();
+    let firstAttemptGraded = 0;
+    let firstAttemptCorrect = 0;
+    let repeatGraded = 0;
+    let repeatCorrect = 0;
+    for (const attempt of mockIndividualAttempts.filter((item) => item.answeredAt.slice(0, 10) <= asOfDate)) {
+      const first = !seen.has(attempt.questionId);
+      seen.add(attempt.questionId);
+      if (attempt.result === "correct" || attempt.result === "incorrect") {
+        if (first) {
+          firstAttemptGraded++;
+          if (attempt.result === "correct") firstAttemptCorrect++;
+        } else {
+          repeatGraded++;
+          if (attempt.result === "correct") repeatCorrect++;
+        }
+      }
+    }
+    const batches = mockExternalQuestionBatches.filter((batch) => batch.studiedOn <= asOfDate);
+    return {
+      asOfDate,
+      firstAttemptGraded,
+      firstAttemptCorrect,
+      repeatGraded,
+      repeatCorrect,
+      externalBatches: batches.length,
+      externalAnswered: batches.reduce((total, batch) => total + batch.answeredCount, 0),
+      externalCorrect: batches.reduce((total, batch) => total + batch.correctCount, 0),
+    };
+  }
+  const response = await invoke<unknown>("get_question_performance", { request: { asOfDate } });
+  return parseQuestionPerformance(response);
 }
 
 export async function createStudyTask(request: CreateStudyTaskRequest): Promise<void> {

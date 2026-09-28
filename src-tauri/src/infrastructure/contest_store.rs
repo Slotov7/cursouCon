@@ -520,6 +520,7 @@ mod tests {
                    ALTER TABLE subjects DROP COLUMN exam_weight;
                    DROP INDEX IF EXISTS idx_study_tasks_material;
                    ALTER TABLE study_tasks DROP COLUMN material_id;
+                   DROP TABLE external_question_batches;
                    DROP INDEX IF EXISTS idx_manual_contests_notice_material;
                     ALTER TABLE manual_contests DROP COLUMN notice_material_id;
                     DELETE FROM schema_migrations WHERE version >= 20;",

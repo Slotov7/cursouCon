@@ -1,10 +1,12 @@
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::question::{
     normalize_answer_question_input, normalize_create_notebook_input,
-    normalize_create_question_input, normalize_list_questions_input, normalize_notebook_id,
-    normalize_set_question_notebook_input, AnswerQuestionInput, AnswerQuestionResult,
-    CreateNotebookInput, CreateQuestionInput, ListQuestionsInput, NotebookSummary,
-    QuestionNotebookEntrySummary, QuestionSummary, SetQuestionNotebookInput,
+    normalize_create_question_input, normalize_external_question_batch_input,
+    normalize_list_questions_input, normalize_notebook_id, normalize_set_question_notebook_input,
+    AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
+    CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
+    NotebookSummary, QuestionNotebookEntrySummary, QuestionPerformanceSummary, QuestionSummary,
+    SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     QuestionExportResult, QuestionImportPreview, QuestionImportResult,
@@ -41,6 +43,17 @@ pub trait QuestionStore {
         expected_file_hash: &str,
     ) -> Result<QuestionImportResult, WorkspaceError>;
     fn export_questions(&self) -> Result<QuestionExportResult, WorkspaceError>;
+    fn create_external_question_batch(
+        &self,
+        input: &CreateExternalQuestionBatchInput,
+    ) -> Result<ExternalQuestionBatchSummary, WorkspaceError>;
+    fn list_external_question_batches(
+        &self,
+    ) -> Result<Vec<ExternalQuestionBatchSummary>, WorkspaceError>;
+    fn question_performance(
+        &self,
+        as_of_date: &str,
+    ) -> Result<QuestionPerformanceSummary, WorkspaceError>;
 }
 
 pub struct QuestionService<S> {
@@ -121,5 +134,29 @@ impl<S: QuestionStore> QuestionService<S> {
 
     pub fn export_questions(&self) -> Result<QuestionExportResult, WorkspaceError> {
         self.store.export_questions()
+    }
+
+    pub fn create_external_batch(
+        &self,
+        input: CreateExternalQuestionBatchInput,
+    ) -> Result<ExternalQuestionBatchSummary, WorkspaceError> {
+        let normalized =
+            normalize_external_question_batch_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.create_external_question_batch(&normalized)
+    }
+
+    pub fn list_external_batches(
+        &self,
+    ) -> Result<Vec<ExternalQuestionBatchSummary>, WorkspaceError> {
+        self.store.list_external_question_batches()
+    }
+
+    pub fn performance(
+        &self,
+        as_of_date: &str,
+    ) -> Result<QuestionPerformanceSummary, WorkspaceError> {
+        let date = crate::domain::study_plan::normalize_date(as_of_date)
+            .map_err(WorkspaceError::InvalidInput)?;
+        self.store.question_performance(&date)
     }
 }

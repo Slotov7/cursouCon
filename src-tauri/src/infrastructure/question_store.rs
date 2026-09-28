@@ -2,9 +2,10 @@ use super::{map_database_error, map_io_error, workspace_store::LocalWorkspaceSto
 use crate::application::question_service::QuestionStore;
 use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
 use crate::domain::question::{
-    AnswerQuestionInput, AnswerQuestionResult, CreateNotebookInput, CreateQuestionInput,
-    ListQuestionsInput, NotebookSummary, QuestionAttemptSummary, QuestionNotebookEntrySummary,
-    QuestionOptionSummary, QuestionSummary, SetQuestionNotebookInput,
+    AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
+    CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
+    NotebookSummary, QuestionAttemptSummary, QuestionNotebookEntrySummary, QuestionOptionSummary,
+    QuestionPerformanceSummary, QuestionSummary, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     duplicate_external_id, export_item_from_summary, new_export_document, parse_question_document,
@@ -91,6 +92,127 @@ impl QuestionStore for LocalWorkspaceStore {
             .commit()
             .map_err(|error| map_database_error("confirmar criação da questão", error))?;
         Ok(summary)
+    }
+
+    fn create_external_question_batch(
+        &self,
+        input: &CreateExternalQuestionBatchInput,
+    ) -> Result<ExternalQuestionBatchSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar registro do lote externo", error))?;
+        let preparation_exists: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM preparations WHERE id = ?1 AND archived_at IS NULL",
+                params![input.preparation_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_database_error("validar preparação do lote", error))?;
+        if preparation_exists.is_none() {
+            return Err(WorkspaceError::InvalidInput(
+                "A preparação escolhida não existe mais.".to_string(),
+            ));
+        }
+        if let Some(subject_id) = input.subject_id.as_deref() {
+            let subject_exists: Option<i64> = transaction
+                .query_row(
+                    "SELECT 1 FROM subjects
+                     WHERE id = ?1 AND preparation_id = ?2 AND archived_at IS NULL",
+                    params![subject_id, input.preparation_id.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| map_database_error("validar assunto do lote", error))?;
+            if subject_exists.is_none() {
+                return Err(WorkspaceError::InvalidInput(
+                    "O assunto escolhido não pertence à preparação.".to_string(),
+                ));
+            }
+        }
+
+        let id = Uuid::new_v4().to_string();
+        transaction
+            .execute(
+                "INSERT INTO external_question_batches
+                    (id, preparation_id, subject_id, source_name, studied_on, answered_count, correct_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id.as_str(), input.preparation_id.as_str(), input.subject_id.as_deref(),
+                    input.source_name.as_deref(), input.studied_on.as_str(),
+                    input.answered_count, input.correct_count],
+            )
+            .map_err(|error| map_database_error("gravar lote externo", error))?;
+        let saved = load_external_batch(&transaction, &id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar lote externo", error))?;
+        Ok(saved)
+    }
+
+    fn list_external_question_batches(
+        &self,
+    ) -> Result<Vec<ExternalQuestionBatchSummary>, WorkspaceError> {
+        let connection = self.active_database()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT b.id, b.preparation_id, p.name, b.subject_id, s.name,
+                        b.source_name, b.studied_on, b.answered_count, b.correct_count, b.created_at
+                 FROM external_question_batches b
+                 JOIN preparations p ON p.id = b.preparation_id
+                 LEFT JOIN subjects s ON s.id = b.subject_id
+                 ORDER BY b.studied_on DESC, b.created_at DESC, b.id DESC
+                 LIMIT 20",
+            )
+            .map_err(|error| map_database_error("preparar lista de lotes externos", error))?;
+        let rows = statement
+            .query_map([], read_external_batch_row)
+            .map_err(|error| map_database_error("consultar lotes externos", error))?;
+        rows.map(|row| row.map_err(|error| map_database_error("ler lote externo", error)))
+            .collect()
+    }
+
+    fn question_performance(
+        &self,
+        as_of_date: &str,
+    ) -> Result<QuestionPerformanceSummary, WorkspaceError> {
+        let connection = self.active_database()?;
+        let (first_attempt_graded, first_attempt_correct, repeat_graded, repeat_correct): (i64, i64, i64, i64) = connection
+            .query_row(
+                "WITH ranked AS (
+                     SELECT a.result,
+                            ROW_NUMBER() OVER (PARTITION BY a.question_id ORDER BY a.answered_at, a.rowid) AS ordinal
+                     FROM question_attempts a
+                     JOIN questions q ON q.id = a.question_id
+                     WHERE q.status <> 'annulled' AND date(a.answered_at) <= ?1
+                 )
+                 SELECT COALESCE(SUM(CASE WHEN ordinal = 1 AND result IN ('correct', 'incorrect') THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN ordinal = 1 AND result = 'correct' THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN ordinal > 1 AND result IN ('correct', 'incorrect') THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN ordinal > 1 AND result = 'correct' THEN 1 ELSE 0 END), 0)
+                 FROM ranked",
+                params![as_of_date],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(|error| map_database_error("calcular desempenho das tentativas", error))?;
+        let (external_batches, external_answered, external_correct): (i64, i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(answered_count), 0), COALESCE(SUM(correct_count), 0)
+                 FROM external_question_batches WHERE studied_on <= ?1",
+                params![as_of_date],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|error| map_database_error("calcular desempenho externo", error))?;
+        Ok(QuestionPerformanceSummary {
+            as_of_date: as_of_date.to_string(),
+            first_attempt_graded,
+            first_attempt_correct,
+            repeat_graded,
+            repeat_correct,
+            external_batches,
+            external_answered,
+            external_correct,
+        })
     }
 
     fn list_notebooks(&self) -> Result<Vec<NotebookSummary>, WorkspaceError> {
@@ -624,6 +746,41 @@ impl QuestionStore for LocalWorkspaceStore {
             schema_version: crate::domain::question_transfer::QUESTION_TRANSFER_SCHEMA_VERSION,
         })
     }
+}
+
+fn read_external_batch_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ExternalQuestionBatchSummary> {
+    Ok(ExternalQuestionBatchSummary {
+        id: row.get(0)?,
+        preparation_id: row.get(1)?,
+        preparation_name: row.get(2)?,
+        subject_id: row.get(3)?,
+        subject_name: row.get(4)?,
+        source_name: row.get(5)?,
+        studied_on: row.get(6)?,
+        answered_count: row.get(7)?,
+        correct_count: row.get(8)?,
+        created_at: row.get(9)?,
+    })
+}
+
+fn load_external_batch(
+    connection: &Connection,
+    id: &str,
+) -> Result<ExternalQuestionBatchSummary, WorkspaceError> {
+    connection
+        .query_row(
+            "SELECT b.id, b.preparation_id, p.name, b.subject_id, s.name,
+                    b.source_name, b.studied_on, b.answered_count, b.correct_count, b.created_at
+             FROM external_question_batches b
+             JOIN preparations p ON p.id = b.preparation_id
+             LEFT JOIN subjects s ON s.id = b.subject_id
+             WHERE b.id = ?1",
+            params![id],
+            read_external_batch_row,
+        )
+        .map_err(|error| map_database_error("ler lote externo salvo", error))
 }
 
 fn insert_question(
@@ -1190,6 +1347,125 @@ mod tests {
     use crate::domain::study_plan::{CreatePreparationInput, CreateSubjectInput};
     use sha2::{Digest, Sha256};
     use std::fs;
+
+    #[test]
+    fn separates_external_batches_from_first_attempts_and_repeats() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-external-batch-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-external-batch-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Questões externas")
+            .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let other = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Outra".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: false,
+            })
+            .expect("outra preparação deve ser criada");
+        let subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Redes".to_string(),
+                parent_id: None,
+            })
+            .expect("o assunto deve ser criado");
+        let invalid = store.create_external_question_batch(&CreateExternalQuestionBatchInput {
+            preparation_id: other.id,
+            subject_id: Some(subject.id.clone()),
+            source_name: None,
+            studied_on: "2032-01-11".to_string(),
+            answered_count: 10,
+            correct_count: 7,
+        });
+        assert!(invalid.is_err());
+
+        let question_id = Uuid::new_v4().to_string();
+        let annulled_id = Uuid::new_v4().to_string();
+        let connection = store
+            .active_database()
+            .expect("o banco da fixture deve abrir");
+        for (id, status) in [(&question_id, "active"), (&annulled_id, "annulled")] {
+            connection
+                .execute(
+                    "INSERT INTO questions (id, question_type, statement_markdown, answer_key, status)
+                     VALUES (?1, 'multiple_choice', 'Questão de teste', 'A', ?2)",
+                    params![id, status],
+                )
+                .expect("a questão sintética deve ser criada");
+        }
+        for (question_id, selected, result, answered_at) in [
+            (&question_id, "A", "correct", "2032-01-09 12:00:00"),
+            (&question_id, "B", "incorrect", "2032-01-10 12:00:00"),
+            (&annulled_id, "A", "correct", "2032-01-10 12:00:00"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO question_attempts
+                        (id, question_id, selected_key, confidence, elapsed_seconds, answer_key_at_attempt, result, answered_at)
+                     VALUES (?1, ?2, ?3, 'certain', 10, 'A', ?4, ?5)",
+                    params![Uuid::new_v4().to_string(), question_id, selected, answered_at, result],
+                )
+                .expect("a tentativa sintética deve ser criada");
+        }
+        drop(connection);
+        let batch = store
+            .create_external_question_batch(&CreateExternalQuestionBatchInput {
+                preparation_id: preparation.id,
+                subject_id: Some(subject.id),
+                source_name: Some("Caderno impresso".to_string()),
+                studied_on: "2032-01-11".to_string(),
+                answered_count: 20,
+                correct_count: 12,
+            })
+            .expect("o lote externo deve ser registrado");
+        assert_eq!(batch.subject_name.as_deref(), Some("Redes"));
+        store
+            .open_workspace(&workspace_path)
+            .expect("o espaço deve reabrir");
+        let performance = store
+            .question_performance("2032-01-11")
+            .expect("as métricas devem ser calculadas");
+        let earlier = store
+            .question_performance("2032-01-10")
+            .expect("o período anterior deve ser calculado");
+        let batches = store
+            .list_external_question_batches()
+            .expect("o lote deve continuar disponível");
+        let connection = store.active_database().expect("o banco deve reabrir");
+        let xp_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM xp_events", [], |row| row.get(0))
+            .expect("o XP deve ser consultado");
+        assert_eq!(performance.first_attempt_graded, 1);
+        assert_eq!(performance.first_attempt_correct, 1);
+        assert_eq!(performance.repeat_graded, 1);
+        assert_eq!(performance.repeat_correct, 0);
+        assert_eq!(performance.external_batches, 1);
+        assert_eq!(performance.external_answered, 20);
+        assert_eq!(performance.external_correct, 12);
+        assert_eq!(earlier.external_batches, 0);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(xp_count, 0);
+
+        drop(connection);
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
 
     #[test]
     fn creates_question_and_keeps_each_attempt() {
