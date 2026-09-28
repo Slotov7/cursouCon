@@ -67,6 +67,26 @@ pub struct CreateSubjectInput {
     pub parent_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct UpdateSubjectInput {
+    pub subject_id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectMoveDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone)]
+pub struct MoveSubjectInput {
+    pub subject_id: String,
+    pub direction: SubjectMoveDirection,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectStudyStatus {
@@ -224,6 +244,10 @@ pub fn normalize_subject_study_status_input(
 
 pub fn normalize_preparation_id(value: &str) -> Result<String, String> {
     normalize_id(value, "A preparação")
+}
+
+pub fn normalize_subject_id(value: &str) -> Result<String, String> {
+    normalize_id(value, "O assunto")
 }
 
 pub fn normalize_preparation_exam_config_input(
@@ -543,6 +567,31 @@ pub fn normalize_subject_input(input: CreateSubjectInput) -> Result<CreateSubjec
             .parent_id
             .map(|parent_id| normalize_id(&parent_id, "O assunto pai"))
             .transpose()?,
+    })
+}
+
+pub fn normalize_update_subject_input(
+    input: UpdateSubjectInput,
+) -> Result<UpdateSubjectInput, String> {
+    let subject_id = normalize_id(&input.subject_id, "O assunto")?;
+    let parent_id = input
+        .parent_id
+        .map(|id| normalize_id(&id, "O assunto pai"))
+        .transpose()?;
+    if parent_id.as_deref() == Some(subject_id.as_str()) {
+        return Err("Um assunto não pode ser pai de si mesmo.".to_string());
+    }
+    Ok(UpdateSubjectInput {
+        subject_id,
+        name: normalize_required_text(input.name, "O nome do assunto", 160)?,
+        parent_id,
+    })
+}
+
+pub fn normalize_move_subject_input(input: MoveSubjectInput) -> Result<MoveSubjectInput, String> {
+    Ok(MoveSubjectInput {
+        subject_id: normalize_id(&input.subject_id, "O assunto")?,
+        direction: input.direction,
     })
 }
 

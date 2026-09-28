@@ -51,6 +51,9 @@ import {
   type CreateStudyTaskRequest,
   type ConfigureSyncDestinationRequest,
   type CreateSubjectRequest,
+  type UpdateSubjectRequest,
+  type MoveSubjectRequest,
+  type ArchiveSubjectRequest,
   type SavePreparationExamConfigRequest,
   type DailyPlan,
   type DiagnosticExportResult,
@@ -763,6 +766,90 @@ export async function createSubject(request: CreateSubjectRequest): Promise<void
     return;
   }
   await invoke("create_subject", { request });
+}
+
+export async function updateSubject(request: UpdateSubjectRequest): Promise<SubjectSummary> {
+  if (!isTauri()) {
+    const subject = mockStudyPlan.subjects.find((item) => item.id === request.subjectId);
+    if (!subject) throw new Error("O assunto escolhido não existe mais.");
+    if (!request.name.trim()) throw new Error("O nome do assunto é obrigatório.");
+    const parent = request.parentId
+      ? mockStudyPlan.subjects.find((item) => item.id === request.parentId && item.preparationId === subject.preparationId)
+      : null;
+    if (request.parentId && !parent) throw new Error("O assunto pai não pertence à preparação.");
+    let ancestor = parent;
+    const visited = new Set<string>();
+    while (ancestor && !visited.has(ancestor.id)) {
+      if (ancestor.id === subject.id) throw new Error("Um assunto não pode ser movido para dentro da própria subárvore.");
+      visited.add(ancestor.id);
+      ancestor = mockStudyPlan.subjects.find((item) => item.id === ancestor?.parentId);
+    }
+    const newPosition = subject.parentId === request.parentId
+      ? subject.position
+      : Math.max(-1, ...mockStudyPlan.subjects
+          .filter((item) => item.preparationId === subject.preparationId && item.parentId === request.parentId)
+          .map((item) => item.position)) + 1;
+    const updated = { ...subject, name: request.name.trim(), parentId: request.parentId, position: newPosition };
+    mockStudyPlan.subjects = mockStudyPlan.subjects.map((item) => item.id === subject.id ? updated : item);
+    return updated;
+  }
+  const response = await invoke<unknown>("update_subject", { request });
+  return parseSubject(response);
+}
+
+export async function moveSubject(request: MoveSubjectRequest): Promise<SubjectSummary> {
+  if (!isTauri()) {
+    const subject = mockStudyPlan.subjects.find((item) => item.id === request.subjectId);
+    if (!subject) throw new Error("O assunto escolhido não existe mais.");
+    const siblings = mockStudyPlan.subjects
+      .filter((item) => item.preparationId === subject.preparationId && item.parentId === subject.parentId)
+      .sort((left, right) => left.position - right.position || left.name.localeCompare(right.name));
+    const index = siblings.findIndex((item) => item.id === subject.id);
+    const target = index + (request.direction === "up" ? -1 : 1);
+    if (target >= 0 && target < siblings.length) {
+      [siblings[index], siblings[target]] = [siblings[target], siblings[index]];
+      mockStudyPlan.subjects = mockStudyPlan.subjects.map((item) => {
+        const position = siblings.findIndex((sibling) => sibling.id === item.id);
+        return position < 0 ? item : { ...item, position };
+      });
+    }
+    return mockStudyPlan.subjects.find((item) => item.id === subject.id) ?? subject;
+  }
+  const response = await invoke<unknown>("move_subject", { request });
+  return parseSubject(response);
+}
+
+export async function archiveSubject(request: ArchiveSubjectRequest): Promise<void> {
+  if (!isTauri()) {
+    const subject = mockStudyPlan.subjects.find((item) => item.id === request.subjectId);
+    if (!subject) throw new Error("O assunto escolhido não existe mais.");
+    const archived = new Set([subject.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const item of mockStudyPlan.subjects) {
+        if (item.parentId && archived.has(item.parentId) && !archived.has(item.id)) {
+          archived.add(item.id);
+          changed = true;
+        }
+      }
+    }
+    if (mockActiveSession && archived.has(mockActiveSession.subjectId ?? "") &&
+      ["active", "paused", "interrupted"].includes(mockActiveSession.status)) {
+      throw new Error("Encerre a sessão aberta nesta subárvore antes de arquivar.");
+    }
+    mockStudyPlan.subjects = mockStudyPlan.subjects.filter((item) => !archived.has(item.id));
+    const currentPosition = mockStudyPlanning.cyclePosition;
+    const remaining = mockStudyPlanning.cycleSlots.filter((slot) => !archived.has(slot.subjectId));
+    const nextPosition = remaining.findIndex((slot) => slot.position >= currentPosition);
+    mockStudyPlanning = {
+      ...mockStudyPlanning,
+      cycleSlots: remaining.map((slot, position) => ({ ...slot, position })),
+      cyclePosition: Math.max(0, nextPosition),
+    };
+    return;
+  }
+  await invoke("archive_subject", { request });
 }
 
 export async function savePreparationExamConfig(

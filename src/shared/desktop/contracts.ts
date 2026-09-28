@@ -202,6 +202,21 @@ export type CreateSubjectRequest = {
   parentId: string | null;
 };
 
+export type UpdateSubjectRequest = {
+  subjectId: string;
+  name: string;
+  parentId: string | null;
+};
+
+export type MoveSubjectRequest = {
+  subjectId: string;
+  direction: "up" | "down";
+};
+
+export type ArchiveSubjectRequest = {
+  subjectId: string;
+};
+
 export type SavePreparationExamConfigRequest = {
   preparationId: string;
   referenceMaterialId: string | null;

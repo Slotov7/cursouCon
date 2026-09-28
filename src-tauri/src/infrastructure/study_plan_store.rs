@@ -4,10 +4,11 @@ use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study_plan::{
     calculate_subject_coverage, default_study_availability, generate_cycle_slots,
     study_cycle_warning, validate_cycle_slots_capacity, CreatePreparationInput, CreateSubjectInput,
-    PreparationSummary, ReferenceDocumentStatus, SavePreparationExamConfigInput,
+    MoveSubjectInput, PreparationSummary, ReferenceDocumentStatus, SavePreparationExamConfigInput,
     SaveStudyPlanningInput, SetPrimaryPreparationInput, SetSubjectStudyStatusInput,
     StudyCycleSlotInput, StudyCycleSlotSummary, StudyCycleSubject, StudyPlan, StudyPlanningSummary,
-    SubjectPrioritySummary, SubjectStudyStatus, SubjectSummary, DEFAULT_REVIEW_RESERVE_PERCENT,
+    SubjectMoveDirection, SubjectPrioritySummary, SubjectStudyStatus, SubjectSummary,
+    UpdateSubjectInput, DEFAULT_REVIEW_RESERVE_PERCENT,
 };
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
@@ -168,6 +169,157 @@ impl StudyPlanStore for LocalWorkspaceStore {
             .map_err(|error| map_database_error("confirmar assunto", error))?;
 
         Ok(summary)
+    }
+
+    fn update_subject(&self, input: &UpdateSubjectInput) -> Result<SubjectSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar edição do assunto", error))?;
+        let current = load_subject_by_id(&transaction, &input.subject_id)?;
+        if let Some(parent_id) = input.parent_id.as_deref() {
+            ensure_parent_exists(&transaction, &current.preparation_id, parent_id)?;
+            let forms_cycle: bool = transaction
+                .query_row(
+                    "WITH RECURSIVE ancestors(id, parent_id) AS (
+                         SELECT id, parent_id FROM subjects WHERE id = ?1
+                         UNION
+                         SELECT subjects.id, subjects.parent_id
+                         FROM subjects JOIN ancestors ON subjects.id = ancestors.parent_id
+                     )
+                     SELECT EXISTS(SELECT 1 FROM ancestors WHERE id = ?2)",
+                    params![parent_id, current.id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|error| map_database_error("verificar hierarquia do assunto", error))?;
+            if forms_cycle {
+                return Err(WorkspaceError::InvalidInput(
+                    "Um assunto não pode ser movido para dentro da própria subárvore.".to_string(),
+                ));
+            }
+        }
+
+        let parent_changed = current.parent_id != input.parent_id;
+        let position = if parent_changed {
+            transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(position), -1) + 1 FROM subjects
+                     WHERE preparation_id = ?1 AND parent_id IS ?2 AND archived_at IS NULL",
+                    params![current.preparation_id.as_str(), input.parent_id.as_deref()],
+                    |row| row.get(0),
+                )
+                .map_err(|error| map_database_error("calcular posição do assunto movido", error))?
+        } else {
+            current.position
+        };
+        transaction
+            .execute(
+                "UPDATE subjects SET name = ?1, parent_id = ?2, position = ?3
+                 WHERE id = ?4 AND archived_at IS NULL",
+                params![input.name, input.parent_id, position, input.subject_id],
+            )
+            .map_err(|error| map_database_error("editar assunto", error))?;
+        if parent_changed {
+            normalize_sibling_positions(
+                &transaction,
+                &current.preparation_id,
+                current.parent_id.as_deref(),
+            )?;
+            normalize_sibling_positions(
+                &transaction,
+                &current.preparation_id,
+                input.parent_id.as_deref(),
+            )?;
+        }
+        let updated = load_subject_by_id(&transaction, &input.subject_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar edição do assunto", error))?;
+        Ok(updated)
+    }
+
+    fn move_subject(&self, input: &MoveSubjectInput) -> Result<SubjectSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar ordenação dos assuntos", error))?;
+        let current = load_subject_by_id(&transaction, &input.subject_id)?;
+        let mut siblings = sibling_ids(
+            &transaction,
+            &current.preparation_id,
+            current.parent_id.as_deref(),
+        )?;
+        let index = siblings
+            .iter()
+            .position(|id| id == &current.id)
+            .ok_or_else(|| {
+                WorkspaceError::Database("o assunto não foi encontrado entre os irmãos".to_string())
+            })?;
+        let target = match input.direction {
+            SubjectMoveDirection::Up => index.checked_sub(1),
+            SubjectMoveDirection::Down => (index + 1 < siblings.len()).then_some(index + 1),
+        };
+        if let Some(target) = target {
+            siblings.swap(index, target);
+            save_sibling_positions(&transaction, &siblings)?;
+        }
+        let updated = load_subject_by_id(&transaction, &input.subject_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar ordenação dos assuntos", error))?;
+        Ok(updated)
+    }
+
+    fn archive_subject(&self, subject_id: &str) -> Result<(), WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar arquivamento dos assuntos", error))?;
+        let subject = load_subject_by_id(&transaction, subject_id)?;
+        let has_open_session: bool = transaction
+            .query_row(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT id FROM subjects WHERE id = ?1 AND preparation_id = ?2
+                     UNION
+                     SELECT subjects.id FROM subjects JOIN subtree ON subjects.parent_id = subtree.id
+                     WHERE subjects.preparation_id = ?2 AND subjects.archived_at IS NULL
+                 )
+                 SELECT EXISTS(
+                     SELECT 1 FROM study_sessions
+                     WHERE subject_id IN (SELECT id FROM subtree)
+                       AND status IN ('active', 'paused', 'interrupted')
+                 )",
+                params![subject_id, subject.preparation_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|error| map_database_error("verificar sessões da subárvore", error))?;
+        if has_open_session {
+            return Err(WorkspaceError::InvalidInput(
+                "Encerre a sessão aberta nesta subárvore antes de arquivar.".to_string(),
+            ));
+        }
+        transaction
+            .execute(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT id FROM subjects WHERE id = ?1 AND preparation_id = ?2
+                     UNION
+                     SELECT subjects.id FROM subjects JOIN subtree ON subjects.parent_id = subtree.id
+                     WHERE subjects.preparation_id = ?2 AND subjects.archived_at IS NULL
+                 )
+                 UPDATE subjects SET archived_at = CURRENT_TIMESTAMP
+                 WHERE id IN (SELECT id FROM subtree)",
+                params![subject_id, subject.preparation_id.as_str()],
+            )
+            .map_err(|error| map_database_error("arquivar subárvore de assuntos", error))?;
+        normalize_sibling_positions(
+            &transaction,
+            &subject.preparation_id,
+            subject.parent_id.as_deref(),
+        )?;
+        compact_cycle_after_archive(&transaction, &subject.preparation_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar arquivamento dos assuntos", error))
     }
 
     fn save_preparation_exam_config(
@@ -810,6 +962,126 @@ fn replace_cycle_slots(
     Ok(())
 }
 
+fn sibling_ids(
+    connection: &rusqlite::Connection,
+    preparation_id: &str,
+    parent_id: Option<&str>,
+) -> Result<Vec<String>, WorkspaceError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id FROM subjects
+             WHERE preparation_id = ?1 AND parent_id IS ?2 AND archived_at IS NULL
+             ORDER BY position, name COLLATE NOCASE, id",
+        )
+        .map_err(|error| map_database_error("preparar ordenação dos irmãos", error))?;
+    let rows = statement
+        .query_map(params![preparation_id, parent_id], |row| row.get(0))
+        .map_err(|error| map_database_error("consultar irmãos do assunto", error))?;
+    rows.map(|row| row.map_err(|error| map_database_error("ler irmão do assunto", error)))
+        .collect()
+}
+
+fn save_sibling_positions(
+    connection: &rusqlite::Connection,
+    sibling_ids: &[String],
+) -> Result<(), WorkspaceError> {
+    for (position, subject_id) in sibling_ids.iter().enumerate() {
+        let updated = connection
+            .execute(
+                "UPDATE subjects SET position = ?1 WHERE id = ?2 AND archived_at IS NULL",
+                params![position as i64, subject_id],
+            )
+            .map_err(|error| map_database_error("atualizar ordem dos assuntos", error))?;
+        if updated != 1 {
+            return Err(WorkspaceError::Database(
+                "um assunto mudou durante a ordenação".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_sibling_positions(
+    connection: &rusqlite::Connection,
+    preparation_id: &str,
+    parent_id: Option<&str>,
+) -> Result<(), WorkspaceError> {
+    let siblings = sibling_ids(connection, preparation_id, parent_id)?;
+    save_sibling_positions(connection, &siblings)
+}
+
+fn compact_cycle_after_archive(
+    connection: &rusqlite::Connection,
+    preparation_id: &str,
+) -> Result<(), WorkspaceError> {
+    let slots = {
+        let mut statement = connection
+            .prepare(
+                "SELECT slots.position, slots.subject_id, slots.planned_minutes,
+                        subjects.archived_at IS NULL
+                 FROM study_cycle_slots slots
+                 JOIN subjects ON subjects.id = slots.subject_id
+                 WHERE slots.preparation_id = ?1
+                 ORDER BY slots.position",
+            )
+            .map_err(|error| map_database_error("preparar ciclo após arquivamento", error))?;
+        let rows = statement
+            .query_map(params![preparation_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, bool>(3)?,
+                ))
+            })
+            .map_err(|error| map_database_error("consultar ciclo após arquivamento", error))?;
+        rows.map(|row| row.map_err(|error| map_database_error("ler bloco do ciclo", error)))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let remaining: Vec<_> = slots.iter().filter(|(_, _, _, active)| *active).collect();
+    if slots.len() == remaining.len() {
+        return Ok(());
+    }
+    let current_position: i64 = connection
+        .query_row(
+            "SELECT cycle_position FROM study_planning_settings WHERE preparation_id = ?1",
+            params![preparation_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_database_error("ler posição do ciclo", error))?
+        .unwrap_or(0);
+    let next_position = remaining
+        .iter()
+        .position(|(original_position, _, _, _)| *original_position >= current_position)
+        .unwrap_or(0);
+
+    connection
+        .execute(
+            "DELETE FROM study_cycle_slots WHERE preparation_id = ?1",
+            params![preparation_id],
+        )
+        .map_err(|error| map_database_error("remover blocos arquivados do ciclo", error))?;
+    for (position, (_, subject_id, planned_minutes, _)) in remaining.iter().enumerate() {
+        connection
+            .execute(
+                "INSERT INTO study_cycle_slots (preparation_id, position, subject_id, planned_minutes)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![preparation_id, position as i64, subject_id, planned_minutes],
+            )
+            .map_err(|error| map_database_error("preservar bloco ativo do ciclo", error))?;
+    }
+    connection
+        .execute(
+            "UPDATE study_planning_settings
+             SET cycle_position = ?1, updated_at = CURRENT_TIMESTAMP
+             WHERE preparation_id = ?2",
+            params![next_position as i64, preparation_id],
+        )
+        .map_err(|error| map_database_error("preservar próxima ação do ciclo", error))?;
+    Ok(())
+}
+
 fn ensure_preparation_exists(
     connection: &rusqlite::Connection,
     preparation_id: &str,
@@ -911,6 +1183,167 @@ mod tests {
         assert_eq!(plan.subject_coverage[0].total_subjects, 2);
         assert_eq!(plan.subject_coverage[0].completed_subjects, 0);
 
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn moves_and_archives_subtrees_without_losing_history_or_next_cycle_action() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-tree-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-tree-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Árvore de teste")
+            .expect("o espaço temporário deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let first = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Primeira".to_string(),
+                parent_id: None,
+            })
+            .expect("a primeira disciplina deve ser criada");
+        let second = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Segunda".to_string(),
+                parent_id: None,
+            })
+            .expect("a segunda disciplina deve ser criada");
+        let child = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Filho".to_string(),
+                parent_id: Some(first.id.clone()),
+            })
+            .expect("o filho deve ser criado");
+        let grandchild = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Neto".to_string(),
+                parent_id: Some(child.id.clone()),
+            })
+            .expect("o neto deve ser criado");
+        let attempted_cycle = store.update_subject(&UpdateSubjectInput {
+            subject_id: first.id.clone(),
+            name: first.name.clone(),
+            parent_id: Some(grandchild.id.clone()),
+        });
+        assert!(attempted_cycle.is_err());
+        let moved = store
+            .update_subject(&UpdateSubjectInput {
+                subject_id: child.id.clone(),
+                name: "Filho editado".to_string(),
+                parent_id: Some(second.id.clone()),
+            })
+            .expect("a subárvore deve mudar de pai mantendo seus IDs");
+        assert_eq!(moved.parent_id.as_deref(), Some(second.id.as_str()));
+        let reordered = store
+            .move_subject(&MoveSubjectInput {
+                subject_id: second.id.clone(),
+                direction: SubjectMoveDirection::Up,
+            })
+            .expect("os irmãos devem trocar de ordem");
+        assert_eq!(reordered.position, 0);
+
+        store
+            .save_study_planning(&SaveStudyPlanningInput {
+                preparation_id: preparation.id.clone(),
+                availability: default_study_availability(),
+                subject_priorities: Vec::new(),
+                review_reserve_percent: DEFAULT_REVIEW_RESERVE_PERCENT,
+                cycle_slots: Some(vec![
+                    StudyCycleSlotInput {
+                        subject_id: child.id.clone(),
+                        planned_minutes: 30,
+                    },
+                    StudyCycleSlotInput {
+                        subject_id: first.id.clone(),
+                        planned_minutes: 30,
+                    },
+                    StudyCycleSlotInput {
+                        subject_id: second.id.clone(),
+                        planned_minutes: 30,
+                    },
+                ]),
+            })
+            .expect("o ciclo deve preservar os assuntos vinculados");
+        let task_id = Uuid::new_v4().to_string();
+        let session_id = Uuid::new_v4().to_string();
+        let connection = store
+            .active_database()
+            .expect("o banco da fixture deve abrir");
+        connection
+            .execute(
+                "INSERT INTO study_tasks (id, preparation_id, subject_id, title, planned_minutes, scheduled_for)
+                 VALUES (?1, ?2, ?3, 'Tarefa histórica', 30, '2032-01-01')",
+                params![task_id, preparation.id, child.id],
+            )
+            .expect("a tarefa histórica deve ser criada");
+        connection
+            .execute(
+                "INSERT INTO study_sessions (id, task_id, subject_id, started_at, status)
+                 VALUES (?1, ?2, ?3, '2032-01-01 12:00:00', 'active')",
+                params![session_id, task_id, child.id],
+            )
+            .expect("a sessão aberta deve ser criada");
+        drop(connection);
+        assert!(store.archive_subject(&second.id).is_err());
+        assert_eq!(
+            store
+                .study_plan()
+                .expect("o plano deve continuar intacto")
+                .subjects
+                .len(),
+            4
+        );
+
+        let connection = store.active_database().expect("o banco deve reabrir");
+        connection
+            .execute(
+                "UPDATE study_sessions SET status = 'completed', ended_at = CURRENT_TIMESTAMP
+                 WHERE id = ?1",
+                params![session_id],
+            )
+            .expect("a sessão da fixture deve encerrar");
+        drop(connection);
+        store
+            .archive_subject(&second.id)
+            .expect("a subárvore deve ser arquivada");
+        let plan = store
+            .study_plan()
+            .expect("o plano deve excluir itens arquivados");
+        let planning = store
+            .study_planning(&preparation.id)
+            .expect("o ciclo deve continuar legível");
+        let connection = store.active_database().expect("o banco deve ser lido");
+        let historical_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM study_sessions WHERE id = ?1 AND subject_id = ?2 AND status = 'completed'",
+                params![session_id, child.id],
+                |row| row.get(0),
+            )
+            .expect("a sessão histórica deve continuar disponível");
+        assert_eq!(historical_count, 1);
+        assert_eq!(plan.subjects.len(), 1);
+        assert_eq!(plan.subjects[0].id, first.id);
+        assert_eq!(planning.cycle_slots.len(), 1);
+        assert_eq!(planning.cycle_slots[0].subject_id, first.id);
+        assert_eq!(planning.cycle_slots[0].position, 0);
+        assert_eq!(planning.cycle_position, 0);
+
+        drop(connection);
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);
     }

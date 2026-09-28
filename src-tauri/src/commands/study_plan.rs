@@ -2,11 +2,12 @@ use crate::application::study_plan_service::StudyPlanService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
 use crate::domain::study_plan::{
-    CreatePreparationInput, CreateSubjectInput, PreparationSummary, ReferenceDocumentStatus,
-    SavePreparationExamConfigInput, SaveStudyPlanningInput, SetPrimaryPreparationInput,
-    SetSubjectStudyStatusInput, StudyCycleSlotInput, StudyDayAvailability, StudyPlan,
-    StudyPlanningSummary, SubjectExamWeightInput, SubjectPriorityInput, SubjectStudyStatus,
-    SubjectSummary, DEFAULT_REVIEW_RESERVE_PERCENT,
+    CreatePreparationInput, CreateSubjectInput, MoveSubjectInput, PreparationSummary,
+    ReferenceDocumentStatus, SavePreparationExamConfigInput, SaveStudyPlanningInput,
+    SetPrimaryPreparationInput, SetSubjectStudyStatusInput, StudyCycleSlotInput,
+    StudyDayAvailability, StudyPlan, StudyPlanningSummary, SubjectExamWeightInput,
+    SubjectMoveDirection, SubjectPriorityInput, SubjectStudyStatus, SubjectSummary,
+    UpdateSubjectInput, DEFAULT_REVIEW_RESERVE_PERCENT,
 };
 use serde::Deserialize;
 use tauri::AppHandle;
@@ -29,6 +30,27 @@ pub struct CreateSubjectRequest {
     pub preparation_id: String,
     pub name: String,
     pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSubjectRequest {
+    pub subject_id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveSubjectRequest {
+    pub subject_id: String,
+    pub direction: SubjectMoveDirection,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveSubjectRequest {
+    pub subject_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +182,43 @@ pub fn create_subject(
 
     StudyPlanService::new(store)
         .create_subject(input)
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn update_subject(
+    app: AppHandle,
+    request: UpdateSubjectRequest,
+) -> Result<SubjectSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyPlanService::new(store)
+        .update_subject(UpdateSubjectInput {
+            subject_id: request.subject_id,
+            name: request.name,
+            parent_id: request.parent_id,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn move_subject(
+    app: AppHandle,
+    request: MoveSubjectRequest,
+) -> Result<SubjectSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyPlanService::new(store)
+        .move_subject(MoveSubjectInput {
+            subject_id: request.subject_id,
+            direction: request.direction,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn archive_subject(app: AppHandle, request: ArchiveSubjectRequest) -> Result<(), CommandError> {
+    let store = local_workspace_store(&app)?;
+    StudyPlanService::new(store)
+        .archive_subject(&request.subject_id)
         .map_err(CommandError::from)
 }
 

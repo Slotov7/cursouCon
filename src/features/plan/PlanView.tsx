@@ -3,6 +3,9 @@ import {
   createPreparation,
   createStudyTask,
   createSubject,
+  updateSubject,
+  moveSubject,
+  archiveSubject,
   getStudyPlanning,
   getMaterials,
   getDesktopErrorMessage,
@@ -16,6 +19,7 @@ import type {
   StudyPlan,
   StudyPlanningSummary,
   SubjectStudyStatus,
+  SubjectSummary,
 } from "../../shared/desktop/contracts";
 import { StudyCyclePanel } from "./StudyCyclePanel";
 import { dateKeyForTimezone } from "../../shared/date";
@@ -63,6 +67,13 @@ export function PlanView({
 
   // Subject form state
   const [subjectName, setSubjectName] = useState("");
+  const [subjectParentId, setSubjectParentId] = useState("");
+  const [editingSubjectId, setEditingSubjectId] = useState<string | null>(null);
+  const [editingSubjectName, setEditingSubjectName] = useState("");
+  const [editingParentId, setEditingParentId] = useState("");
+  const [subjectActionError, setSubjectActionError] = useState<string | null>(null);
+  const [subjectActionMessage, setSubjectActionMessage] = useState<string | null>(null);
+  const [pendingSubjectId, setPendingSubjectId] = useState<string | null>(null);
 
   // Task form state
   const [taskTitle, setTaskTitle] = useState("");
@@ -99,6 +110,7 @@ export function PlanView({
   const subjects = currentPlan.subjects.filter(
     (subj) => !selectedPreparation || subj.preparationId === selectedPreparation.id,
   );
+  const orderedSubjects = orderSubjectsByHierarchy(subjects);
   const subjectCoverage = currentPlan.subjectCoverage.find(
     (coverage) => coverage.preparationId === selectedPreparation?.id,
   );
@@ -132,7 +144,7 @@ export function PlanView({
     return () => {
       cancelled = true;
     };
-  }, [selectedPreparation?.id, currentPlan.subjects.length]);
+  }, [selectedPreparation?.id, plan]);
 
   useEffect(() => {
     let cancelled = false;
@@ -178,6 +190,61 @@ export function PlanView({
       setSubjectStatusError(getDesktopErrorMessage(operationError));
     } finally {
       setUpdatingSubjectId(null);
+    }
+  };
+
+  const handleUpdateSubject = async (subject: SubjectSummary) => {
+    setSubjectActionError(null);
+    setSubjectActionMessage(null);
+    setPendingSubjectId(subject.id);
+    try {
+      await updateSubject({
+        subjectId: subject.id,
+        name: editingSubjectName,
+        parentId: editingParentId || null,
+      });
+      setEditingSubjectId(null);
+      setSubjectActionMessage("Assunto e posição na árvore salvos localmente.");
+      onPlanChanged();
+    } catch (operationError: unknown) {
+      setSubjectActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingSubjectId(null);
+    }
+  };
+
+  const handleMoveSubject = async (subject: SubjectSummary, direction: "up" | "down") => {
+    setSubjectActionError(null);
+    setSubjectActionMessage(null);
+    setPendingSubjectId(subject.id);
+    try {
+      await moveSubject({ subjectId: subject.id, direction });
+      setSubjectActionMessage("Ordem dos assuntos salva localmente.");
+      onPlanChanged();
+    } catch (operationError: unknown) {
+      setSubjectActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingSubjectId(null);
+    }
+  };
+
+  const handleArchiveSubject = async (subject: SubjectSummary) => {
+    const descendantCount = subjects.filter((item) => isDescendantOf(subjects, item, subject.id)).length;
+    if (!window.confirm(
+      `Arquivar ${subject.name}${descendantCount ? ` e ${descendantCount} subassunto(s)` : ""}? Tarefas e histórico permanecem salvos.`,
+    )) return;
+    setSubjectActionError(null);
+    setSubjectActionMessage(null);
+    setPendingSubjectId(subject.id);
+    try {
+      await archiveSubject({ subjectId: subject.id });
+      setEditingSubjectId(null);
+      setSubjectActionMessage("Assunto arquivado. O histórico e as tarefas foram preservados.");
+      onPlanChanged();
+    } catch (operationError: unknown) {
+      setSubjectActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingSubjectId(null);
     }
   };
 
@@ -244,9 +311,10 @@ export function PlanView({
       await createSubject({
         preparationId: selectedPreparation.id,
         name: subjectName,
-        parentId: null,
+        parentId: subjectParentId || null,
       });
       setSubjectName("");
+      setSubjectParentId("");
       setActiveModal("none");
       onPlanChanged();
     } catch (err: unknown) {
@@ -357,6 +425,16 @@ export function PlanView({
           {subjectStatusError}
         </p>
       )}
+      {subjectActionError && (
+        <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">
+          {subjectActionError}
+        </p>
+      )}
+      {subjectActionMessage && (
+        <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-300" role="status">
+          {subjectActionMessage}
+        </p>
+      )}
       {primaryError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">{primaryError}</p>}
       {primaryMessage && <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-300" role="status">{primaryMessage}</p>}
 
@@ -406,6 +484,7 @@ export function PlanView({
               type="button"
               onClick={() => {
                 setFormError(null);
+                setSubjectParentId("");
                 setActiveModal("subject");
               }}
               className={buttonPrimaryClass}
@@ -652,7 +731,7 @@ export function PlanView({
               {activeModal === "preparation"
                 ? "Cadastrar Novo Concurso / Preparação"
                 : activeModal === "subject"
-                ? "Adicionar Nova Disciplina ao Edital"
+                ? "Adicionar Disciplina ou Assunto ao Edital"
                 : "Agendar Tarefa de Estudo"}
             </h3>
             <button
@@ -759,7 +838,7 @@ export function PlanView({
           {activeModal === "subject" && (
             <form onSubmit={handleSubjectSubmit} className="grid gap-4 max-w-lg">
               <label className={fieldClass}>
-                Nome da Disciplina
+                Nome da disciplina ou assunto
                 <input
                   className={inputClass}
                   type="text"
@@ -768,6 +847,16 @@ export function PlanView({
                   onChange={(e) => setSubjectName(e.target.value)}
                   disabled={isSubmitting}
                 />
+              </label>
+
+              <label className={fieldClass}>
+                Assunto pai
+                <select className={selectClass} value={subjectParentId} onChange={(event) => setSubjectParentId(event.target.value)} disabled={isSubmitting}>
+                  <option value="">Nenhum · disciplina principal</option>
+                  {orderedSubjects.map(({ subject, depth }) => (
+                    <option key={subject.id} value={subject.id}>{"— ".repeat(depth)}{subject.name}</option>
+                  ))}
+                </select>
               </label>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-line">
@@ -874,13 +963,13 @@ export function PlanView({
       <section className="grid gap-5" aria-labelledby="edital-grid-title">
         <div className="flex items-center justify-between border-b border-line pb-3">
           <div>
-            <Eyebrow>Grade de Disciplinas</Eyebrow>
+            <Eyebrow>Árvore do edital</Eyebrow>
             <h3 id="edital-grid-title" className="mt-1 font-heading text-xl font-bold text-ink">
               Conteúdo Programático do Edital
             </h3>
           </div>
           <span className="text-xs font-medium text-muted">
-            {subjects.length} disciplinas ativas
+            {subjects.length} disciplina(s) e assunto(s) ativos
           </span>
         </div>
 
@@ -901,27 +990,36 @@ export function PlanView({
             <p className="text-sm text-muted">Nenhuma disciplina cadastrada para {selectedPreparation?.name} ainda.</p>
             <button
               type="button"
-              onClick={() => setActiveModal("subject")}
+              onClick={() => {
+                setSubjectParentId("");
+                setActiveModal("subject");
+              }}
               className={`${buttonPrimaryClass} mt-4 text-xs`}
             >
               + Adicionar Primeira Disciplina
             </button>
           </div>
         ) : (
-          <div className="grid gap-4 lg:grid-cols-2">
-            {subjects.map((subj, idx) => (
+          <div className="grid gap-3">
+            {orderedSubjects.map(({ subject: subj, depth }, idx) => (
               <div
                 key={subj.id}
                 className="flex flex-col justify-between rounded-2xl border border-line bg-card p-5 shadow-xs transition-all hover:border-blue-500/40"
+                style={{ marginLeft: `${Math.min(depth, 3) * 12}px` }}
               >
                 <div>
                   {/* Header info */}
                   <div className="flex items-start justify-between gap-3 border-b border-line pb-3">
                     <div>
                       <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-muted">
-                        Disciplina 0{idx + 1}
-                      </span>
-                      <h4 className="font-heading text-lg font-bold text-ink mt-0.5">{subj.name}</h4>
+                         Item {idx + 1} {depth > 0 ? `· nível ${depth + 1}` : ""}
+                       </span>
+                       <h4 className="font-heading text-lg font-bold text-ink mt-0.5">{subj.name}</h4>
+                       {subj.parentId && (
+                         <p className="mt-1 text-[11px] text-muted">
+                           Dentro de {subjects.find((item) => item.id === subj.parentId)?.name ?? "assunto anterior"}
+                         </p>
+                       )}
                     </div>
 
                     <div className="grid text-right">
@@ -957,11 +1055,52 @@ export function PlanView({
                         : "Marcar a teoria como concluída não registra domínio automaticamente."}
                     </p>
                   </div>
+
+                  {editingSubjectId === subj.id && (
+                    <div className="mt-4 grid gap-3 rounded-xl border border-blue-500/25 bg-paper/60 p-4 sm:grid-cols-2">
+                      <label className={fieldClass}>
+                        Nome do assunto
+                        <input className={inputClass} value={editingSubjectName} onChange={(event) => setEditingSubjectName(event.target.value)} maxLength={160} disabled={pendingSubjectId !== null} />
+                      </label>
+                      <label className={fieldClass}>
+                        Assunto pai
+                        <select className={selectClass} value={editingParentId} onChange={(event) => setEditingParentId(event.target.value)} disabled={pendingSubjectId !== null}>
+                          <option value="">Nenhum · disciplina principal</option>
+                          {orderedSubjects
+                            .filter(({ subject }) => subject.id !== subj.id && !isDescendantOf(subjects, subject, subj.id))
+                            .map(({ subject, depth: parentDepth }) => (
+                              <option key={subject.id} value={subject.id}>{"— ".repeat(parentDepth)}{subject.name}</option>
+                            ))}
+                        </select>
+                      </label>
+                      <div className="flex flex-wrap justify-end gap-2 sm:col-span-2">
+                        <button type="button" className={buttonQuietClass} onClick={() => setEditingSubjectId(null)} disabled={pendingSubjectId !== null}>Cancelar</button>
+                        <button type="button" className={buttonPrimaryClass} onClick={() => void handleUpdateSubject(subj)} disabled={pendingSubjectId !== null || !editingSubjectName.trim()}>
+                          {pendingSubjectId === subj.id ? "Salvando..." : "Salvar assunto"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Card Footer Actions */}
-                <div className="mt-5 flex items-center justify-between border-t border-line pt-3">
-                  <span className="text-xs font-semibold text-muted">Pronta para receber tópicos</span>
+                <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+                  <button type="button" className={buttonQuietClass} onClick={() => {
+                    setEditingSubjectId(subj.id);
+                    setEditingSubjectName(subj.name);
+                    setEditingParentId(subj.parentId ?? "");
+                    setSubjectActionError(null);
+                  }} disabled={pendingSubjectId !== null}>Editar</button>
+                  <button type="button" className={buttonQuietClass} aria-label={`Subir ${subj.name}`} onClick={() => void handleMoveSubject(subj, "up")}
+                    disabled={pendingSubjectId !== null || !hasSiblingInDirection(subjects, subj, "up")}>↑ Subir</button>
+                  <button type="button" className={buttonQuietClass} aria-label={`Descer ${subj.name}`} onClick={() => void handleMoveSubject(subj, "down")}
+                    disabled={pendingSubjectId !== null || !hasSiblingInDirection(subjects, subj, "down")}>↓ Descer</button>
+                  <button type="button" className={buttonQuietClass} onClick={() => {
+                    setSubjectName("");
+                    setSubjectParentId(subj.id);
+                    setActiveModal("subject");
+                  }} disabled={pendingSubjectId !== null}>+ Subassunto</button>
+                  <button type="button" className={buttonQuietClass} onClick={() => void handleArchiveSubject(subj)} disabled={pendingSubjectId !== null}>Arquivar</button>
                   <button
                     type="button"
                     onClick={() => {
@@ -969,9 +1108,9 @@ export function PlanView({
                       setTaskTitle(`Estudo focado de ${subj.name}`);
                       setActiveModal("task");
                     }}
-                    className={`${buttonSecondaryClass} px-3 py-1 text-xs`}
+                    className={`${buttonSecondaryClass} ml-auto px-3 py-1 text-xs`}
                   >
-                    + Estudar Matéria
+                    + Estudar assunto
                   </button>
                 </div>
               </div>
@@ -981,6 +1120,54 @@ export function PlanView({
       </section>
     </div>
   );
+}
+
+function orderSubjectsByHierarchy(subjects: SubjectSummary[]): Array<{ subject: SubjectSummary; depth: number }> {
+  const byParent = new Map<string | null, SubjectSummary[]>();
+  const ids = new Set(subjects.map((subject) => subject.id));
+  for (const subject of subjects) {
+    const parent = subject.parentId && ids.has(subject.parentId) ? subject.parentId : null;
+    const siblings = byParent.get(parent) ?? [];
+    siblings.push(subject);
+    byParent.set(parent, siblings);
+  }
+  for (const siblings of byParent.values()) {
+    siblings.sort((left, right) => left.position - right.position || left.name.localeCompare(right.name, "pt-BR") || left.id.localeCompare(right.id));
+  }
+  const visited = new Set<string>();
+  const result: Array<{ subject: SubjectSummary; depth: number }> = [];
+  const visit = (subject: SubjectSummary, depth: number) => {
+    if (visited.has(subject.id)) return;
+    visited.add(subject.id);
+    result.push({ subject, depth });
+    for (const child of byParent.get(subject.id) ?? []) visit(child, depth + 1);
+  };
+  for (const root of byParent.get(null) ?? []) visit(root, 0);
+  for (const subject of subjects) visit(subject, 0);
+  return result;
+}
+
+function isDescendantOf(subjects: SubjectSummary[], subject: SubjectSummary, ancestorId: string): boolean {
+  let parentId = subject.parentId;
+  const visited = new Set<string>();
+  while (parentId && !visited.has(parentId)) {
+    if (parentId === ancestorId) return true;
+    visited.add(parentId);
+    parentId = subjects.find((item) => item.id === parentId)?.parentId ?? null;
+  }
+  return false;
+}
+
+function hasSiblingInDirection(
+  subjects: SubjectSummary[],
+  subject: SubjectSummary,
+  direction: "up" | "down",
+): boolean {
+  const siblings = subjects
+    .filter((item) => item.parentId === subject.parentId)
+    .sort((left, right) => left.position - right.position || left.name.localeCompare(right.name, "pt-BR") || left.id.localeCompare(right.id));
+  const index = siblings.findIndex((item) => item.id === subject.id);
+  return direction === "up" ? index > 0 : index >= 0 && index < siblings.length - 1;
 }
 
 function parseLocalDate(dateKey: string | null): Date | null {

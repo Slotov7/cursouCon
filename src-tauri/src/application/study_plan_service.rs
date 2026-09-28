@@ -1,10 +1,12 @@
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study_plan::{
-    normalize_preparation_exam_config_input, normalize_preparation_id, normalize_preparation_input,
-    normalize_study_planning_input, normalize_subject_input, normalize_subject_study_status_input,
-    CreatePreparationInput, CreateSubjectInput, PreparationSummary, SavePreparationExamConfigInput,
-    SaveStudyPlanningInput, SetPrimaryPreparationInput, SetSubjectStudyStatusInput, StudyPlan,
-    StudyPlanningSummary, SubjectSummary,
+    normalize_move_subject_input, normalize_preparation_exam_config_input,
+    normalize_preparation_id, normalize_preparation_input, normalize_study_planning_input,
+    normalize_subject_input, normalize_subject_study_status_input, normalize_update_subject_input,
+    CreatePreparationInput, CreateSubjectInput, MoveSubjectInput, PreparationSummary,
+    SavePreparationExamConfigInput, SaveStudyPlanningInput, SetPrimaryPreparationInput,
+    SetSubjectStudyStatusInput, StudyPlan, StudyPlanningSummary, SubjectSummary,
+    UpdateSubjectInput,
 };
 
 pub trait StudyPlanStore {
@@ -18,6 +20,9 @@ pub trait StudyPlanStore {
         input: &SetPrimaryPreparationInput,
     ) -> Result<PreparationSummary, WorkspaceError>;
     fn create_subject(&self, input: &CreateSubjectInput) -> Result<SubjectSummary, WorkspaceError>;
+    fn update_subject(&self, input: &UpdateSubjectInput) -> Result<SubjectSummary, WorkspaceError>;
+    fn move_subject(&self, input: &MoveSubjectInput) -> Result<SubjectSummary, WorkspaceError>;
+    fn archive_subject(&self, subject_id: &str) -> Result<(), WorkspaceError>;
     fn save_preparation_exam_config(
         &self,
         input: &SavePreparationExamConfigInput,
@@ -75,6 +80,27 @@ impl<S: StudyPlanStore> StudyPlanService<S> {
     ) -> Result<SubjectSummary, WorkspaceError> {
         let normalized = normalize_subject_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.create_subject(&normalized)
+    }
+
+    pub fn update_subject(
+        &self,
+        input: UpdateSubjectInput,
+    ) -> Result<SubjectSummary, WorkspaceError> {
+        let normalized =
+            normalize_update_subject_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.update_subject(&normalized)
+    }
+
+    pub fn move_subject(&self, input: MoveSubjectInput) -> Result<SubjectSummary, WorkspaceError> {
+        let normalized =
+            normalize_move_subject_input(input).map_err(WorkspaceError::InvalidInput)?;
+        self.store.move_subject(&normalized)
+    }
+
+    pub fn archive_subject(&self, subject_id: &str) -> Result<(), WorkspaceError> {
+        let normalized = crate::domain::study_plan::normalize_subject_id(subject_id)
+            .map_err(WorkspaceError::InvalidInput)?;
+        self.store.archive_subject(&normalized)
     }
 
     pub fn save_preparation_exam_config(
