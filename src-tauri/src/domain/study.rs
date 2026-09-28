@@ -19,6 +19,7 @@ pub const REVIEW_XP_RULES_VERSION: i64 = 1;
 pub struct CreateStudyTaskInput {
     pub preparation_id: String,
     pub subject_id: Option<String>,
+    pub material_id: Option<String>,
     pub title: String,
     pub objective: Option<String>,
     pub planned_minutes: i64,
@@ -177,6 +178,8 @@ pub struct StudyTaskSummary {
     pub preparation_id: String,
     pub subject_id: Option<String>,
     pub subject_name: Option<String>,
+    pub material_id: Option<String>,
+    pub material_name: Option<String>,
     pub title: String,
     pub objective: Option<String>,
     pub planned_minutes: i64,
@@ -217,6 +220,7 @@ pub struct DailyPlan {
     pub date: String,
     pub tasks: Vec<StudyTaskSummary>,
     pub active_session: Option<StudySessionSummary>,
+    pub active_task: Option<StudyTaskSummary>,
     pub reviews: Vec<StudyReviewSummary>,
     pub cycle_suggestion: Option<StudyCycleSuggestion>,
 }
@@ -398,6 +402,10 @@ pub fn normalize_study_task_input(
         .subject_id
         .map(|subject_id| normalize_id(&subject_id, "O assunto"))
         .transpose()?;
+    let material_id = input
+        .material_id
+        .map(|material_id| normalize_id(&material_id, "O material"))
+        .transpose()?;
     let title = normalize_required_text(input.title, "O título da tarefa", 160)?;
     let objective = normalize_optional_text(input.objective, "O objetivo", 500)?;
     let scheduled_for = normalize_date(&input.scheduled_for)?;
@@ -411,6 +419,7 @@ pub fn normalize_study_task_input(
     Ok(CreateStudyTaskInput {
         preparation_id,
         subject_id,
+        material_id,
         title,
         objective,
         planned_minutes: input.planned_minutes,
@@ -733,6 +742,7 @@ mod tests {
         let task = normalize_study_task_input(CreateStudyTaskInput {
             preparation_id: Uuid::new_v4().to_string(),
             subject_id: None,
+            material_id: None,
             title: "  Revisar HTTP  ".to_string(),
             objective: Some("  Cabeçalhos  ".to_string()),
             planned_minutes: 45,
@@ -844,6 +854,7 @@ mod tests {
         let task = CreateStudyTaskInput {
             preparation_id: Uuid::new_v4().to_string(),
             subject_id: None,
+            material_id: None,
             title: "Estudar".to_string(),
             objective: None,
             planned_minutes: 30,

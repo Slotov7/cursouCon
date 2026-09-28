@@ -489,6 +489,7 @@ mod tests {
             .create_study_task(&CreateStudyTaskInput {
                 preparation_id: preparation.id.clone(),
                 subject_id: None,
+                material_id: None,
                 title: "Sessão anterior à migração".to_string(),
                 objective: None,
                 planned_minutes: 30,
@@ -517,7 +518,9 @@ mod tests {
                    ALTER TABLE preparations DROP COLUMN reference_material_id;
                    ALTER TABLE preparations DROP COLUMN exam_rules_markdown;
                    ALTER TABLE subjects DROP COLUMN exam_weight;
-                    DROP INDEX IF EXISTS idx_manual_contests_notice_material;
+                   DROP INDEX IF EXISTS idx_study_tasks_material;
+                   ALTER TABLE study_tasks DROP COLUMN material_id;
+                   DROP INDEX IF EXISTS idx_manual_contests_notice_material;
                     ALTER TABLE manual_contests DROP COLUMN notice_material_id;
                     DELETE FROM schema_migrations WHERE version >= 20;",
             )

@@ -15,18 +15,20 @@ type NotesPanelProps = {
   plan: StudyPlan | null;
   materials: MaterialSummary[];
   refreshKey: number;
-  onNotesChanged: (notes: NoteSummary[]) => void;
+  onNotesChanged?: (notes: NoteSummary[]) => void;
+  contextMaterialId?: string | null;
+  contextSubjectId?: string | null;
 };
 
 const feedbackClass = "rounded-[10px] border border-danger-line bg-danger-soft px-3.5 py-3 text-sm leading-relaxed text-danger";
 
-export function NotesPanel({ plan, materials, refreshKey, onNotesChanged }: NotesPanelProps) {
+export function NotesPanel({ plan, materials, refreshKey, onNotesChanged, contextMaterialId, contextSubjectId }: NotesPanelProps) {
   const [notes, setNotes] = useState<NoteSummary[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [contentMarkdown, setContentMarkdown] = useState("");
-  const [materialId, setMaterialId] = useState("");
-  const [subjectId, setSubjectId] = useState("");
+  const [materialId, setMaterialId] = useState(contextMaterialId ?? "");
+  const [subjectId, setSubjectId] = useState(contextSubjectId ?? "");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +42,7 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged }: Note
       .then((loadedNotes) => {
         if (!cancelled) {
           setNotes(loadedNotes);
-          onNotesChanged(loadedNotes);
+          onNotesChanged?.(loadedNotes);
           setError(null);
         }
       })
@@ -60,12 +62,19 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged }: Note
     };
   }, [onNotesChanged, refreshKey]);
 
+  const visibleNotes = contextMaterialId || contextSubjectId
+    ? notes.filter((note) =>
+        (contextMaterialId && note.materialId === contextMaterialId) ||
+        (contextSubjectId && note.subjectId === contextSubjectId),
+      )
+    : notes;
+
   const startNewNote = () => {
     setSelectedNoteId(null);
     setTitle("");
     setContentMarkdown("");
-    setMaterialId("");
-    setSubjectId("");
+    setMaterialId(contextMaterialId ?? "");
+    setSubjectId(contextSubjectId ?? "");
     setError(null);
     setMessage(null);
   };
@@ -95,7 +104,7 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged }: Note
       });
       const updatedNotes = [savedNote, ...notes.filter((note) => note.id !== savedNote.id)];
       setNotes(updatedNotes);
-      onNotesChanged(updatedNotes);
+      onNotesChanged?.(updatedNotes);
       setSelectedNoteId(savedNote.id);
       setTitle(savedNote.title);
       setContentMarkdown(savedNote.contentMarkdown);
@@ -132,9 +141,9 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged }: Note
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(190px,.42fr)_minmax(0,1fr)]">
         <aside className="border-b border-line pb-5 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-6" aria-label="Notas salvas">
           {isLoading ? <p className="text-sm text-muted">Lendo notas...</p> : null}
-          {!isLoading && notes.length === 0 ? <p className="text-sm leading-relaxed text-muted">Nenhuma nota criada ainda.</p> : null}
+          {!isLoading && visibleNotes.length === 0 ? <p className="text-sm leading-relaxed text-muted">Nenhuma nota neste contexto ainda.</p> : null}
           <div className="grid gap-1">
-            {notes.map((note) => (
+            {visibleNotes.map((note) => (
               <button
                 className={`rounded-[10px] px-3 py-3 text-left transition ${selectedNoteId === note.id ? "bg-paper-deep text-forest-ink" : "text-muted hover:bg-paper hover:text-ink"}`}
                 key={note.id}

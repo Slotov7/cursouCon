@@ -228,6 +228,8 @@ let mockTasks: StudyTaskSummary[] = [
     preparationId: "prep-1",
     subjectId: "subj-1",
     subjectName: "Direito Constitucional",
+    materialId: "mat-1",
+    materialName: "Constituicao-Federal-1988-CF88.pdf",
     title: "Controle de Constitucionalidade (Concentrado e Difuso)",
     objective: "Revisar jurisprudência do STF e fazer 15 questões.",
     plannedMinutes: 45,
@@ -239,6 +241,8 @@ let mockTasks: StudyTaskSummary[] = [
     preparationId: "prep-1",
     subjectId: "subj-2",
     subjectName: "Engenharia de Software",
+    materialId: "mat-2",
+    materialName: "Engenharia-de-Software-Pressman-Anotacoes.pdf",
     title: "Arquitetura Hexagonal, Ports & Adapters e DDD",
     objective: "Estudo de padrões de projeto e casos de uso isolados.",
     plannedMinutes: 60,
@@ -250,6 +254,8 @@ let mockTasks: StudyTaskSummary[] = [
     preparationId: "prep-1",
     subjectId: "subj-3",
     subjectName: "Língua Portuguesa",
+    materialId: null,
+    materialName: null,
     title: "Sintaxe da Oração, Período e Regência da Crase",
     objective: "Resolução de bateria de questões banca FGV.",
     plannedMinutes: 30,
@@ -340,7 +346,7 @@ export async function getAppDiagnostic(): Promise<DiagnosticSnapshot> {
       platform: "web-preview",
       architecture: "browser",
       workspaceFormatVersion: 1,
-      schemaVersion: 27,
+      schemaVersion: 28,
       counts: {
         preparations: mockStudyPlan.preparations.length,
         subjects: mockStudyPlan.subjects.length,
@@ -989,6 +995,9 @@ export async function getDailyPlan(date: string): Promise<DailyPlan> {
       date,
       tasks: mockTasks,
       activeSession: mockActiveSession,
+      activeTask: mockActiveSession
+        ? mockTasks.find((task) => task.id === mockActiveSession?.taskId) ?? null
+        : null,
       reviews: mockStudyReviews.filter(
         (review) => review.status === "pending" && review.dueDate <= date,
       ),
@@ -1029,6 +1038,8 @@ export async function acceptStudyCycleAction(
       preparationId: request.preparationId,
       subjectId: subject.id,
       subjectName: subject.name,
+      materialId: null,
+      materialName: null,
       title: `Estudo focado de ${subject.name}`,
       objective: "Bloco aceito a partir do ciclo de estudos.",
       plannedMinutes: cycleSlot.plannedMinutes,
@@ -1481,11 +1492,17 @@ export async function answerQuestion(request: AnswerQuestionRequest): Promise<An
 
 export async function createStudyTask(request: CreateStudyTaskRequest): Promise<void> {
   if (!isTauri()) {
+    const material = request.materialId
+      ? mockMaterials.find((item) => item.id === request.materialId)
+      : null;
+    if (request.materialId && !material) throw new Error("O material escolhido não existe mais.");
     mockTasks.push({
       id: `task-${Date.now()}`,
       preparationId: request.preparationId,
       subjectId: request.subjectId,
-      subjectName: "Disciplina",
+      subjectName: mockStudyPlan.subjects.find((item) => item.id === request.subjectId)?.name ?? null,
+      materialId: material?.id ?? null,
+      materialName: material?.originalName ?? null,
       title: request.title,
       objective: request.objective,
       plannedMinutes: request.plannedMinutes,

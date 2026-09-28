@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   acceptStudyCycleAction,
   finishStudySession,
   getDesktopErrorMessage,
+  getMaterials,
+  openMaterial,
   pauseStudySession,
   rescheduleStudyTask,
   resumeStudySession,
@@ -12,6 +14,7 @@ import {
 } from "../../shared/desktop/commands";
 import type {
   DailyPlan,
+  MaterialSummary,
   StudySessionDifficulty,
   StudyPlan,
   StudySessionSummary,
@@ -20,6 +23,7 @@ import type {
   StudyTaskStatus,
 } from "../../shared/desktop/contracts";
 import { ReviewQueue } from "./ReviewQueue";
+import { NotesPanel } from "../materials/NotesPanel";
 import { displayTimezone } from "../../shared/date";
 import {
   buttonLightClass,
@@ -59,6 +63,8 @@ const DEFAULT_POMODORO_SETTINGS: PomodoroSettings = {
   longBreakMinutes: 15,
 };
 
+const PdfReader = lazy(() => import("../materials/PdfReader").then(({ PdfReader: Reader }) => ({ default: Reader })));
+
 export function TodayView({
   timezone,
   plan,
@@ -87,6 +93,10 @@ export function TodayView({
   const [pomodoroCompletedFocusCount, setPomodoroCompletedFocusCount] = useState(0);
   const [isPomodoroTransitioning, setIsPomodoroTransitioning] = useState(false);
   const [pomodoroMessage, setPomodoroMessage] = useState<string | null>(null);
+  const [contextTaskId, setContextTaskId] = useState<string | null>(null);
+  const [contextMaterials, setContextMaterials] = useState<MaterialSummary[]>([]);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
 
   const primaryPreparation = plan?.preparations.find((prep) => prep.isPrimary);
   const activeSession = dailyPlan?.activeSession ?? null;
@@ -106,9 +116,47 @@ export function TodayView({
 
   const tasksToRender = dailyPlan?.tasks ?? [];
   const activeTask =
-    tasksToRender.find((task) => task.id === activeSession?.taskId) ??
+    (activeSession ? dailyPlan?.activeTask : null) ??
     tasksToRender.find((task) => task.status === "pending" || task.status === "partial") ??
     null;
+  const contextTask = tasksToRender.find((task) => task.id === contextTaskId) ??
+    (dailyPlan?.activeTask?.id === contextTaskId ? dailyPlan.activeTask : null);
+  const contextMaterial = contextMaterials.find((material) => material.id === contextTask?.materialId);
+
+  useEffect(() => {
+    if (!contextTaskId) return;
+    let cancelled = false;
+    setContextLoading(true);
+    setContextError(null);
+    void getMaterials()
+      .then((materials) => {
+        if (!cancelled) setContextMaterials(materials);
+      })
+      .catch((operationError: unknown) => {
+        if (!cancelled) setContextError(getDesktopErrorMessage(operationError));
+      })
+      .finally(() => {
+        if (!cancelled) setContextLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [contextTaskId]);
+
+  useEffect(() => {
+    if (contextTaskId) document.getElementById("task-study-context")?.focus();
+  }, [contextTaskId]);
+
+  const handleOpenContext = (task: StudyTaskSummary) => {
+    setContextTaskId(task.id);
+  };
+
+  const handleOpenExternalMaterial = async (materialId: string) => {
+    setContextError(null);
+    try {
+      await openMaterial({ materialId });
+    } catch (operationError: unknown) {
+      setContextError(getDesktopErrorMessage(operationError));
+    }
+  };
   const completedTaskCount = tasksToRender.filter((task) => task.status === "completed").length;
   const plannedMinutes = tasksToRender.reduce((total, task) => total + task.plannedMinutes, 0);
   const taskProgressPercent =
@@ -587,6 +635,11 @@ export function TodayView({
                 Encerrar Parcial
               </button>
             )}
+            {activeSession && activeTask && (activeTask.materialId || activeTask.subjectId) && (
+              <button className={buttonOutlineLightClass} type="button" onClick={() => handleOpenContext(activeTask)}>
+                Material e notas da sessão
+              </button>
+            )}
           </div>
 
           {activeSession?.status === "interrupted" && (
@@ -706,6 +759,40 @@ export function TodayView({
         </div>
       </section>
 
+      {contextTask && (
+        <section id="task-study-context" tabIndex={-1} className="grid gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs" aria-labelledby="task-context-title">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <Eyebrow>Contexto da tarefa</Eyebrow>
+              <h3 id="task-context-title" className="mt-1 font-heading text-lg font-bold text-ink">{contextTask.title}</h3>
+              <p className="mt-1 text-xs text-muted">{contextTask.materialName ?? "Sem material vinculado"} · {contextTask.subjectName ?? "Sem assunto vinculado"}</p>
+            </div>
+            <button type="button" className={buttonQuietClass} onClick={() => setContextTaskId(null)}>Fechar</button>
+          </div>
+          {contextLoading && <p className="text-sm text-muted" aria-live="polite">Carregando material da tarefa...</p>}
+          {contextError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">{contextError}</p>}
+          {!contextLoading && contextTask.materialId && !contextMaterial && !contextError && (
+            <p className="text-sm text-muted">O material vinculado não está disponível na biblioteca local.</p>
+          )}
+          {contextMaterial?.mimeType === "application/pdf" && !contextMaterial.sourceUrl && (
+            <Suspense fallback={<p className="text-sm text-muted">Abrindo leitor PDF...</p>}>
+              <PdfReader material={contextMaterial} onClose={() => setContextTaskId(null)} onMaterialUpdated={(updated) =>
+                setContextMaterials((current) => current.map((item) => item.id === updated.id ? updated : item))
+              } />
+            </Suspense>
+          )}
+          {contextMaterial && (contextMaterial.mimeType !== "application/pdf" || contextMaterial.sourceUrl) && (
+            <button type="button" className={`${buttonSecondaryClass} justify-self-start`} onClick={() => void handleOpenExternalMaterial(contextMaterial.id)}>
+              {contextMaterial.sourceUrl ? "Abrir link externo" : "Abrir no aplicativo padrão"}
+            </button>
+          )}
+          {(contextTask.materialId || contextTask.subjectId) && !contextLoading && (
+            <NotesPanel key={contextTask.id} plan={plan} materials={contextMaterials}
+              refreshKey={0} contextMaterialId={contextTask.materialId} contextSubjectId={contextTask.subjectId} />
+          )}
+        </section>
+      )}
+
       {dailyPlan && <ReviewQueue reviews={dailyPlan.reviews} onDataChanged={onDataChanged} timezone={timezone} />}
 
       {/* 2. Daily plan metrics */}
@@ -783,6 +870,7 @@ export function TodayView({
                   onStart={() => handleStart(task)}
                   onSkip={() => handleSkip(task)}
                   onReschedule={(date) => handleReschedule(task, date)}
+                  onOpenContext={() => handleOpenContext(task)}
                 />
               ))
             ) : (
@@ -939,6 +1027,7 @@ function TaskCard({
   onStart,
   onSkip,
   onReschedule,
+  onOpenContext,
 }: {
   task: StudyTaskSummary;
   index: number;
@@ -947,6 +1036,7 @@ function TaskCard({
   onStart: () => void;
   onSkip: () => void;
   onReschedule: (date: string) => Promise<boolean>;
+  onOpenContext: () => void;
 }) {
   const [isEditingDate, setIsEditingDate] = useState(false);
   const [newDate, setNewDate] = useState(task.scheduledFor);
@@ -985,6 +1075,7 @@ function TaskCard({
             </div>
             <h4 className="mt-1 font-bold text-sm leading-snug text-ink">{task.title}</h4>
             {task.objective && <p className="mt-1 text-xs text-muted leading-relaxed text-pretty">{task.objective}</p>}
+            {task.materialName && <p className="mt-1 truncate text-[11px] text-blue-700 dark:text-blue-300">Material: {task.materialName}</p>}
           </div>
         </div>
 
@@ -1027,6 +1118,12 @@ function TaskCard({
           )}
         </div>
       </div>
+
+      {(task.materialId || task.subjectId) && (
+        <button type="button" className={`${buttonQuietClass} self-start px-2.5 py-1.5 text-xs`} onClick={onOpenContext}>
+          Material e notas
+        </button>
+      )}
 
       {isEditingDate && (
         <div className="flex items-center gap-2 pt-2.5 border-t border-line">

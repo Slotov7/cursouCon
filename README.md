@@ -28,7 +28,8 @@ O primeiro protótipo vertical implementa:
 - classificação explícita do documento da preparação como referência pré-edital ou edital vigente confirmado;
 - preferências de tema, contraste, movimento, fuso do plano diário/revisões e visibilidade do painel de gamificação salvas no computador, fora das revisões portáteis;
 - tela de diagnóstico com versão e contagens agregadas, exportável em JSON sem conteúdo de materiais, notas ou caminhos locais;
-- criação de tarefas para uma data e plano diário local;
+- criação de tarefas para uma data com material opcional importado ou link, e plano diário local;
+- material e notas do assunto/tarefa acessíveis em Hoje, com leitor PDF e página salva entre aberturas;
 - sugestão explícita da próxima ação do ciclo em Hoje, com criação transacional de tarefa e avanço idempotente;
 - cadastro, edição, acompanhamento de situação e favoritos de concursos manuais no SQLite local;
 - edital em PDF importado e vinculado ao concurso manual, com cópia offline independente do arquivo original;

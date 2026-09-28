@@ -81,6 +81,7 @@ export function PlanView({
   const [taskMinutes, setTaskMinutes] = useState("45");
   const [taskDate, setTaskDate] = useState(() => dateKeyForTimezone(timezone));
   const [taskSubjectId, setTaskSubjectId] = useState("");
+  const [taskMaterialId, setTaskMaterialId] = useState("");
 
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -340,6 +341,7 @@ export function PlanView({
       await createStudyTask({
         preparationId: selectedPreparation.id,
         subjectId: taskSubjectId || null,
+        materialId: taskMaterialId || null,
         title: taskTitle,
         objective: taskObjective || null,
         plannedMinutes: Number(taskMinutes) || 45,
@@ -347,6 +349,7 @@ export function PlanView({
       });
       setTaskTitle("");
       setTaskObjective("");
+      setTaskMaterialId("");
       setActiveModal("none");
       onPlanChanged();
     } catch (err: unknown) {
@@ -904,6 +907,21 @@ export function PlanView({
                     </option>
                   ))}
                 </select>
+              </label>
+
+              <label className={fieldClass}>
+                Material da tarefa <span className="text-muted font-normal">(opcional)</span>
+                <select className={selectClass} value={taskMaterialId} onChange={(event) => setTaskMaterialId(event.target.value)} disabled={isSubmitting || Boolean(materialsError)}>
+                  <option value="">Sem material vinculado</option>
+                  {materials.map((material) => (
+                    <option key={material.id} value={material.id}>
+                      {material.originalName}{material.sourceUrl ? " · link externo" : ""}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[11px] font-normal text-muted">
+                  {materialsError ? `Materiais indisponíveis: ${materialsError}` : "Importe o arquivo na biblioteca antes de selecionar."}
+                </span>
               </label>
 
               <label className={fieldClass}>

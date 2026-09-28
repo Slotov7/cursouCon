@@ -34,6 +34,7 @@ pub struct AcceptStudyCycleActionRequest {
 pub struct CreateStudyTaskRequest {
     pub preparation_id: String,
     pub subject_id: Option<String>,
+    pub material_id: Option<String>,
     pub title: String,
     pub objective: Option<String>,
     pub planned_minutes: i64,
@@ -159,6 +160,7 @@ pub fn create_study_task(
     let input = CreateStudyTaskInput {
         preparation_id: request.preparation_id,
         subject_id: request.subject_id,
+        material_id: request.material_id,
         title: request.title,
         objective: request.objective,
         planned_minutes: request.planned_minutes,

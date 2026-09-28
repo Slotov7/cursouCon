@@ -28,6 +28,8 @@ type TaskRow = (
     i64,
     String,
     String,
+    Option<String>,
+    Option<String>,
 );
 
 type SessionRow = (
@@ -77,6 +79,10 @@ impl StudyStore for LocalWorkspaceStore {
         recover_stale_active_session(&connection)?;
         let tasks = load_daily_tasks(&connection, date)?;
         let active_session = load_active_session(&connection)?;
+        let active_task = active_session
+            .as_ref()
+            .map(|session| load_task(&connection, &session.task_id))
+            .transpose()?;
         let reviews = load_due_reviews(&connection, date)?;
         let cycle_suggestion = load_cycle_suggestion(&connection)?;
 
@@ -84,6 +90,7 @@ impl StudyStore for LocalWorkspaceStore {
             date: date.to_string(),
             tasks,
             active_session,
+            active_task,
             reviews,
             cycle_suggestion,
         })
@@ -106,17 +113,37 @@ impl StudyStore for LocalWorkspaceStore {
             )?),
             None => None,
         };
+        let material_name = input
+            .material_id
+            .as_deref()
+            .map(|material_id| {
+                transaction
+                    .query_row(
+                        "SELECT original_name FROM materials WHERE id = ?1",
+                        params![material_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|error| map_database_error("verificar material da tarefa", error))?
+                    .ok_or_else(|| {
+                        WorkspaceError::InvalidInput(
+                            "O material escolhido não existe mais.".to_string(),
+                        )
+                    })
+            })
+            .transpose()?;
 
         let id = Uuid::new_v4().to_string();
         transaction
             .execute(
                 "INSERT INTO study_tasks
-                    (id, preparation_id, subject_id, title, objective, planned_minutes, scheduled_for, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending')",
+                    (id, preparation_id, subject_id, material_id, title, objective, planned_minutes, scheduled_for, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending')",
                 params![
                     id.as_str(),
                     input.preparation_id.as_str(),
                     input.subject_id.as_deref(),
+                    input.material_id.as_deref(),
                     &input.title,
                     input.objective.as_deref(),
                     input.planned_minutes,
@@ -129,6 +156,8 @@ impl StudyStore for LocalWorkspaceStore {
             preparation_id: input.preparation_id.clone(),
             subject_id: input.subject_id.clone(),
             subject_name,
+            material_id: input.material_id.clone(),
+            material_name,
             title: input.title.clone(),
             objective: input.objective.clone(),
             planned_minutes: input.planned_minutes,
@@ -1165,15 +1194,17 @@ fn load_planned_study_days(
 }
 
 fn load_task(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &rusqlite::Connection,
     task_id: &str,
 ) -> Result<StudyTaskSummary, WorkspaceError> {
     let parts: TaskRow = transaction
         .query_row(
             "SELECT t.id, t.preparation_id, t.subject_id, s.name, t.title,
-                    t.objective, t.planned_minutes, t.scheduled_for, t.status
+                    t.objective, t.planned_minutes, t.scheduled_for, t.status,
+                    t.material_id, m.original_name
              FROM study_tasks t
              LEFT JOIN subjects s ON s.id = t.subject_id
+             LEFT JOIN materials m ON m.id = t.material_id
              WHERE t.id = ?1",
             params![task_id],
             |row| {
@@ -1187,6 +1218,8 @@ fn load_task(
                     row.get(6)?,
                     row.get(7)?,
                     row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
                 ))
             },
         )
@@ -1265,9 +1298,11 @@ fn load_daily_tasks(
     let mut statement = connection
         .prepare(
             "SELECT t.id, t.preparation_id, t.subject_id, s.name, t.title,
-                    t.objective, t.planned_minutes, t.scheduled_for, t.status
+                    t.objective, t.planned_minutes, t.scheduled_for, t.status,
+                    t.material_id, m.original_name
              FROM study_tasks t
              LEFT JOIN subjects s ON s.id = t.subject_id
+             LEFT JOIN materials m ON m.id = t.material_id
              WHERE t.scheduled_for = ?1 AND t.status <> 'skipped'
              ORDER BY CASE t.status WHEN 'completed' THEN 1 WHEN 'partial' THEN 2 ELSE 0 END,
                       t.id",
@@ -1285,6 +1320,8 @@ fn load_daily_tasks(
                 row.get(6)?,
                 row.get(7)?,
                 row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
             ))
         })
         .map_err(|error| map_database_error("consultar tarefas do dia", error))?;
@@ -1596,6 +1633,8 @@ fn task_summary_from_parts(parts: TaskRow) -> Result<StudyTaskSummary, Workspace
         planned_minutes,
         scheduled_for,
         status,
+        material_id,
+        material_name,
     ) = parts;
     let status = parse_task_status(&status).map_err(WorkspaceError::Database)?;
 
@@ -1604,6 +1643,8 @@ fn task_summary_from_parts(parts: TaskRow) -> Result<StudyTaskSummary, Workspace
         preparation_id,
         subject_id,
         subject_name,
+        material_id,
+        material_name,
         title,
         objective,
         planned_minutes,
@@ -1656,14 +1697,128 @@ fn session_summary_from_parts(parts: SessionRow) -> Result<StudySessionSummary, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::material_service::MaterialStore;
+    use crate::application::note_service::NoteStore;
     use crate::application::study_plan_service::StudyPlanStore;
     use crate::application::workspace_service::WorkspaceStore;
+    use crate::domain::material::{ImportMaterialInput, UpdateMaterialPageInput};
+    use crate::domain::note::SaveNoteInput;
     use crate::domain::study_plan::{
         default_study_availability, CreatePreparationInput, CreateSubjectInput,
         SaveStudyPlanningInput, StudyCycleSlotInput, SubjectPriorityInput,
         DEFAULT_REVIEW_RESERVE_PERCENT,
     };
     use std::fs;
+
+    #[test]
+    fn keeps_task_material_notes_and_reading_page_after_reopening() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-task-material-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-task-material-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Material da tarefa")
+            .expect("o espaço da fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let subject = store
+            .create_subject(&CreateSubjectInput {
+                preparation_id: preparation.id.clone(),
+                name: "Direito".to_string(),
+                parent_id: None,
+            })
+            .expect("o assunto deve ser criado");
+        let source = app_data_dir.join("material.pdf");
+        fs::write(&source, b"%PDF-1.4\nfixture").expect("o PDF sintético deve existir");
+        let material = store
+            .import_material(&ImportMaterialInput {
+                source_path: source.to_string_lossy().to_string(),
+                subject_id: Some(subject.id.clone()),
+            })
+            .expect("o PDF deve ser copiado para o espaço");
+        fs::remove_file(source).expect("o original externo pode ser removido");
+        let bad_task = store.create_study_task(&CreateStudyTaskInput {
+            preparation_id: preparation.id.clone(),
+            subject_id: Some(subject.id.clone()),
+            material_id: Some(Uuid::new_v4().to_string()),
+            title: "Material inválido".to_string(),
+            objective: None,
+            planned_minutes: 30,
+            scheduled_for: "2032-08-01".to_string(),
+        });
+        assert!(bad_task.is_err());
+        let task = store
+            .create_study_task(&CreateStudyTaskInput {
+                preparation_id: preparation.id,
+                subject_id: Some(subject.id.clone()),
+                material_id: Some(material.id.clone()),
+                title: "Ler material".to_string(),
+                objective: None,
+                planned_minutes: 30,
+                scheduled_for: "2032-08-01".to_string(),
+            })
+            .expect("a tarefa deve guardar o material importado");
+        store
+            .save_note(&SaveNoteInput {
+                id: None,
+                title: "Resumo".to_string(),
+                content_markdown: "# Ponto importante".to_string(),
+                material_id: Some(material.id.clone()),
+                subject_id: Some(subject.id),
+            })
+            .expect("a nota deve ser ligada ao contexto");
+        store
+            .update_material_page(&UpdateMaterialPageInput {
+                material_id: material.id.clone(),
+                page: 3,
+            })
+            .expect("a página atual deve ser salva");
+        store
+            .start_study_session(&StartStudySessionInput {
+                task_id: task.id.clone(),
+            })
+            .expect("a sessão deve iniciar");
+        store
+            .open_workspace(&workspace_path)
+            .expect("o mesmo espaço deve reabrir");
+        let plan = store
+            .daily_plan("2032-08-02")
+            .expect("a sessão do dia anterior deve ser recuperada");
+        let active_task = plan
+            .active_task
+            .expect("a tarefa da sessão deve permanecer acessível");
+        let reopened_material = store
+            .list_materials()
+            .expect("o material deve continuar disponível")
+            .into_iter()
+            .find(|item| item.id == material.id)
+            .expect("o material deve existir");
+        let notes = store.list_notes().expect("as notas devem reabrir");
+        assert_eq!(active_task.id, task.id);
+        assert_eq!(
+            active_task.material_id.as_deref(),
+            Some(material.id.as_str())
+        );
+        assert_eq!(active_task.material_name.as_deref(), Some("material.pdf"));
+        assert_eq!(reopened_material.current_page, 3);
+        assert_eq!(notes[0].material_id.as_deref(), Some(material.id.as_str()));
+        assert!(store
+            .material_path(&material.id)
+            .expect("a cópia deve existir")
+            .is_file());
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
 
     #[test]
     fn starts_the_same_session_idempotently_and_finishes_the_task() {
@@ -1689,6 +1844,7 @@ mod tests {
             .create_study_task(&CreateStudyTaskInput {
                 preparation_id: preparation.id,
                 subject_id: None,
+                material_id: None,
                 title: "Revisar HTTP".to_string(),
                 objective: None,
                 planned_minutes: 30,
@@ -1890,6 +2046,7 @@ mod tests {
             .create_study_task(&CreateStudyTaskInput {
                 preparation_id: preparation.id,
                 subject_id: None,
+                material_id: None,
                 title: "Sessão recuperável".to_string(),
                 objective: None,
                 planned_minutes: 30,
@@ -1971,6 +2128,7 @@ mod tests {
             .create_study_task(&CreateStudyTaskInput {
                 preparation_id: preparation.id,
                 subject_id: Some(subject.id),
+                material_id: None,
                 title: "Estudar roteamento".to_string(),
                 objective: None,
                 planned_minutes: 30,
@@ -2081,6 +2239,7 @@ mod tests {
             .create_study_task(&CreateStudyTaskInput {
                 preparation_id: preparation.id,
                 subject_id: Some(subject.id.clone()),
+                material_id: None,
                 title: "Estudar controle de constitucionalidade".to_string(),
                 objective: None,
                 planned_minutes: 30,
@@ -2201,6 +2360,7 @@ mod tests {
                 .create_study_task(&CreateStudyTaskInput {
                     preparation_id: preparation.id.clone(),
                     subject_id: None,
+                    material_id: None,
                     title: title.to_string(),
                     objective: None,
                     planned_minutes: 20,
@@ -2283,6 +2443,7 @@ mod tests {
             .create_study_task(&CreateStudyTaskInput {
                 preparation_id: preparation.id.clone(),
                 subject_id: None,
+                material_id: None,
                 title: "Reagendar revisão".to_string(),
                 objective: None,
                 planned_minutes: 20,
@@ -2293,6 +2454,7 @@ mod tests {
             .create_study_task(&CreateStudyTaskInput {
                 preparation_id: preparation.id,
                 subject_id: None,
+                material_id: None,
                 title: "Pular tarefa".to_string(),
                 objective: None,
                 planned_minutes: 15,

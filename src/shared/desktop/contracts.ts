@@ -286,6 +286,8 @@ export type StudyTaskSummary = {
   preparationId: string;
   subjectId: string | null;
   subjectName: string | null;
+  materialId: string | null;
+  materialName: string | null;
   title: string;
   objective: string | null;
   plannedMinutes: number;
@@ -334,6 +336,7 @@ export type DailyPlan = {
   date: string;
   tasks: StudyTaskSummary[];
   activeSession: StudySessionSummary | null;
+  activeTask: StudyTaskSummary | null;
   reviews: StudyReviewSummary[];
   cycleSuggestion: StudyCycleSuggestion | null;
 };
@@ -580,6 +583,7 @@ export type QuestionExportResult = {
 export type CreateStudyTaskRequest = {
   preparationId: string;
   subjectId: string | null;
+  materialId: string | null;
   title: string;
   objective: string | null;
   plannedMinutes: number;
@@ -1252,6 +1256,8 @@ export function parseStudyTask(value: unknown): StudyTaskSummary {
     preparationId: value.preparationId,
     subjectId: parseOptionalString(value.subjectId, "o assunto da tarefa"),
     subjectName: parseOptionalString(value.subjectName, "o nome do assunto da tarefa"),
+    materialId: parseOptionalString(value.materialId, "o material da tarefa"),
+    materialName: parseOptionalString(value.materialName, "o nome do material da tarefa"),
     title: value.title,
     objective: parseOptionalString(value.objective, "o objetivo da tarefa"),
     plannedMinutes: value.plannedMinutes,
@@ -1760,6 +1766,7 @@ export function parseDailyPlan(value: unknown): DailyPlan {
     date: value.date,
     tasks: value.tasks.map(parseStudyTask),
     activeSession: value.activeSession === null ? null : parseStudySession(value.activeSession),
+    activeTask: value.activeTask === null ? null : parseStudyTask(value.activeTask),
     reviews: value.reviews.map(parseStudyReview),
     cycleSuggestion:
       value.cycleSuggestion === null ? null : parseStudyCycleSuggestion(value.cycleSuggestion),
