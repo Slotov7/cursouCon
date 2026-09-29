@@ -164,7 +164,7 @@ pub fn normalize_external_question_batch_input(
     })
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuestionOptionSummary {
     pub key: String,

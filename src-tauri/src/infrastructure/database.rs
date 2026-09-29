@@ -4,7 +4,7 @@ use crate::domain::workspace::WorkspaceManifest;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 31;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 34;
 
 impl LocalWorkspaceStore {
     pub(crate) fn prepare_active_database(
@@ -185,6 +185,15 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), WorkspaceError> {
         (
             31_i64,
             include_str!("../../migrations/031_question_contest_relations.sql"),
+        ),
+        (
+            32_i64,
+            include_str!("../../migrations/032_discursive_questions.sql"),
+        ),
+        (33_i64, include_str!("../../migrations/033_simulations.sql")),
+        (
+            34_i64,
+            include_str!("../../migrations/034_online_contests.sql"),
         ),
     ];
 

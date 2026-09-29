@@ -1,12 +1,12 @@
 use crate::application::workspace_service::WorkspaceError;
 use crate::domain::study_plan::{
-    normalize_move_subject_input, normalize_preparation_exam_config_input,
+    normalize_material_id, normalize_move_subject_input, normalize_preparation_exam_config_input,
     normalize_preparation_id, normalize_preparation_input, normalize_study_planning_input,
     normalize_subject_input, normalize_subject_study_status_input, normalize_update_subject_input,
     CreatePreparationInput, CreateSubjectInput, MoveSubjectInput, PreparationSummary,
-    SavePreparationExamConfigInput, SaveStudyPlanningInput, SetPrimaryPreparationInput,
-    SetSubjectStudyStatusInput, StudyPlan, StudyPlanningSummary, SubjectSummary,
-    UpdateSubjectInput,
+    ReferenceDocumentStatus, SavePreparationExamConfigInput, SaveStudyPlanningInput,
+    SetPrimaryPreparationInput, SetSubjectStudyStatusInput, StudyPlan, StudyPlanningSummary,
+    SubjectSummary, UpdateSubjectInput,
 };
 
 pub trait StudyPlanStore {
@@ -14,6 +14,12 @@ pub trait StudyPlanStore {
     fn create_preparation(
         &self,
         input: &CreatePreparationInput,
+    ) -> Result<PreparationSummary, WorkspaceError>;
+    fn create_preparation_with_reference(
+        &self,
+        input: &CreatePreparationInput,
+        reference_material_id: &str,
+        reference_document_status: ReferenceDocumentStatus,
     ) -> Result<PreparationSummary, WorkspaceError>;
     fn set_primary_preparation(
         &self,
@@ -62,6 +68,23 @@ impl<S: StudyPlanStore> StudyPlanService<S> {
         let normalized =
             normalize_preparation_input(input).map_err(WorkspaceError::InvalidInput)?;
         self.store.create_preparation(&normalized)
+    }
+
+    pub fn create_preparation_with_reference(
+        &self,
+        input: CreatePreparationInput,
+        reference_material_id: String,
+        reference_document_status: ReferenceDocumentStatus,
+    ) -> Result<PreparationSummary, WorkspaceError> {
+        let normalized =
+            normalize_preparation_input(input).map_err(WorkspaceError::InvalidInput)?;
+        let reference_material_id =
+            normalize_material_id(&reference_material_id).map_err(WorkspaceError::InvalidInput)?;
+        self.store.create_preparation_with_reference(
+            &normalized,
+            &reference_material_id,
+            reference_document_status,
+        )
     }
 
     pub fn set_primary_preparation(

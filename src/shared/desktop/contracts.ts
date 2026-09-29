@@ -207,6 +207,8 @@ export type CreatePreparationRequest = {
   board: string | null;
   examDate: string | null;
   makePrimary: boolean;
+  referenceMaterialId?: string | null;
+  referenceDocumentStatus?: "reference" | "current";
 };
 
 export type SetPrimaryPreparationRequest = {
@@ -290,6 +292,68 @@ export type SetManualContestFavoriteRequest = {
 export type SetManualContestNoticeRequest = {
   contestId: string;
   materialId: string | null;
+};
+
+export type OnlineContestSummary = {
+  id: string;
+  sourceName: string;
+  sourceKey: string;
+  sourceUrl: string;
+  name: string;
+  organization: string | null;
+  role: string | null;
+  board: string | null;
+  area: string | null;
+  location: string | null;
+  education: string | null;
+  salaryText: string | null;
+  salaryMax: number | null;
+  vacanciesText: string | null;
+  vacancies: number | null;
+  status: ContestStatus;
+  statusEvidence: string;
+  registrationStartsOn: string | null;
+  registrationEndsOn: string | null;
+  feeDeadline: string | null;
+  examDate: string | null;
+  sourceCheckedAt: string;
+  isFavorite: boolean;
+  noticeMaterialId: string | null;
+  hasChanges: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OnlineContestSourceState = {
+  sourceName: string;
+  sourceUrl: string;
+  lastAttemptedAt: string | null;
+  lastSuccessfulAt: string | null;
+  lastError: string | null;
+};
+
+export type OnlineContestSnapshot = {
+  opportunities: OnlineContestSummary[];
+  source: OnlineContestSourceState;
+};
+
+export type OnlineContestRefreshResult = {
+  sourceName: string;
+  sourceUrl: string;
+  sourceCheckedAt: string;
+  importedCount: number;
+  updatedCount: number;
+  unchangedCount: number;
+  opportunities: OnlineContestSummary[];
+};
+
+export type SetOnlineContestFavoriteRequest = {
+  opportunityId: string;
+  isFavorite: boolean;
+};
+
+export type SaveOnlineContestNoticeRequest = {
+  opportunityId: string;
 };
 
 export type StudyTaskStatus = "pending" | "partial" | "completed" | "skipped";
@@ -759,6 +823,153 @@ export type AnswerQuestionRequest = {
   questionId: string;
   selectedKey: string | null;
   confidence: QuestionConfidence;
+  elapsedSeconds: number;
+};
+
+export type SimulationMode = "training" | "exam";
+export type SimulationStatus = "draft" | "in_progress" | "paused" | "completed";
+export type SimulationQuestionResult = "correct" | "incorrect" | "blank" | "pending" | "annulled";
+
+export type SimulationSummary = {
+  id: string;
+  preparationId: string;
+  preparationName: string;
+  title: string;
+  mode: SimulationMode;
+  questionCount: number;
+  answeredCount: number;
+  timeLimitSeconds: number | null;
+  negativePoints: number;
+  blankPoints: number;
+  annulledPoints: number;
+  status: SimulationStatus;
+  startedAt: string | null;
+  endsAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+};
+
+export type SimulationQuestionSummary = {
+  questionId: string;
+  position: number;
+  subjectId: string | null;
+  subjectName: string | null;
+  questionType: QuestionType;
+  statementMarkdown: string;
+  options: QuestionOptionSummary[];
+  selectedKey: string | null;
+  elapsedSeconds: number;
+  answerKey: string | null;
+  result: SimulationQuestionResult | null;
+  explanationMarkdown: string | null;
+  weight: number;
+};
+
+export type SimulationDetail = {
+  simulation: SimulationSummary;
+  questions: SimulationQuestionSummary[];
+};
+
+export type SimulationDiagnosticSummary = {
+  subjectId: string | null;
+  subjectName: string | null;
+  questionCount: number;
+  correctCount: number;
+  incorrectCount: number;
+  blankCount: number;
+  elapsedSeconds: number;
+  score: number;
+};
+
+export type SimulationResult = {
+  detail: SimulationDetail;
+  score: number;
+  maxScore: number;
+  percentage: number | null;
+  correctCount: number;
+  incorrectCount: number;
+  blankCount: number;
+  annulledCount: number;
+  diagnostics: SimulationDiagnosticSummary[];
+};
+
+export type SimulationSubjectSelectionRequest = {
+  subjectId: string;
+  questionCount: number;
+  weight: number;
+};
+
+export type CreateSimulationRequest = {
+  preparationId: string;
+  title: string;
+  mode: SimulationMode;
+  questionCount: number;
+  timeLimitSeconds: number | null;
+  negativePoints: number;
+  blankPoints: number;
+  annulledPoints: number;
+  questionType: QuestionType | null;
+  subjectSelections: SimulationSubjectSelectionRequest[];
+};
+
+export type SimulationIdRequest = {
+  simulationId: string;
+};
+
+export type AnswerSimulationRequest = {
+  simulationId: string;
+  questionId: string;
+  selectedKey: string | null;
+  elapsedSeconds: number;
+};
+
+export type DiscursiveSelfAssessment = "weak" | "partial" | "strong";
+
+export type DiscursiveAttemptSummary = {
+  id: string;
+  responseMarkdown: string;
+  selfAssessment: DiscursiveSelfAssessment;
+  elapsedSeconds: number;
+  answeredAt: string;
+};
+
+export type DiscursiveQuestionSummary = {
+  id: string;
+  statementMarkdown: string;
+  referenceMarkdown: string | null;
+  rubricMarkdown: string | null;
+  sourceName: string | null;
+  board: string | null;
+  organization: string | null;
+  role: string | null;
+  examYear: number | null;
+  subjectId: string | null;
+  subjectName: string | null;
+  attemptsCount: number;
+  latestAttempt: DiscursiveAttemptSummary | null;
+};
+
+export type AnswerDiscursiveQuestionResult = {
+  question: DiscursiveQuestionSummary;
+  attempt: DiscursiveAttemptSummary;
+};
+
+export type CreateDiscursiveQuestionRequest = {
+  statementMarkdown: string;
+  referenceMarkdown: string | null;
+  rubricMarkdown: string | null;
+  sourceName: string | null;
+  board: string | null;
+  organization: string | null;
+  role: string | null;
+  examYear: number | null;
+  subjectId: string | null;
+};
+
+export type AnswerDiscursiveQuestionRequest = {
+  questionId: string;
+  responseMarkdown: string;
+  selfAssessment: DiscursiveSelfAssessment;
   elapsedSeconds: number;
 };
 
@@ -1340,6 +1551,101 @@ export function parseManualContests(value: unknown): ManualContestSummary[] {
   return value.map(parseManualContest);
 }
 
+export function parseOnlineContest(value: unknown): OnlineContestSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.sourceName !== "string" ||
+    typeof value.sourceKey !== "string" ||
+    typeof value.sourceUrl !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.statusEvidence !== "string" ||
+    typeof value.sourceCheckedAt !== "string" ||
+    typeof value.isFavorite !== "boolean" ||
+    typeof value.hasChanges !== "boolean" ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu uma oportunidade online inválida.");
+  }
+  return {
+    id: value.id,
+    sourceName: value.sourceName,
+    sourceKey: value.sourceKey,
+    sourceUrl: value.sourceUrl,
+    name: value.name,
+    organization: parseOptionalString(value.organization, "o órgão da oportunidade"),
+    role: parseOptionalString(value.role, "o cargo da oportunidade"),
+    board: parseOptionalString(value.board, "a banca da oportunidade"),
+    area: parseOptionalString(value.area, "a área da oportunidade"),
+    location: parseOptionalString(value.location, "o local da oportunidade"),
+    education: parseOptionalString(value.education, "a escolaridade da oportunidade"),
+    salaryText: parseOptionalString(value.salaryText, "o salário da oportunidade"),
+    salaryMax: parseOptionalFiniteNumber(value.salaryMax, "o salário máximo da oportunidade"),
+    vacanciesText: parseOptionalString(value.vacanciesText, "as vagas da oportunidade"),
+    vacancies: parseOptionalInteger(value.vacancies, "a quantidade de vagas da oportunidade"),
+    status: parseContestStatus(value.status),
+    statusEvidence: value.statusEvidence,
+    registrationStartsOn: parseOptionalString(value.registrationStartsOn, "o início das inscrições da oportunidade"),
+    registrationEndsOn: parseOptionalString(value.registrationEndsOn, "o encerramento das inscrições da oportunidade"),
+    feeDeadline: parseOptionalString(value.feeDeadline, "o prazo de pagamento da oportunidade"),
+    examDate: parseOptionalString(value.examDate, "a data da prova da oportunidade"),
+    sourceCheckedAt: value.sourceCheckedAt,
+    isFavorite: value.isFavorite,
+    noticeMaterialId: parseOptionalString(value.noticeMaterialId, "o edital local da oportunidade"),
+    hasChanges: value.hasChanges,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+export function parseOnlineContestSource(value: unknown): OnlineContestSourceState {
+  if (!isRecord(value) || typeof value.sourceName !== "string" || typeof value.sourceUrl !== "string") {
+    throw new Error("O núcleo local devolveu o estado da fonte online inválido.");
+  }
+  return {
+    sourceName: value.sourceName,
+    sourceUrl: value.sourceUrl,
+    lastAttemptedAt: parseOptionalString(value.lastAttemptedAt, "a última tentativa da fonte"),
+    lastSuccessfulAt: parseOptionalString(value.lastSuccessfulAt, "a última consulta bem-sucedida da fonte"),
+    lastError: parseOptionalString(value.lastError, "o último erro da fonte"),
+  };
+}
+
+export function parseOnlineContestSnapshot(value: unknown): OnlineContestSnapshot {
+  if (!isRecord(value) || !Array.isArray(value.opportunities)) {
+    throw new Error("O núcleo local devolveu o cache de concursos inválido.");
+  }
+  return {
+    opportunities: value.opportunities.map(parseOnlineContest),
+    source: parseOnlineContestSource(value.source),
+  };
+}
+
+export function parseOnlineContestRefreshResult(value: unknown): OnlineContestRefreshResult {
+  if (
+    !isRecord(value) ||
+    typeof value.sourceName !== "string" ||
+    typeof value.sourceUrl !== "string" ||
+    typeof value.sourceCheckedAt !== "string" ||
+    !isNonNegativeInteger(value.importedCount) ||
+    !isNonNegativeInteger(value.updatedCount) ||
+    !isNonNegativeInteger(value.unchangedCount) ||
+    !Array.isArray(value.opportunities)
+  ) {
+    throw new Error("O núcleo local devolveu o resultado de atualização online inválido.");
+  }
+  return {
+    sourceName: value.sourceName,
+    sourceUrl: value.sourceUrl,
+    sourceCheckedAt: value.sourceCheckedAt,
+    importedCount: value.importedCount,
+    updatedCount: value.updatedCount,
+    unchangedCount: value.unchangedCount,
+    opportunities: value.opportunities.map(parseOnlineContest),
+  };
+}
+
 function parseStudyTaskStatus(value: unknown): StudyTaskStatus {
   if (value === "pending" || value === "partial" || value === "completed" || value === "skipped") {
     return value;
@@ -1466,6 +1772,243 @@ function parseQuestionResult(value: unknown): QuestionResult {
     return value;
   }
   throw new Error("O núcleo local devolveu um resultado de questão inválido.");
+}
+
+function parseSimulationMode(value: unknown): SimulationMode {
+  if (value === "training" || value === "exam") return value;
+  throw new Error("O núcleo local devolveu um modo de simulado inválido.");
+}
+
+function parseSimulationStatus(value: unknown): SimulationStatus {
+  if (value === "draft" || value === "in_progress" || value === "paused" || value === "completed") {
+    return value;
+  }
+  throw new Error("O núcleo local devolveu uma situação de simulado inválida.");
+}
+
+function parseSimulationQuestionResult(value: unknown): SimulationQuestionResult {
+  if (
+    value === "correct" ||
+    value === "incorrect" ||
+    value === "blank" ||
+    value === "pending" ||
+    value === "annulled"
+  ) {
+    return value;
+  }
+  throw new Error("O núcleo local devolveu um resultado de simulado inválido.");
+}
+
+function parseOptionalSimulationQuestionResult(value: unknown): SimulationQuestionResult | null {
+  if (value === null) return null;
+  return parseSimulationQuestionResult(value);
+}
+
+function parseFiniteNumber(value: unknown, fieldName: string): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  throw new Error(`O núcleo local devolveu ${fieldName} inválido.`);
+}
+
+function parseOptionalFiniteNumber(value: unknown, fieldName: string): number | null {
+  if (value === null) return null;
+  return parseFiniteNumber(value, fieldName);
+}
+
+export function parseSimulationSummary(value: unknown): SimulationSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.preparationId !== "string" ||
+    typeof value.preparationName !== "string" ||
+    typeof value.title !== "string" ||
+    !isNonNegativeInteger(value.questionCount) ||
+    value.questionCount < 1 ||
+    !isNonNegativeInteger(value.answeredCount) ||
+    (value.timeLimitSeconds !== null && !isNonNegativeInteger(value.timeLimitSeconds)) ||
+    typeof value.createdAt !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu um resumo de simulado inválido.");
+  }
+
+  return {
+    id: value.id,
+    preparationId: value.preparationId,
+    preparationName: value.preparationName,
+    title: value.title,
+    mode: parseSimulationMode(value.mode),
+    questionCount: value.questionCount,
+    answeredCount: value.answeredCount,
+    timeLimitSeconds: parseOptionalInteger(value.timeLimitSeconds, "o limite de tempo do simulado"),
+    negativePoints: parseFiniteNumber(value.negativePoints, "a penalidade do simulado"),
+    blankPoints: parseFiniteNumber(value.blankPoints, "a pontuação de branco do simulado"),
+    annulledPoints: parseFiniteNumber(value.annulledPoints, "a pontuação de anulada do simulado"),
+    status: parseSimulationStatus(value.status),
+    startedAt: parseOptionalString(value.startedAt, "o início do simulado"),
+    endsAt: parseOptionalString(value.endsAt, "o fim do simulado"),
+    finishedAt: parseOptionalString(value.finishedAt, "a conclusão do simulado"),
+    createdAt: value.createdAt,
+  };
+}
+
+export function parseSimulationDetail(value: unknown): SimulationDetail {
+  if (!isRecord(value) || !Array.isArray(value.questions)) {
+    throw new Error("O núcleo local devolveu um simulado inválido.");
+  }
+  return {
+    simulation: parseSimulationSummary(value.simulation),
+    questions: value.questions.map((question) => {
+      const weight = isRecord(question)
+        ? parseFiniteNumber(question.weight, "o peso da questão do simulado")
+        : 0;
+      if (
+        !isRecord(question) ||
+        typeof question.questionId !== "string" ||
+        !isNonNegativeInteger(question.position) ||
+        !Array.isArray(question.options) ||
+        typeof question.statementMarkdown !== "string" ||
+        !isNonNegativeInteger(question.elapsedSeconds) ||
+        weight <= 0
+      ) {
+        throw new Error("O núcleo local devolveu uma questão de simulado inválida.");
+      }
+      return {
+        questionId: question.questionId,
+        position: question.position,
+        subjectId: parseOptionalString(question.subjectId, "o assunto da questão do simulado"),
+        subjectName: parseOptionalString(question.subjectName, "o nome do assunto do simulado"),
+        questionType: parseQuestionType(question.questionType),
+        statementMarkdown: question.statementMarkdown,
+        options: question.options.map(parseQuestionOption),
+        selectedKey: parseOptionalString(question.selectedKey, "a resposta do simulado"),
+        elapsedSeconds: question.elapsedSeconds,
+        answerKey: parseOptionalString(question.answerKey, "o gabarito do simulado"),
+        result: parseOptionalSimulationQuestionResult(question.result),
+        explanationMarkdown: parseOptionalString(question.explanationMarkdown, "a explicação do simulado"),
+        weight,
+      };
+    }),
+  };
+}
+
+function parseSimulationDiagnostic(value: unknown): SimulationDiagnosticSummary {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeInteger(value.questionCount) ||
+    !isNonNegativeInteger(value.correctCount) ||
+    !isNonNegativeInteger(value.incorrectCount) ||
+    !isNonNegativeInteger(value.blankCount) ||
+    !isNonNegativeInteger(value.elapsedSeconds)
+  ) {
+    throw new Error("O núcleo local devolveu um diagnóstico de simulado inválido.");
+  }
+  return {
+    subjectId: parseOptionalString(value.subjectId, "o assunto do diagnóstico"),
+    subjectName: parseOptionalString(value.subjectName, "o nome do assunto do diagnóstico"),
+    questionCount: value.questionCount,
+    correctCount: value.correctCount,
+    incorrectCount: value.incorrectCount,
+    blankCount: value.blankCount,
+    elapsedSeconds: value.elapsedSeconds,
+    score: parseFiniteNumber(value.score, "a pontuação do diagnóstico"),
+  };
+}
+
+export function parseSimulationResult(value: unknown): SimulationResult {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeInteger(value.correctCount) ||
+    !isNonNegativeInteger(value.incorrectCount) ||
+    !isNonNegativeInteger(value.blankCount) ||
+    !isNonNegativeInteger(value.annulledCount) ||
+    !Array.isArray(value.diagnostics)
+  ) {
+    throw new Error("O núcleo local devolveu um resultado de simulado inválido.");
+  }
+  return {
+    detail: parseSimulationDetail(value.detail),
+    score: parseFiniteNumber(value.score, "a pontuação do simulado"),
+    maxScore: parseFiniteNumber(value.maxScore, "a pontuação máxima do simulado"),
+    percentage: parseOptionalFiniteNumber(value.percentage, "o percentual do simulado"),
+    correctCount: value.correctCount,
+    incorrectCount: value.incorrectCount,
+    blankCount: value.blankCount,
+    annulledCount: value.annulledCount,
+    diagnostics: value.diagnostics.map(parseSimulationDiagnostic),
+  };
+}
+
+export function parseSimulations(value: unknown): SimulationSummary[] {
+  if (!Array.isArray(value)) {
+    throw new Error("O núcleo local devolveu uma lista de simulados inválida.");
+  }
+  return value.map(parseSimulationSummary);
+}
+
+function parseDiscursiveSelfAssessment(value: unknown): DiscursiveSelfAssessment {
+  if (value === "weak" || value === "partial" || value === "strong") return value;
+  throw new Error("O núcleo local devolveu uma autoavaliação discursiva inválida.");
+}
+
+function parseDiscursiveAttempt(value: unknown): DiscursiveAttemptSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.responseMarkdown !== "string" ||
+    !isNonNegativeInteger(value.elapsedSeconds) ||
+    typeof value.answeredAt !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu uma resposta discursiva inválida.");
+  }
+  return {
+    id: value.id,
+    responseMarkdown: value.responseMarkdown,
+    selfAssessment: parseDiscursiveSelfAssessment(value.selfAssessment),
+    elapsedSeconds: value.elapsedSeconds,
+    answeredAt: value.answeredAt,
+  };
+}
+
+export function parseDiscursiveQuestion(value: unknown): DiscursiveQuestionSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.statementMarkdown !== "string" ||
+    !isNonNegativeInteger(value.attemptsCount)
+  ) {
+    throw new Error("O núcleo local devolveu uma discursiva inválida.");
+  }
+  return {
+    id: value.id,
+    statementMarkdown: value.statementMarkdown,
+    referenceMarkdown: parseOptionalString(value.referenceMarkdown, "a referência discursiva"),
+    rubricMarkdown: parseOptionalString(value.rubricMarkdown, "a rubrica discursiva"),
+    sourceName: parseOptionalString(value.sourceName, "a origem da discursiva"),
+    board: parseOptionalString(value.board, "a banca da discursiva"),
+    organization: parseOptionalString(value.organization, "o órgão da discursiva"),
+    role: parseOptionalString(value.role, "o cargo da discursiva"),
+    examYear: parseOptionalInteger(value.examYear, "o ano da discursiva"),
+    subjectId: parseOptionalString(value.subjectId, "o assunto da discursiva"),
+    subjectName: parseOptionalString(value.subjectName, "o nome do assunto da discursiva"),
+    attemptsCount: value.attemptsCount,
+    latestAttempt: value.latestAttempt === null ? null : parseDiscursiveAttempt(value.latestAttempt),
+  };
+}
+
+export function parseDiscursiveQuestions(value: unknown): DiscursiveQuestionSummary[] {
+  if (!Array.isArray(value)) {
+    throw new Error("O núcleo local devolveu uma lista de discursivas inválida.");
+  }
+  return value.map(parseDiscursiveQuestion);
+}
+
+export function parseAnswerDiscursiveQuestionResult(value: unknown): AnswerDiscursiveQuestionResult {
+  if (!isRecord(value)) {
+    throw new Error("O núcleo local devolveu uma resposta discursiva inválida.");
+  }
+  return {
+    question: parseDiscursiveQuestion(value.question),
+    attempt: parseDiscursiveAttempt(value.attempt),
+  };
 }
 
 function parseQuestionConfidence(value: unknown): QuestionConfidence {

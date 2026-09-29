@@ -10,7 +10,7 @@ use crate::domain::study_plan::{
     SubjectMoveDirection, SubjectPrioritySummary, SubjectStudyStatus, SubjectSummary,
     UpdateSubjectInput, DEFAULT_REVIEW_RESERVE_PERCENT,
 };
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use uuid::Uuid;
 
 impl StudyPlanStore for LocalWorkspaceStore {
@@ -35,58 +35,43 @@ impl StudyPlanStore for LocalWorkspaceStore {
         let transaction = connection
             .transaction()
             .map_err(|error| map_database_error("iniciar criação da preparação", error))?;
-        let primary_count: i64 = transaction
-            .query_row(
-                "SELECT COUNT(*) FROM preparations WHERE archived_at IS NULL AND is_primary = 1",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|error| map_database_error("verificar preparação principal", error))?;
-        let is_primary = primary_count == 0 || input.make_primary;
-
-        if is_primary {
-            transaction
-                .execute(
-                    "UPDATE preparations SET is_primary = 0 WHERE archived_at IS NULL",
-                    [],
-                )
-                .map_err(|error| map_database_error("alternar preparação principal", error))?;
-        }
-
-        let id = Uuid::new_v4().to_string();
-        transaction
-            .execute(
-                "INSERT INTO preparations
-                    (id, name, organization, role, board, exam_date, is_primary)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    id.as_str(),
-                    &input.name,
-                    input.organization.as_deref(),
-                    input.role.as_deref(),
-                    input.board.as_deref(),
-                    input.exam_date.as_deref(),
-                    if is_primary { 1_i64 } else { 0_i64 },
-                ],
-            )
-            .map_err(|error| map_database_error("gravar preparação", error))?;
-
-        let summary = PreparationSummary {
-            id,
-            name: input.name.clone(),
-            organization: input.organization.clone(),
-            role: input.role.clone(),
-            board: input.board.clone(),
-            exam_date: input.exam_date.clone(),
-            is_primary,
-            reference_material_id: None,
-            reference_document_status: ReferenceDocumentStatus::Reference,
-            exam_rules_markdown: None,
-        };
+        let summary = insert_preparation(&transaction, input)?;
         transaction
             .commit()
             .map_err(|error| map_database_error("confirmar preparação", error))?;
 
+        Ok(summary)
+    }
+
+    fn create_preparation_with_reference(
+        &self,
+        input: &CreatePreparationInput,
+        reference_material_id: &str,
+        reference_document_status: ReferenceDocumentStatus,
+    ) -> Result<PreparationSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection.transaction().map_err(|error| {
+            map_database_error("iniciar criação da preparação com edital", error)
+        })?;
+        let mut summary = insert_preparation(&transaction, input)?;
+        ensure_reference_material_exists(&transaction, reference_material_id)?;
+        transaction
+            .execute(
+                "UPDATE preparations
+                 SET reference_material_id = ?1, reference_document_status = ?2
+                 WHERE id = ?3 AND archived_at IS NULL",
+                params![
+                    reference_material_id,
+                    reference_document_status.as_str(),
+                    summary.id.as_str()
+                ],
+            )
+            .map_err(|error| map_database_error("vincular edital à preparação", error))?;
+        summary.reference_material_id = Some(reference_material_id.to_string());
+        summary.reference_document_status = reference_document_status;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar preparação com edital", error))?;
         Ok(summary)
     }
 
@@ -333,19 +318,7 @@ impl StudyPlanStore for LocalWorkspaceStore {
         ensure_preparation_exists(&transaction, &input.preparation_id)?;
 
         if let Some(material_id) = input.reference_material_id.as_deref() {
-            let material_exists: Option<i64> = transaction
-                .query_row(
-                    "SELECT 1 FROM materials WHERE id = ?1",
-                    params![material_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|error| map_database_error("verificar edital de referência", error))?;
-            if material_exists.is_none() {
-                return Err(WorkspaceError::InvalidInput(
-                    "O edital de referência escolhido não existe mais.".to_string(),
-                ));
-            }
+            ensure_reference_material_exists(&transaction, material_id)?;
         }
 
         for subject in &input.subject_exam_weights {
@@ -551,6 +524,80 @@ impl StudyPlanStore for LocalWorkspaceStore {
             .map_err(|error| map_database_error("confirmar avanço do ciclo", error))?;
         Ok(summary)
     }
+}
+
+fn insert_preparation(
+    transaction: &Transaction<'_>,
+    input: &CreatePreparationInput,
+) -> Result<PreparationSummary, WorkspaceError> {
+    let primary_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM preparations WHERE archived_at IS NULL AND is_primary = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| map_database_error("verificar preparação principal", error))?;
+    let is_primary = primary_count == 0 || input.make_primary;
+
+    if is_primary {
+        transaction
+            .execute(
+                "UPDATE preparations SET is_primary = 0 WHERE archived_at IS NULL",
+                [],
+            )
+            .map_err(|error| map_database_error("alternar preparação principal", error))?;
+    }
+
+    let id = Uuid::new_v4().to_string();
+    transaction
+        .execute(
+            "INSERT INTO preparations
+                (id, name, organization, role, board, exam_date, is_primary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id.as_str(),
+                &input.name,
+                input.organization.as_deref(),
+                input.role.as_deref(),
+                input.board.as_deref(),
+                input.exam_date.as_deref(),
+                if is_primary { 1_i64 } else { 0_i64 },
+            ],
+        )
+        .map_err(|error| map_database_error("gravar preparação", error))?;
+
+    Ok(PreparationSummary {
+        id,
+        name: input.name.clone(),
+        organization: input.organization.clone(),
+        role: input.role.clone(),
+        board: input.board.clone(),
+        exam_date: input.exam_date.clone(),
+        is_primary,
+        reference_material_id: None,
+        reference_document_status: ReferenceDocumentStatus::Reference,
+        exam_rules_markdown: None,
+    })
+}
+
+fn ensure_reference_material_exists(
+    connection: &rusqlite::Connection,
+    material_id: &str,
+) -> Result<(), WorkspaceError> {
+    let material_exists: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM materials WHERE id = ?1",
+            params![material_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| map_database_error("verificar edital de referência", error))?;
+    if material_exists.is_none() {
+        return Err(WorkspaceError::InvalidInput(
+            "O edital de referência escolhido não existe mais.".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn load_preparations(

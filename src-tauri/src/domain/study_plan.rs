@@ -246,6 +246,10 @@ pub fn normalize_preparation_id(value: &str) -> Result<String, String> {
     normalize_id(value, "A preparação")
 }
 
+pub fn normalize_material_id(value: &str) -> Result<String, String> {
+    normalize_id(value, "O material de referência")
+}
+
 pub fn normalize_subject_id(value: &str) -> Result<String, String> {
     normalize_id(value, "O assunto")
 }

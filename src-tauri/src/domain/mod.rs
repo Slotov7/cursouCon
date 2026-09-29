@@ -1,13 +1,16 @@
 pub mod backup;
 pub mod contest;
 pub mod diagnostic;
+pub mod discursive;
 pub mod export;
 pub mod material;
 pub mod note;
+pub mod online_contest;
 pub mod preferences;
 pub mod question;
 pub mod question_transfer;
 pub mod revision;
+pub mod simulation;
 pub mod study;
 pub mod study_plan;
 pub mod workspace;

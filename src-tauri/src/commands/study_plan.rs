@@ -22,6 +22,8 @@ pub struct CreatePreparationRequest {
     pub exam_date: Option<String>,
     #[serde(default)]
     pub make_primary: bool,
+    pub reference_material_id: Option<String>,
+    pub reference_document_status: Option<ReferenceDocumentStatus>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,9 +152,21 @@ pub fn create_preparation(
         make_primary: request.make_primary,
     };
 
-    StudyPlanService::new(store)
-        .create_preparation(input)
-        .map_err(CommandError::from)
+    let service = StudyPlanService::new(store);
+    match request.reference_material_id {
+        Some(reference_material_id) => service
+            .create_preparation_with_reference(
+                input,
+                reference_material_id,
+                request
+                    .reference_document_status
+                    .unwrap_or(ReferenceDocumentStatus::Reference),
+            )
+            .map_err(CommandError::from),
+        None => service
+            .create_preparation(input)
+            .map_err(CommandError::from),
+    }
 }
 
 #[tauri::command]

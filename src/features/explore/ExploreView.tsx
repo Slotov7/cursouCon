@@ -1,19 +1,29 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
+  createPreparation,
   getDesktopErrorMessage,
   getManualContests,
+  getOnlineContests,
+  getStudyPlan,
   importMaterial,
   openMaterial,
   pickMaterialFile,
+  refreshOnlineContests,
+  saveOnlineContestNotice,
   saveManualContest,
   setManualContestFavorite,
   setManualContestNotice,
+  setOnlineContestFavorite,
 } from "../../shared/desktop/commands";
 import type {
   ContestStatus,
   ManualContestSummary,
+  OnlineContestSnapshot,
+  OnlineContestSummary,
+  PreparationSummary,
   SaveManualContestRequest,
 } from "../../shared/desktop/contracts";
+import { dateKeyForTimezone } from "../../shared/date";
 import {
   buttonPrimaryClass,
   buttonQuietClass,
@@ -27,10 +37,32 @@ import {
 
 type ExploreViewProps = {
   refreshKey: number;
+  timezone: string;
 };
 
 type ContestFormState = Omit<SaveManualContestRequest, "id">;
 type ContestFilter = "all" | "favorites";
+type OnlineContestFilters = {
+  area: string;
+  location: string;
+  education: string;
+  board: string;
+  minimumSalary: string;
+  maximumSalary: string;
+  registrationEndsBy: string;
+};
+
+type OnlineConversionFormState = {
+  opportunityId: string;
+  name: string;
+  organization: string;
+  role: string;
+  board: string;
+  examDate: string;
+  makePrimary: boolean;
+  referenceDocumentStatus: "reference" | "current";
+  noticeMaterialId: string | null;
+};
 
 const STATUS_OPTIONS: Array<{ value: ContestStatus; label: string }> = [
   { value: "expected", label: "Previsto" },
@@ -55,22 +87,44 @@ const EMPTY_FORM: ContestFormState = {
   notes: null,
 };
 
-export function ExploreView({ refreshKey }: ExploreViewProps) {
+const EMPTY_ONLINE_FILTERS: OnlineContestFilters = {
+  area: "",
+  location: "",
+  education: "",
+  board: "",
+  minimumSalary: "",
+  maximumSalary: "",
+  registrationEndsBy: "",
+};
+
+export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
   const [contests, setContests] = useState<ManualContestSummary[]>([]);
+  const [onlineSnapshot, setOnlineSnapshot] = useState<OnlineContestSnapshot | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isOnlineLoading, setIsOnlineLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [onlineError, setOnlineError] = useState<string | null>(null);
   const [retryVersion, setRetryVersion] = useState(0);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ContestFilter>("all");
+  const [onlineFilters, setOnlineFilters] = useState<OnlineContestFilters>(EMPTY_ONLINE_FILTERS);
   const [form, setForm] = useState<ContestFormState>(EMPTY_FORM);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingFavoriteId, setPendingFavoriteId] = useState<string | null>(null);
+  const [pendingOnlineFavoriteId, setPendingOnlineFavoriteId] = useState<string | null>(null);
+  const [pendingOnlineNoticeId, setPendingOnlineNoticeId] = useState<string | null>(null);
+  const [isRefreshingOnline, setIsRefreshingOnline] = useState(false);
   const [pendingNoticeId, setPendingNoticeId] = useState<string | null>(null);
   const [noticeError, setNoticeError] = useState<string | null>(null);
+  const [conversion, setConversion] = useState<OnlineConversionFormState | null>(null);
+  const [conversionError, setConversionError] = useState<string | null>(null);
+  const [duplicatePreparation, setDuplicatePreparation] = useState<PreparationSummary | null>(null);
+  const [duplicateAcknowledged, setDuplicateAcknowledged] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [isConverting, setIsConverting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,6 +148,27 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
     };
   }, [refreshKey, retryVersion]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setIsOnlineLoading(true);
+    getOnlineContests()
+      .then((snapshot) => {
+        if (cancelled) return;
+        setOnlineSnapshot(snapshot);
+        setOnlineError(snapshot.source.lastError);
+      })
+      .catch((operationError: unknown) => {
+        if (!cancelled) setOnlineError(getDesktopErrorMessage(operationError));
+      })
+      .finally(() => {
+        if (!cancelled) setIsOnlineLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey, retryVersion]);
+
   const visibleContests = useMemo(() => {
     const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR");
     return contests.filter((contest) => {
@@ -103,6 +178,45 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
         .some((value) => value?.toLocaleLowerCase("pt-BR").includes(normalizedSearch));
     });
   }, [contests, filter, search]);
+
+  const visibleOnlineContests = useMemo(() => {
+    const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR");
+    const minimumSalary = parseSalaryFilter(onlineFilters.minimumSalary);
+    const maximumSalary = parseSalaryFilter(onlineFilters.maximumSalary);
+    return (onlineSnapshot?.opportunities ?? []).filter((opportunity) => {
+      if (filter === "favorites" && !opportunity.isFavorite) return false;
+      if (onlineFilters.area && opportunity.area !== onlineFilters.area) return false;
+      if (onlineFilters.location && opportunity.location !== onlineFilters.location) return false;
+      if (onlineFilters.education && opportunity.education !== onlineFilters.education) return false;
+      if (onlineFilters.board && opportunity.board !== onlineFilters.board) return false;
+      if (minimumSalary !== null && (opportunity.salaryMax === null || opportunity.salaryMax < minimumSalary)) return false;
+      if (maximumSalary !== null && (opportunity.salaryMax === null || opportunity.salaryMax > maximumSalary)) return false;
+      if (onlineFilters.registrationEndsBy && (
+        opportunity.registrationEndsOn === null
+        || opportunity.registrationEndsOn > onlineFilters.registrationEndsBy
+      )) return false;
+      if (!normalizedSearch) return true;
+      return [
+        opportunity.name,
+        opportunity.organization,
+        opportunity.role,
+        opportunity.board,
+        opportunity.area,
+        opportunity.location,
+        opportunity.education,
+      ].some((value) => value?.toLocaleLowerCase("pt-BR").includes(normalizedSearch));
+    });
+  }, [filter, onlineFilters, onlineSnapshot, search]);
+
+  const onlineFilterOptions = useMemo(() => {
+    const opportunities = onlineSnapshot?.opportunities ?? [];
+    return {
+      areas: uniqueValues(opportunities.map((opportunity) => opportunity.area)),
+      locations: uniqueValues(opportunities.map((opportunity) => opportunity.location)),
+      educations: uniqueValues(opportunities.map((opportunity) => opportunity.education)),
+      boards: uniqueValues(opportunities.map((opportunity) => opportunity.board)),
+    };
+  }, [onlineSnapshot]);
 
   const openNewContestForm = () => {
     setEditingId(null);
@@ -188,6 +302,157 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
     }
   };
 
+  const handleRefreshOnline = async () => {
+    setIsRefreshingOnline(true);
+    setOnlineError(null);
+    setMessage(null);
+    try {
+      const refreshed = await refreshOnlineContests();
+      setOnlineSnapshot({
+        opportunities: refreshed.opportunities,
+        source: {
+          sourceName: refreshed.sourceName,
+          sourceUrl: refreshed.sourceUrl,
+          lastAttemptedAt: refreshed.sourceCheckedAt,
+          lastSuccessfulAt: refreshed.sourceCheckedAt,
+          lastError: null,
+        },
+      });
+      setMessage(`${refreshed.importedCount} novas, ${refreshed.updatedCount} atualizadas e ${refreshed.unchangedCount} sem alteração. Fonte consultada com sucesso.`);
+    } catch (operationError: unknown) {
+      const message = getDesktopErrorMessage(operationError);
+      setOnlineError(message);
+      try {
+        const cached = await getOnlineContests();
+        setOnlineSnapshot(cached);
+      } catch {
+        // Keep the network error visible when even the local cache cannot be opened.
+      }
+    } finally {
+      setIsRefreshingOnline(false);
+    }
+  };
+
+  const handleToggleOnlineFavorite = async (opportunity: OnlineContestSummary) => {
+    setPendingOnlineFavoriteId(opportunity.id);
+    setOnlineError(null);
+    setMessage(null);
+    try {
+      const updated = await setOnlineContestFavorite({
+        opportunityId: opportunity.id,
+        isFavorite: !opportunity.isFavorite,
+      });
+      setOnlineSnapshot(updated);
+      setMessage(updated.opportunities.find((item) => item.id === opportunity.id)?.isFavorite
+        ? "Oportunidade online adicionada aos favoritos."
+        : "Oportunidade online removida dos favoritos.");
+    } catch (operationError: unknown) {
+      setOnlineError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingOnlineFavoriteId(null);
+    }
+  };
+
+  const handleSaveOnlineNotice = async (opportunity: OnlineContestSummary) => {
+    setPendingOnlineNoticeId(opportunity.id);
+    setNoticeError(null);
+    setMessage(null);
+    try {
+      const updated = await saveOnlineContestNotice({ opportunityId: opportunity.id });
+      setOnlineSnapshot(updated);
+      const savedOpportunity = updated.opportunities.find((item) => item.id === opportunity.id);
+      if (savedOpportunity && conversion?.opportunityId === opportunity.id) {
+        setConversion((previous) => previous ? { ...previous, noticeMaterialId: savedOpportunity.noticeMaterialId } : previous);
+      }
+      setMessage(`Edital de ${opportunity.name} guardado localmente.`);
+    } catch (operationError: unknown) {
+      setNoticeError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingOnlineNoticeId(null);
+    }
+  };
+
+  const handleOpenOnlineNotice = async (opportunity: OnlineContestSummary) => {
+    if (!opportunity.noticeMaterialId) return;
+    setNoticeError(null);
+    try {
+      await openMaterial({ materialId: opportunity.noticeMaterialId });
+    } catch (operationError: unknown) {
+      setNoticeError(getDesktopErrorMessage(operationError));
+    }
+  };
+
+  const handleOpenConversionNotice = async () => {
+    if (!conversion?.noticeMaterialId) return;
+    setNoticeError(null);
+    try {
+      await openMaterial({ materialId: conversion.noticeMaterialId });
+    } catch (operationError: unknown) {
+      setConversionError(getDesktopErrorMessage(operationError));
+    }
+  };
+
+  const handleOpenOnlineConversion = (opportunity: OnlineContestSummary) => {
+    setConversion({
+      opportunityId: opportunity.id,
+      name: opportunity.name,
+      organization: opportunity.organization ?? "",
+      role: opportunity.role ?? "",
+      board: opportunity.board ?? "",
+      examDate: opportunity.examDate ?? "",
+      makePrimary: false,
+      referenceDocumentStatus: "reference",
+      noticeMaterialId: opportunity.noticeMaterialId,
+    });
+    setConversionError(null);
+    setDuplicatePreparation(null);
+    setDuplicateAcknowledged(false);
+    setNoticeError(null);
+  };
+
+  const handleConvertOnline = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!conversion) return;
+    setConversionError(null);
+    setMessage(null);
+    setIsConverting(true);
+    try {
+      const studyPlan = await getStudyPlan();
+      const duplicate = studyPlan.preparations.find((preparation) =>
+        matchesPreparationIdentity(preparation, conversion),
+      ) ?? null;
+      setDuplicatePreparation(duplicate);
+      if (duplicate && !duplicateAcknowledged) {
+        setConversionError(`Já existe uma preparação parecida: ${duplicate.name}. Revise os dados e confirme a criação duplicada se for intencional.`);
+        return;
+      }
+
+      const created = await createPreparation({
+        name: conversion.name.trim(),
+        organization: normalizeOptionalValue(conversion.organization),
+        role: normalizeOptionalValue(conversion.role),
+        board: normalizeOptionalValue(conversion.board),
+        examDate: normalizeOptionalValue(conversion.examDate),
+        makePrimary: conversion.makePrimary,
+        referenceMaterialId: conversion.noticeMaterialId,
+        referenceDocumentStatus: conversion.noticeMaterialId
+          ? conversion.referenceDocumentStatus
+          : undefined,
+      });
+
+      setConversion(null);
+      setDuplicatePreparation(null);
+      setDuplicateAcknowledged(false);
+      setMessage(conversion.noticeMaterialId
+        ? `Preparação ${created.name} criada com o edital offline como referência.`
+        : `Preparação ${created.name} criada. Revise o edital antes de marcá-lo como vigente.`);
+    } catch (operationError: unknown) {
+      setConversionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setIsConverting(false);
+    }
+  };
+
   const handleImportNotice = async (contest: ManualContestSummary) => {
     setPendingNoticeId(contest.id);
     setNoticeError(null);
@@ -236,6 +501,13 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
 
   const openRegistrations = contests.filter((contest) => contest.status === "registration_open").length;
   const favoriteCount = contests.filter((contest) => contest.isFavorite).length;
+  const upcomingAlerts = [
+    ...buildUpcomingAlerts(contests, timezone),
+    ...buildUpcomingOnlineAlerts(onlineSnapshot?.opportunities ?? [], timezone),
+  ];
+  const conversionOpportunity = conversion
+    ? onlineSnapshot?.opportunities.find((opportunity) => opportunity.id === conversion.opportunityId) ?? null
+    : null;
 
   return (
     <div className="grid gap-6">
@@ -246,7 +518,7 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
               Acompanhamento local
             </span>
             <span className="text-xs font-medium text-slate-300/85">
-              Cadastro manual · disponível offline
+               Cadastro manual + fonte online com cache local
             </span>
           </div>
           <div>
@@ -254,8 +526,7 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
               Concursos e oportunidades
             </h2>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-200/85">
-              Registre fontes, cargos e prazos conhecidos para acompanhar oportunidades importantes.
-              As informações são inseridas por você; esta tela ainda não consulta fontes externas.
+               Registre oportunidades manualmente ou consulte a fonte aprovada. O cache permanece local e a origem de cada item fica visível.
             </p>
           </div>
           <button type="button" onClick={openNewContestForm} className={buttonPrimaryClass}>
@@ -272,6 +543,21 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
           </button>
         </div>
       )}
+      <section className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-blue-500/25 bg-blue-500/5 p-4" aria-labelledby="online-source-title">
+        <div className="min-w-0">
+          <Eyebrow>Fonte integrada · Ache Concursos</Eyebrow>
+          <h3 id="online-source-title" className="mt-1 font-heading text-base font-bold text-ink">Atualização sob demanda</h3>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            {onlineSnapshot?.source.lastSuccessfulAt
+              ? `Última consulta: ${formatDateTime(onlineSnapshot.source.lastSuccessfulAt)}. Campos ausentes continuam identificados.`
+              : "Nenhuma consulta foi executada neste espaço ainda."}
+          </p>
+          {onlineError && <p className="mt-2 text-xs text-red-600" role="alert">Falha na atualização; o cache anterior continua disponível: {onlineError}</p>}
+        </div>
+        <button type="button" className={buttonSecondaryClass} onClick={() => void handleRefreshOnline()} disabled={isRefreshingOnline || isOnlineLoading}>
+          {isRefreshingOnline ? "Consultando..." : "Atualizar fonte"}
+        </button>
+      </section>
       {noticeError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-xs text-red-600" role="alert">{noticeError}</p>}
       {message && (
         <div className="flex items-center justify-between gap-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-xs font-medium text-emerald-700 dark:text-emerald-300" role="status">
@@ -280,6 +566,25 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
             ×
           </button>
         </div>
+      )}
+
+      {upcomingAlerts.length > 0 && (
+        <section className="grid gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5" aria-labelledby="contest-alerts-title">
+          <div>
+            <Eyebrow>Alertas locais · fuso {timezone === "system" ? "do sistema" : timezone}</Eyebrow>
+            <h3 id="contest-alerts-title" className="mt-1 font-heading text-lg font-bold text-ink">Prazos dos seus favoritos</h3>
+            <p className="mt-1 text-xs text-muted">As datas não têm horário oficial salvo; confirme o edital antes de agir.</p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {upcomingAlerts.map((alert) => (
+              <div key={`${alert.contestId}-${alert.kind}`} className="rounded-xl border border-amber-500/20 bg-card/70 p-3 text-xs">
+                <p className="font-bold text-ink">{alert.contestName}</p>
+                <p className="mt-1 text-amber-700 dark:text-amber-300">{alert.label}: {formatDate(alert.date)}</p>
+                <p className="mt-1 text-muted">{alert.daysRemaining === 0 ? "É hoje" : `Faltam ${alert.daysRemaining} dias`}</p>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {isFormOpen && (
@@ -353,10 +658,224 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
         </section>
       )}
 
+      {conversion && (
+        <section className="glass-card rounded-2xl border border-emerald-500/25 p-5 shadow-xs lg:p-6" role="dialog" aria-modal="true" aria-labelledby="online-conversion-title">
+          <div className="mb-4 flex items-start justify-between gap-4 border-b border-line pb-3">
+            <div>
+              <Eyebrow>Revisão antes de salvar</Eyebrow>
+              <h3 id="online-conversion-title" className="mt-1 font-heading text-lg font-bold text-ink">Preparar a partir da oportunidade online</h3>
+              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted">
+                Confira os dados trazidos da fonte. A oportunidade continuará preservada no histórico online; esta ação cria uma preparação local para o seu plano.
+              </p>
+            </div>
+            <button type="button" className={buttonQuietClass} onClick={() => setConversion(null)} disabled={isConverting}>Fechar</button>
+          </div>
+          {conversionError && <p className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">{conversionError}</p>}
+          {duplicatePreparation && (
+            <label className="mb-4 flex gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 shrink-0 accent-amber-600"
+                checked={duplicateAcknowledged}
+                onChange={(event) => setDuplicateAcknowledged(event.target.checked)}
+                disabled={isConverting}
+              />
+              <span>
+                Já existe <strong>{duplicatePreparation.name}</strong>. Confirmo que quero criar outra preparação mesmo assim.
+              </span>
+            </label>
+          )}
+          <form className="grid gap-4 sm:grid-cols-2" onSubmit={handleConvertOnline}>
+            <label className={`${fieldClass} sm:col-span-2`}>
+              Preparação <span className="text-red-600">*</span>
+              <input className={inputClass} value={conversion.name} onChange={(event) => setConversion({ ...conversion, name: event.target.value })} maxLength={160} required disabled={isConverting} />
+            </label>
+            <label className={fieldClass}>
+              Órgão <span className="font-normal text-muted">(opcional)</span>
+              <input className={inputClass} value={conversion.organization} onChange={(event) => setConversion({ ...conversion, organization: event.target.value })} maxLength={120} disabled={isConverting} />
+            </label>
+            <label className={fieldClass}>
+              Cargo <span className="font-normal text-muted">(opcional)</span>
+              <input className={inputClass} value={conversion.role} onChange={(event) => setConversion({ ...conversion, role: event.target.value })} maxLength={120} disabled={isConverting} />
+            </label>
+            <label className={fieldClass}>
+              Banca <span className="font-normal text-muted">(opcional)</span>
+              <input className={inputClass} value={conversion.board} onChange={(event) => setConversion({ ...conversion, board: event.target.value })} maxLength={120} disabled={isConverting} />
+            </label>
+            <label className={fieldClass}>
+              Data da prova <span className="font-normal text-muted">(opcional)</span>
+              <input className={inputClass} type="date" value={conversion.examDate} onChange={(event) => setConversion({ ...conversion, examDate: event.target.value })} disabled={isConverting} />
+            </label>
+            <div className="rounded-xl border border-line bg-paper/60 p-3 text-xs sm:col-span-2">
+              <p className="font-semibold text-ink">Edital usado na revisão</p>
+              <p className="mt-1 text-muted">
+                {conversion.noticeMaterialId
+                  ? "Há uma cópia offline vinculada a esta oportunidade. Ela será associada à preparação."
+                  : "Nenhuma cópia offline foi salva ainda. Baixe o edital no cartão da oportunidade antes de marcá-lo como vigente."}
+              </p>
+              {!conversion.noticeMaterialId && conversionOpportunity && (
+                <button type="button" className={`${buttonSecondaryClass} mt-3`} onClick={() => void handleSaveOnlineNotice(conversionOpportunity)} disabled={pendingOnlineNoticeId === conversionOpportunity.id}>
+                  {pendingOnlineNoticeId === conversionOpportunity.id ? "Baixando edital..." : "Baixar edital para revisar"}
+                </button>
+              )}
+              {conversion.noticeMaterialId && (
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <button type="button" className={buttonSecondaryClass} onClick={() => void handleOpenConversionNotice()} disabled={isConverting}>Abrir edital offline</button>
+                  <label className={fieldClass}>
+                    Estado do edital
+                    <select
+                      className={selectClass}
+                      value={conversion.referenceDocumentStatus}
+                      onChange={(event) => setConversion({ ...conversion, referenceDocumentStatus: event.target.value as "reference" | "current" })}
+                      disabled={isConverting}
+                    >
+                      <option value="reference">Referência a conferir</option>
+                      <option value="current">Vigente confirmado no edital</option>
+                    </select>
+                  </label>
+                </div>
+              )}
+            </div>
+            <label className="flex items-start gap-3 text-xs text-muted sm:col-span-2">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 accent-blue-600" checked={conversion.makePrimary} onChange={(event) => setConversion({ ...conversion, makePrimary: event.target.checked })} disabled={isConverting} />
+              <span>Usar esta preparação como principal.</span>
+            </label>
+            <div className="flex justify-end gap-2 border-t border-line pt-3 sm:col-span-2">
+              <button type="button" className={buttonQuietClass} onClick={() => setConversion(null)} disabled={isConverting}>Cancelar</button>
+              <button type="submit" className={buttonPrimaryClass} disabled={isConverting || !conversion.name.trim()}>
+                {isConverting ? "Criando..." : duplicatePreparation && !duplicateAcknowledged ? "Revisar duplicação" : "Criar preparação"}
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
+
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label="Resumo de oportunidades">
         <SummaryCard label="Concursos cadastrados" value={isLoading || error ? "—" : contests.length} detail="Registros locais" />
         <SummaryCard label="Favoritos" value={isLoading || error ? "—" : favoriteCount} detail="Acompanhados por você" />
         <SummaryCard label="Inscrições abertas" value={isLoading || error ? "—" : openRegistrations} detail="Conforme situação informada" />
+      </section>
+
+      <section className="glass-card grid gap-4 rounded-2xl p-5 shadow-xs lg:p-6" aria-labelledby="online-contest-list-title">
+        <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line pb-4">
+          <div>
+            <Eyebrow>Resultados da fonte</Eyebrow>
+            <h3 id="online-contest-list-title" className="mt-1 font-heading text-lg font-bold text-ink">Oportunidades online</h3>
+          </div>
+          <span className="text-xs font-semibold text-muted">{visibleOnlineContests.length} exibidas</span>
+        </div>
+        <div className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4 sm:grid-cols-2 lg:grid-cols-4">
+          <label className={fieldClass}>
+            Área
+            <select
+              className={selectClass}
+              value={onlineFilters.area}
+              onChange={(event) => setOnlineFilters({ ...onlineFilters, area: event.target.value })}
+            >
+              <option value="">Todas</option>
+              {onlineFilterOptions.areas.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className={fieldClass}>
+            Local
+            <select
+              className={selectClass}
+              value={onlineFilters.location}
+              onChange={(event) => setOnlineFilters({ ...onlineFilters, location: event.target.value })}
+            >
+              <option value="">Todos</option>
+              {onlineFilterOptions.locations.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className={fieldClass}>
+            Formação
+            <select
+              className={selectClass}
+              value={onlineFilters.education}
+              onChange={(event) => setOnlineFilters({ ...onlineFilters, education: event.target.value })}
+            >
+              <option value="">Todas</option>
+              {onlineFilterOptions.educations.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className={fieldClass}>
+            Banca
+            <select
+              className={selectClass}
+              value={onlineFilters.board}
+              onChange={(event) => setOnlineFilters({ ...onlineFilters, board: event.target.value })}
+            >
+              <option value="">Todas</option>
+              {onlineFilterOptions.boards.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className={fieldClass}>
+            Salário mínimo
+            <input
+              className={inputClass}
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              value={onlineFilters.minimumSalary}
+              onChange={(event) => setOnlineFilters({ ...onlineFilters, minimumSalary: event.target.value })}
+              placeholder="Sem mínimo"
+            />
+          </label>
+          <label className={fieldClass}>
+            Salário máximo
+            <input
+              className={inputClass}
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              value={onlineFilters.maximumSalary}
+              onChange={(event) => setOnlineFilters({ ...onlineFilters, maximumSalary: event.target.value })}
+              placeholder="Sem máximo"
+            />
+          </label>
+          <label className={fieldClass}>
+            Inscrição até
+            <input
+              className={inputClass}
+              type="date"
+              value={onlineFilters.registrationEndsBy}
+              onChange={(event) => setOnlineFilters({ ...onlineFilters, registrationEndsBy: event.target.value })}
+            />
+          </label>
+          <div className="flex items-end">
+            <button type="button" className={`${buttonQuietClass} w-full`} onClick={() => setOnlineFilters(EMPTY_ONLINE_FILTERS)}>
+              Limpar filtros online
+            </button>
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted sm:col-span-2 lg:col-span-4">
+            Filtros estruturados só exibem registros com valor correspondente. Salário e prazo excluem oportunidades sem esse dado; valores ausentes não são tratados como zero.
+          </p>
+        </div>
+        {isOnlineLoading ? (
+          <p className="rounded-xl border border-dashed border-line p-8 text-center text-sm text-muted" aria-live="polite">Carregando cache online...</p>
+        ) : visibleOnlineContests.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-line bg-paper p-8 text-center">
+            <p className="text-sm font-semibold text-ink">Nenhuma oportunidade online no filtro atual.</p>
+            <p className="mt-1 text-xs text-muted">Atualize a fonte ou ajuste a busca. A primeira consulta é sempre explícita.</p>
+          </div>
+        ) : (
+          <div className="grid gap-3">
+            {visibleOnlineContests.map((opportunity) => (
+              <OnlineContestCard
+                key={opportunity.id}
+                opportunity={opportunity}
+                isFavoritePending={pendingOnlineFavoriteId === opportunity.id}
+                 isNoticePending={pendingOnlineNoticeId === opportunity.id}
+                 onToggleFavorite={() => void handleToggleOnlineFavorite(opportunity)}
+                 onSaveNotice={() => void handleSaveOnlineNotice(opportunity)}
+                 onOpenNotice={() => void handleOpenOnlineNotice(opportunity)}
+                 onConvert={() => handleOpenOnlineConversion(opportunity)}
+               />
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="glass-card grid gap-4 rounded-2xl p-5 shadow-xs lg:p-6" aria-labelledby="contest-list-title">
@@ -370,7 +889,7 @@ export function ExploreView({ refreshKey }: ExploreViewProps) {
 
         <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
           <label className={fieldClass}>
-            Buscar por concurso, órgão, cargo ou banca
+            Buscar em concursos locais e oportunidades online
             <input className={inputClass} type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Ex.: Analista de TI" />
           </label>
           <div className="flex items-end gap-1 rounded-xl border border-line bg-paper p-1" role="group" aria-label="Filtrar concursos">
@@ -514,9 +1033,179 @@ function ContestCard({
   );
 }
 
+function OnlineContestCard({
+  opportunity,
+  isFavoritePending,
+  isNoticePending,
+  onToggleFavorite,
+  onSaveNotice,
+  onOpenNotice,
+  onConvert,
+}: {
+  opportunity: OnlineContestSummary;
+  isFavoritePending: boolean;
+  isNoticePending: boolean;
+  onToggleFavorite: () => void;
+  onSaveNotice: () => void;
+  onOpenNotice: () => void;
+  onConvert: () => void;
+}) {
+  const deadlines = [
+    ["Inscrições", formatDate(opportunity.registrationEndsOn)],
+    ["Pagamento", formatDate(opportunity.feeDeadline)],
+    ["Prova", formatDate(opportunity.examDate)],
+  ] as const;
+
+  return (
+    <article className="rounded-2xl border border-blue-500/20 bg-card p-4 shadow-xs transition-colors hover:border-blue-500/45 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${statusBadgeClass(opportunity.status)}`}>
+              {statusLabel(opportunity.status)}
+            </span>
+            <span className="rounded-full border border-line bg-paper px-2.5 py-1 text-[10px] font-semibold text-muted">Fonte consultada</span>
+            {opportunity.hasChanges && <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[10px] font-bold text-amber-700 dark:text-amber-300">Atualizada</span>}
+          </div>
+          <h4 className="mt-2 font-heading text-base font-bold text-ink">{opportunity.name}</h4>
+          <p className="mt-1 text-xs text-muted">
+            {[opportunity.organization, opportunity.role, opportunity.location].filter(Boolean).join(" · ") || "Órgão, cargo e local não informados"}
+          </p>
+        </div>
+        <button
+          type="button"
+          className={`${buttonQuietClass} min-h-9 px-3 text-xs ${opportunity.isFavorite ? "text-amber-700 dark:text-amber-300" : ""}`}
+          onClick={onToggleFavorite}
+          disabled={isFavoritePending}
+          aria-pressed={opportunity.isFavorite}
+          aria-label={opportunity.isFavorite ? `Remover ${opportunity.name} dos favoritos` : `Favoritar ${opportunity.name}`}
+        >
+          {isFavoritePending ? "Salvando..." : opportunity.isFavorite ? "★ Favorito" : "☆ Favoritar"}
+        </button>
+      </div>
+      <dl className="mt-4 grid gap-3 border-t border-line pt-4 sm:grid-cols-4">
+        <div><dt className="text-[10px] font-bold uppercase tracking-wide text-muted">Escolaridade</dt><dd className="mt-1 text-xs font-semibold text-ink">{opportunity.education ?? "Não informada"}</dd></div>
+        <div><dt className="text-[10px] font-bold uppercase tracking-wide text-muted">Vagas</dt><dd className="mt-1 text-xs font-semibold text-ink">{opportunity.vacanciesText ?? "Não informadas"}</dd></div>
+        <div><dt className="text-[10px] font-bold uppercase tracking-wide text-muted">Salário</dt><dd className="mt-1 text-xs font-semibold text-ink">{opportunity.salaryText ?? "Não informado"}</dd></div>
+        <div><dt className="text-[10px] font-bold uppercase tracking-wide text-muted">Última consulta</dt><dd className="mt-1 text-xs font-semibold text-ink">{formatDateTime(opportunity.sourceCheckedAt)}</dd></div>
+      </dl>
+      <dl className="mt-3 grid gap-3 border-t border-line pt-3 sm:grid-cols-3">
+        {deadlines.map(([label, value]) => (
+          <div key={label}><dt className="text-[10px] font-bold uppercase tracking-wide text-muted">{label}</dt><dd className="mt-1 text-xs font-semibold text-ink">{value}</dd></div>
+        ))}
+      </dl>
+      <p className="mt-3 rounded-xl bg-paper px-3 py-2 text-xs leading-relaxed text-muted">
+        <span className="font-semibold text-ink">Evidência de situação: </span>{opportunity.statusEvidence}
+      </p>
+      <p className="mt-2 break-all text-[11px] text-blue-700 dark:text-blue-300">
+        <span className="font-semibold text-muted">Origem: </span>{opportunity.sourceUrl}
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+        <button type="button" className={buttonPrimaryClass} onClick={onConvert}>Usar no plano</button>
+        {opportunity.noticeMaterialId && (
+          <button type="button" className={buttonSecondaryClass} onClick={onOpenNotice} disabled={isNoticePending}>
+            Abrir edital offline
+          </button>
+        )}
+        <button type="button" className={buttonSecondaryClass} onClick={onSaveNotice} disabled={isNoticePending}>
+          {isNoticePending ? "Baixando..." : opportunity.noticeMaterialId ? "Atualizar edital offline" : "Salvar edital offline"}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function uniqueValues(values: Array<string | null>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))]
+    .sort((left, right) => left.localeCompare(right, "pt-BR"));
+}
+
+function parseSalaryFilter(value: string): number | null {
+  const normalized = value.trim().replace(",", ".");
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function normalizeOptionalValue(value: string | null): string | null {
   const trimmed = value?.trim() ?? "";
   return trimmed || null;
+}
+
+function matchesPreparationIdentity(preparation: PreparationSummary, conversion: OnlineConversionFormState): boolean {
+  return normalizeIdentity(preparation.name) === normalizeIdentity(conversion.name)
+    && normalizeIdentity(preparation.organization) === normalizeIdentity(conversion.organization)
+    && normalizeIdentity(preparation.role) === normalizeIdentity(conversion.role);
+}
+
+function normalizeIdentity(value: string | null): string {
+  return (value ?? "").trim().replace(/\s+/g, " ").toLocaleLowerCase("pt-BR");
+}
+
+type ContestAlert = {
+  contestId: string;
+  contestName: string;
+  kind: "registration" | "payment" | "exam";
+  label: string;
+  date: string;
+  daysRemaining: number;
+};
+
+function buildUpcomingAlerts(contests: ManualContestSummary[], timezone: string): ContestAlert[] {
+  const today = dateKeyForTimezone(timezone);
+  const todayEpoch = dateOnlyEpoch(today);
+  if (todayEpoch === null) return [];
+  const alerts: ContestAlert[] = [];
+  for (const contest of contests) {
+    if (!contest.isFavorite) continue;
+    const deadlines: Array<[ContestAlert["kind"], string, string | null]> = [
+      ["registration", "Inscrições", contest.registrationEndsOn],
+      ["payment", "Pagamento", contest.feeDeadline],
+      ["exam", "Prova", contest.examDate],
+    ];
+    for (const [kind, label, date] of deadlines) {
+      if (!date) continue;
+      const epoch = dateOnlyEpoch(date);
+      if (epoch === null) continue;
+      const daysRemaining = Math.round((epoch - todayEpoch) / 86_400_000);
+      if (daysRemaining >= 0 && daysRemaining <= 7) {
+        alerts.push({ contestId: contest.id, contestName: contest.name, kind, label, date, daysRemaining });
+      }
+    }
+  }
+  return alerts.sort((left, right) => left.daysRemaining - right.daysRemaining || left.contestName.localeCompare(right.contestName, "pt-BR"));
+}
+
+function buildUpcomingOnlineAlerts(contests: OnlineContestSummary[], timezone: string): ContestAlert[] {
+  const today = dateKeyForTimezone(timezone);
+  const todayEpoch = dateOnlyEpoch(today);
+  if (todayEpoch === null) return [];
+  const alerts: ContestAlert[] = [];
+  for (const contest of contests) {
+    if (!contest.isFavorite) continue;
+    const deadlines: Array<[ContestAlert["kind"], string, string | null]> = [
+      ["registration", "Inscrições", contest.registrationEndsOn],
+      ["payment", "Pagamento", contest.feeDeadline],
+      ["exam", "Prova", contest.examDate],
+    ];
+    for (const [kind, label, date] of deadlines) {
+      if (!date) continue;
+      const epoch = dateOnlyEpoch(date);
+      if (epoch === null) continue;
+      const daysRemaining = Math.round((epoch - todayEpoch) / 86_400_000);
+      if (daysRemaining >= 0 && daysRemaining <= 7) {
+        alerts.push({ contestId: `online-${contest.id}`, contestName: contest.name, kind, label, date, daysRemaining });
+      }
+    }
+  }
+  return alerts;
+}
+
+function dateOnlyEpoch(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  const epoch = Date.UTC(year, month - 1, day);
+  return Number.isNaN(epoch) ? null : epoch;
 }
 
 function compareContests(left: ManualContestSummary, right: ManualContestSummary): number {
@@ -542,6 +1231,12 @@ function formatDate(value: string | null): string {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return "Data inválida";
   return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z");
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("pt-BR");
 }
 
 function formatDateRange(start: string | null, end: string | null): string {

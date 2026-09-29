@@ -20,6 +20,8 @@ O primeiro protótipo vertical implementa:
 - validação de formato, estrutura e permissão de escrita;
 - banco SQLite de trabalho fora da pasta portátil, em `appDataDir`;
 - migrações SQLite versionadas para preparações, assuntos, tarefas, sessões, estudo manual, correções de duração, materiais, links, etiquetas, notas, questões, tentativas, hashes de importação, Caderno de Erros, concursos manuais e planejamento;
+- migrações SQLite 032/033 para discursivas e simulados, com respostas abertas, rubricas, autoavaliação, snapshots de questões, pausa, tempo, pesos, penalidades e diagnósticos;
+- migração SQLite 034 para oportunidades online, histórico de alterações, favoritos e estado da fonte;
 - cadastro persistente de preparações com banca opcional, troca transacional da preparação principal e árvore inicial de disciplinas/assuntos;
 - criação, edição, movimentação, ordenação e arquivamento de assuntos em árvore, mantendo tarefas e sessões históricas;
 - estado de estudo independente de domínio e cálculo da cobertura por preparação;
@@ -49,19 +51,23 @@ O primeiro protótipo vertical implementa:
 - concessão idempotente de XP por sessão, com teto diário e regras versionadas;
 - concessão de 2 XP pela primeira tentativa diária de cada questão, limitada a 60 XP/dia nessa categoria;
 - cadastro manual de questões de múltipla escolha e certo/errado;
+- cadastro separado de questões discursivas e estudos de caso, com resposta, referência, rubrica e autoavaliação fora da nota objetiva;
 - filtros paginados no SQLite por assunto, formato, banca, ano, situação, histórico de resolução e busca textual, com resolução offline e tentativas imutáveis;
 - registro de lotes de questões resolvidos fora do app, com indicadores separados de primeiras tentativas e repetições, sem XP adicional;
 - núcleo e ponte IPC para importação JSON versionada de questões, com prévia, diagnóstico de inválidas/duplicadas e gravação transacional;
 - núcleo e ponte IPC para exportação das questões ativas em pacotes locais de `exports/`, preservando referências e hashes de anexos;
 - renderização local e restrita de Markdown de questões, com código, tabelas, fórmulas legíveis e imagens de anexos autorizados;
+- simulados locais por preparação e distribuição de assuntos, com modo treino/prova, relógio de prova, gabarito oculto até finalizar, pontuação reproduzível e tarefas de recuperação por assunto;
 - Caderno de Erros local persistente, com relação questão–caderno idempotente;
 - criação de cadernos manuais e vínculo persistente de questões a múltiplos cadernos;
 - criação de cadernos dinâmicos por estado da tentativa, matéria e formato;
 - tela Evolução com métricas locais, histórico recente e sequência nos dias com tarefas planejadas;
-- telas Hoje, Plano e Explorar, com navegação inicial sem criar dados fictícios;
+- telas Hoje, Plano, Discursivas, Simulados e Explorar, com navegação inicial sem criar dados fictícios;
+- alertas locais para favoritos com prazos próximos, calculados no fuso configurado e marcados como incompletos quando o edital não informa horário;
+- consulta explícita ao Ache Concursos com cache local, origem, última consulta, evidência da situação, filtros estruturados, download sob demanda de editais, conversão revisável em preparação e preservação do cache quando a fonte falha;
 - interface responsiva estilizada com Tailwind CSS 4 e tokens visuais locais.
 
-Leitura integrada de PDFs com retomada de página, notas Markdown, questões manuais, tentativas, cadernos locais, cadastro manual de concursos, revisões de conteúdo, cobertura do edital e sequência de estudo já estão disponíveis. A cobertura usa como denominador todas as disciplinas e assuntos ativos cadastrados; só “Teoria concluída” soma ao numerador e não indica domínio. A sequência considera como planejadas as datas com tarefas não puladas; datas sem tarefas não interrompem o cálculo. A área Explorar ainda não consulta fontes online; essa integração depende de validar uma fonte aprovada.
+Leitura integrada de PDFs com retomada de página, notas Markdown, questões manuais, discursivas, simulados, tentativas, cadernos locais, cadastro manual e consulta online de concursos, revisões de conteúdo, cobertura do edital e sequência de estudo já estão disponíveis. A cobertura usa como denominador todas as disciplinas e assuntos ativos cadastrados; só “Teoria concluída” soma ao numerador e não indica domínio. A sequência considera como planejadas as datas com tarefas não puladas; datas sem tarefas não interrompem o cálculo. A consulta online é manual, usa a fonte aprovada Ache Concursos e mantém os dados coletados no SQLite local; a situação deve ser confirmada no edital oficial.
 
 ## Desenvolvimento
 
@@ -108,7 +114,7 @@ Ubuntu 22.04 ou Debian 12, que são bases compatíveis com WebKitGTK 4.1.
 ## Organização
 
 - `src/app/`: composição da interface e navegação inicial.
-- `src/features/`: fluxos de workspace, Hoje, Plano, Materiais e Praticar.
+- `src/features/`: fluxos de workspace, Hoje, Plano, Materiais, Praticar, Discursivas, Simulados e Explorar.
 - `src/shared/ui/`: primitivas visuais e tokens usados pelos componentes.
 - `src/shared/desktop/`: contratos e chamadas IPC tipadas.
 - `src-tauri/src/domain/`: identidade e validações do espaço.

@@ -56,7 +56,8 @@ impl QuestionStore for LocalWorkspaceStore {
                      WHERE (?1 IS NULL OR EXISTS (
                          SELECT 1 FROM question_subjects qs WHERE qs.question_id = q.id AND qs.subject_id = ?1
                      ))
-                       AND (?2 IS NULL OR q.question_type = ?2)
+                       AND q.is_discursive = 0
+                        AND (?2 IS NULL OR q.question_type = ?2)
                        AND (?3 IS NULL OR q.status = ?3)
                        AND (?4 IS NULL OR q.board = ?4 COLLATE NOCASE)
                        AND (?5 IS NULL OR q.exam_year = ?5)
@@ -946,7 +947,7 @@ impl QuestionStore for LocalWorkspaceStore {
     fn export_questions(&self) -> Result<QuestionExportResult, WorkspaceError> {
         let connection = self.active_database()?;
         let mut statement = connection
-            .prepare("SELECT id FROM questions WHERE status = 'active' ORDER BY id")
+            .prepare("SELECT id FROM questions WHERE status = 'active' AND is_discursive = 0 ORDER BY id")
             .map_err(|error| map_database_error("preparar exportação de questões", error))?;
         let ids = statement
             .query_map([], |row| row.get::<_, String>(0))

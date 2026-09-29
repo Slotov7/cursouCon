@@ -16,6 +16,8 @@ import { MaterialsView } from "../features/materials/MaterialsView";
 import { ProgressView } from "../features/progress/ProgressView";
 import { TodayView } from "../features/today/TodayView";
 import { PracticeView } from "../features/practice/PracticeView";
+import { SimulationsView } from "../features/simulations/SimulationsView";
+import { DiscursiveView } from "../features/discursive/DiscursiveView";
 import { ExploreView } from "../features/explore/ExploreView";
 import { WorkspaceSetup } from "../features/workspace/WorkspaceSetup";
 import { WorkspaceDataActions } from "../features/workspace/WorkspaceDataActions";
@@ -35,7 +37,7 @@ import {
   ThemeToggle,
 } from "../shared/ui/primitives";
 
-type ViewId = "today" | "plan" | "materials" | "practice" | "progress" | "explore" | "settings";
+type ViewId = "today" | "plan" | "materials" | "practice" | "discursive" | "simulations" | "progress" | "explore" | "settings";
 
 const navigation: Array<{
   id: ViewId;
@@ -48,6 +50,8 @@ const navigation: Array<{
   { id: "plan", label: "Plano & Edital", note: "ciclo de estudo", icon: IconPlan },
   { id: "materials", label: "Materiais", note: "apostilas & pdfs", icon: IconMaterials },
   { id: "practice", label: "Questões", note: "banco de questões", badge: "Novo", icon: IconPractice },
+  { id: "discursive", label: "Discursivas", note: "respostas abertas", icon: IconPractice },
+  { id: "simulations", label: "Simulados", note: "treino e prova", icon: IconPractice },
   { id: "progress", label: "Evolução & Sinais", note: "desempenho local", icon: IconProgress },
   { id: "explore", label: "Explorar", note: "concursos e prazos", icon: IconExplore },
   { id: "settings", label: "Configurações", note: "preferências locais", icon: IconSettings },
@@ -483,6 +487,10 @@ function AppShell({
             <MaterialsView plan={studyPlan} refreshKey={refreshVersion} />
           ) : activeView === "practice" ? (
             <PracticeView plan={studyPlan} refreshKey={refreshVersion} />
+          ) : activeView === "discursive" ? (
+            <DiscursiveView plan={studyPlan} refreshKey={refreshVersion} />
+          ) : activeView === "simulations" ? (
+            <SimulationsView plan={studyPlan} refreshKey={refreshVersion} timezone={appPreferences.timezone} />
           ) : activeView === "progress" ? (
             <ProgressView
               refreshKey={refreshVersion}
@@ -490,7 +498,7 @@ function AppShell({
               timezone={appPreferences.timezone}
             />
           ) : activeView === "explore" ? (
-            <ExploreView refreshKey={refreshVersion} />
+            <ExploreView refreshKey={refreshVersion} timezone={appPreferences.timezone} />
           ) : activeView === "settings" ? (
             <SettingsView preferences={appPreferences} onSaved={onPreferencesSaved} />
           ) : (

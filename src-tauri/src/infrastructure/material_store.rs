@@ -10,7 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -27,13 +27,13 @@ type MaterialRow = (
     Option<String>,
 );
 
-struct PreparedBlob {
-    original_name: String,
-    content_hash: String,
-    mime_type: Option<String>,
-    byte_size: i64,
-    target_path: PathBuf,
-    created_new_blob: bool,
+pub(crate) struct PreparedBlob {
+    pub(crate) original_name: String,
+    pub(crate) content_hash: String,
+    pub(crate) mime_type: Option<String>,
+    pub(crate) byte_size: i64,
+    pub(crate) target_path: PathBuf,
+    pub(crate) created_new_blob: bool,
 }
 
 impl MaterialStore for LocalWorkspaceStore {
@@ -316,7 +316,39 @@ fn prepare_blob(
         })?
         .to_string();
     validate_original_name(&original_name)?;
+    let mime_type = mime_type_for_path(source_path);
+    let mut source = File::open(source_path)
+        .map_err(|error| map_io_error("abrir o material de origem", error))?;
 
+    prepare_blob_from_reader(store, original_name, mime_type, byte_size, &mut source)
+}
+
+pub(crate) fn prepare_blob_bytes(
+    store: &LocalWorkspaceStore,
+    original_name: String,
+    bytes: &[u8],
+) -> Result<PreparedBlob, WorkspaceError> {
+    validate_original_name(&original_name)?;
+    let byte_size = i64::try_from(bytes.len()).map_err(|_| {
+        WorkspaceError::InvalidInput("O material é grande demais para ser registrado.".to_string())
+    })?;
+    let mut source = Cursor::new(bytes);
+    prepare_blob_from_reader(
+        store,
+        original_name,
+        Some("application/pdf".to_string()),
+        byte_size,
+        &mut source,
+    )
+}
+
+fn prepare_blob_from_reader<R: Read>(
+    store: &LocalWorkspaceStore,
+    original_name: String,
+    mime_type: Option<String>,
+    byte_size: i64,
+    source: &mut R,
+) -> Result<PreparedBlob, WorkspaceError> {
     let workspace = store
         .active_workspace()?
         .ok_or(WorkspaceError::NoActiveWorkspace)?;
@@ -326,8 +358,6 @@ fn prepare_blob(
     let temporary_path = blobs_directory.join(format!(".cursoucon-import-{}.tmp", Uuid::new_v4()));
 
     let hash_result = (|| {
-        let mut source = File::open(source_path)
-            .map_err(|error| map_io_error("abrir o material de origem", error))?;
         let mut temporary = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -382,7 +412,7 @@ fn prepare_blob(
     Ok(PreparedBlob {
         original_name,
         content_hash,
-        mime_type: mime_type_for_path(source_path),
+        mime_type,
         byte_size,
         target_path,
         created_new_blob,
@@ -402,6 +432,29 @@ fn register_material(
         ensure_subject_exists(&transaction, subject_id)?;
     }
 
+    let summary = register_prepared_material(&transaction, prepared)?;
+
+    if let Some(subject_id) = input.subject_id.as_deref() {
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO material_subjects (material_id, subject_id)
+                  VALUES (?1, ?2)",
+                params![summary.id.as_str(), subject_id],
+            )
+            .map_err(|error| map_database_error("vincular material ao assunto", error))?;
+    }
+
+    let summary = load_material(&transaction, &summary.id)?;
+    transaction
+        .commit()
+        .map_err(|error| map_database_error("confirmar importação do material", error))?;
+    Ok(summary)
+}
+
+pub(crate) fn register_prepared_material(
+    transaction: &rusqlite::Transaction<'_>,
+    prepared: &PreparedBlob,
+) -> Result<MaterialSummary, WorkspaceError> {
     transaction
         .execute(
             "INSERT INTO materials (id, original_name, content_hash, mime_type, byte_size)
@@ -425,21 +478,7 @@ fn register_material(
         )
         .map_err(|error| map_database_error("localizar material importado", error))?;
 
-    if let Some(subject_id) = input.subject_id.as_deref() {
-        transaction
-            .execute(
-                "INSERT OR IGNORE INTO material_subjects (material_id, subject_id)
-                 VALUES (?1, ?2)",
-                params![material_id.as_str(), subject_id],
-            )
-            .map_err(|error| map_database_error("vincular material ao assunto", error))?;
-    }
-
-    let summary = load_material(&transaction, &material_id)?;
-    transaction
-        .commit()
-        .map_err(|error| map_database_error("confirmar importação do material", error))?;
-    Ok(summary)
+    load_material(transaction, &material_id)
 }
 
 fn load_materials(connection: &Connection) -> Result<Vec<MaterialSummary>, WorkspaceError> {

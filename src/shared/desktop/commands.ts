@@ -13,6 +13,9 @@ import {
   parseDailyPlan,
   parseExternalQuestionBatch,
   parseQuestionPerformance,
+  parseAnswerDiscursiveQuestionResult,
+  parseDiscursiveQuestion,
+  parseDiscursiveQuestions,
   parseDiagnosticExportResult,
   parseDiagnosticSnapshot,
   parseFinishStudySessionResult,
@@ -22,6 +25,8 @@ import {
   parseNotes,
   parseManualContest,
   parseManualContests,
+  parseOnlineContestRefreshResult,
+  parseOnlineContestSnapshot,
   parseOptionalWorkspaceSummary,
   parsePreparationSummary,
   parseQuestion,
@@ -43,9 +48,13 @@ import {
   parseSubject,
   parseStudySession,
   parseStudyTask,
+  parseSimulationDetail,
+  parseSimulationResult,
+  parseSimulations,
   parseWorkspaceSummary,
   type AnswerQuestionRequest,
   type AnswerQuestionResult,
+  type AnswerDiscursiveQuestionRequest,
   type AppPreferences,
   type BackupSummary,
   type BackupInspectionSummary,
@@ -54,6 +63,9 @@ import {
   type CreateBackupRequest,
   type InspectBackupRequest,
   type CreateQuestionRequest,
+  type CreateDiscursiveQuestionRequest,
+  type DiscursiveQuestionSummary,
+  type AnswerDiscursiveQuestionResult,
   type CreateNotebookRequest,
   type CreateStudyTaskRequest,
   type CreateExternalQuestionBatchRequest,
@@ -86,6 +98,8 @@ import {
   type MaterialSummary,
   type NoteSummary,
   type ManualContestSummary,
+  type OnlineContestRefreshResult,
+  type OnlineContestSnapshot,
   type OpenMaterialRequest,
   type PauseStudySessionRequest,
   type QuestionSummary,
@@ -109,8 +123,10 @@ import {
   type RestoreBackupRequest,
   type SaveNoteRequest,
   type SaveManualContestRequest,
+  type SaveOnlineContestNoticeRequest,
   type SetManualContestFavoriteRequest,
   type SetManualContestNoticeRequest,
+  type SetOnlineContestFavoriteRequest,
   type SkipStudyTaskRequest,
   type StartStudySessionRequest,
   type StudyPlan,
@@ -128,6 +144,11 @@ import {
   type StudyReviewSummary,
   type StudySessionSummary,
   type StudyTaskSummary,
+  type AnswerSimulationRequest,
+  type CreateSimulationRequest,
+  type SimulationDetail,
+  type SimulationResult,
+  type SimulationSummary,
   type RescheduleStudyReviewRequest,
   type SyncDestinationSettings,
   type UpdateMaterialPageRequest,
@@ -754,13 +775,18 @@ export async function advanceStudyCycle(
   return parseStudyPlanning(response);
 }
 
-export async function createPreparation(request: CreatePreparationRequest): Promise<void> {
+export async function createPreparation(request: CreatePreparationRequest): Promise<PreparationSummary> {
   if (!isTauri()) {
     const makePrimary = request.makePrimary || mockStudyPlan.preparations.length === 0;
+    const referenceMaterialId = request.referenceMaterialId ?? null;
+    const referenceDocumentStatus = request.referenceDocumentStatus ?? "reference";
+    if (referenceDocumentStatus === "current" && !referenceMaterialId) {
+      throw new Error("Selecione um edital antes de marcá-lo como vigente.");
+    }
     if (makePrimary) {
       mockStudyPlan.preparations = mockStudyPlan.preparations.map((item) => ({ ...item, isPrimary: false }));
     }
-    mockStudyPlan.preparations.push({
+    const created: PreparationSummary = {
       id: `prep-${Date.now()}`,
       name: request.name,
       organization: request.organization,
@@ -768,13 +794,15 @@ export async function createPreparation(request: CreatePreparationRequest): Prom
       board: request.board,
       examDate: request.examDate,
       isPrimary: makePrimary,
-      referenceMaterialId: null,
-      referenceDocumentStatus: "reference",
+      referenceMaterialId,
+      referenceDocumentStatus,
       examRulesMarkdown: null,
-    });
-    return;
+    };
+    mockStudyPlan.preparations.push(created);
+    return created;
   }
-  await invoke("create_preparation", { request });
+  const response = await invoke<unknown>("create_preparation", { request });
+  return parsePreparationSummary(response);
 }
 
 export async function setPrimaryPreparation(
@@ -1024,6 +1052,51 @@ export async function setManualContestNotice(
   }
   const response = await invoke<unknown>("set_manual_contest_notice", { request });
   return parseManualContest(response);
+}
+
+export async function getOnlineContests(): Promise<OnlineContestSnapshot> {
+  if (!isTauri()) {
+    return {
+      opportunities: [],
+      source: {
+        sourceName: "Ache Concursos",
+        sourceUrl: "https://www.acheconcursos.com.br/concursos-abertos",
+        lastAttemptedAt: null,
+        lastSuccessfulAt: null,
+        lastError: null,
+      },
+    };
+  }
+  const response = await invoke<unknown>("get_online_contests");
+  return parseOnlineContestSnapshot(response);
+}
+
+export async function refreshOnlineContests(): Promise<OnlineContestRefreshResult> {
+  if (!isTauri()) {
+    throw new Error("A busca online está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("refresh_online_contests");
+  return parseOnlineContestRefreshResult(response);
+}
+
+export async function setOnlineContestFavorite(
+  request: SetOnlineContestFavoriteRequest,
+): Promise<OnlineContestSnapshot> {
+  if (!isTauri()) {
+    throw new Error("Os favoritos online estão disponíveis no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("set_online_contest_favorite", { request });
+  return parseOnlineContestSnapshot(response);
+}
+
+export async function saveOnlineContestNotice(
+  request: SaveOnlineContestNoticeRequest,
+): Promise<OnlineContestSnapshot> {
+  if (!isTauri()) {
+    throw new Error("O download de editais online está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("save_online_contest_notice", { request });
+  return parseOnlineContestSnapshot(response);
 }
 
 export async function getDailyPlan(date: string): Promise<DailyPlan> {
@@ -1333,6 +1406,118 @@ export async function getQuestions(request: GetQuestionsRequest): Promise<Questi
   if (!isTauri()) return [];
   const response = await invoke<unknown>("get_questions", { request });
   return parseQuestions(response);
+}
+
+export async function getDiscursiveQuestions(): Promise<DiscursiveQuestionSummary[]> {
+  if (!isTauri()) return [];
+  const response = await invoke<unknown>("get_discursive_questions");
+  return parseDiscursiveQuestions(response);
+}
+
+export async function createDiscursiveQuestion(
+  request: CreateDiscursiveQuestionRequest,
+): Promise<DiscursiveQuestionSummary> {
+  if (!isTauri()) {
+    throw new Error("O cadastro de discursivas está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("create_discursive_question", { request });
+  return parseDiscursiveQuestion(response);
+}
+
+export async function answerDiscursiveQuestion(
+  request: AnswerDiscursiveQuestionRequest,
+): Promise<AnswerDiscursiveQuestionResult> {
+  if (!isTauri()) {
+    throw new Error("As respostas discursivas estão disponíveis no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("answer_discursive_question", { request });
+  return parseAnswerDiscursiveQuestionResult(response);
+}
+
+export async function getSimulations(): Promise<SimulationSummary[]> {
+  if (!isTauri()) return [];
+  const response = await invoke<unknown>("get_simulations");
+  return parseSimulations(response);
+}
+
+export async function getSimulation(simulationId: string): Promise<SimulationDetail> {
+  if (!isTauri()) {
+    throw new Error("A execução de simulados está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("get_simulation", {
+    request: { simulationId },
+  });
+  return parseSimulationDetail(response);
+}
+
+export async function getSimulationResult(simulationId: string): Promise<SimulationResult> {
+  if (!isTauri()) {
+    throw new Error("O resultado de simulados está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("get_simulation_result", {
+    request: { simulationId },
+  });
+  return parseSimulationResult(response);
+}
+
+export async function createSimulation(
+  request: CreateSimulationRequest,
+): Promise<SimulationDetail> {
+  if (!isTauri()) {
+    throw new Error("A criação de simulados está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("create_simulation", { request });
+  return parseSimulationDetail(response);
+}
+
+export async function startSimulation(simulationId: string): Promise<SimulationDetail> {
+  if (!isTauri()) {
+    throw new Error("O início de simulados está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("start_simulation", {
+    request: { simulationId },
+  });
+  return parseSimulationDetail(response);
+}
+
+export async function pauseSimulation(simulationId: string): Promise<SimulationDetail> {
+  if (!isTauri()) {
+    throw new Error("A pausa de simulados está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("pause_simulation", {
+    request: { simulationId },
+  });
+  return parseSimulationDetail(response);
+}
+
+export async function resumeSimulation(simulationId: string): Promise<SimulationDetail> {
+  if (!isTauri()) {
+    throw new Error("A retomada de simulados está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("resume_simulation", {
+    request: { simulationId },
+  });
+  return parseSimulationDetail(response);
+}
+
+export async function answerSimulation(
+  request: AnswerSimulationRequest,
+): Promise<SimulationDetail> {
+  if (!isTauri()) {
+    throw new Error("As respostas de simulados estão disponíveis no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("answer_simulation", { request });
+  return parseSimulationDetail(response);
+}
+
+export async function finishSimulation(simulationId: string): Promise<SimulationResult> {
+  if (!isTauri()) {
+    throw new Error("A finalização de simulados está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("finish_simulation", {
+    request: { simulationId },
+  });
+  return parseSimulationResult(response);
 }
 
 export async function getQuestionAttachmentSources(

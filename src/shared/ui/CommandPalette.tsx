@@ -9,7 +9,7 @@ import {
   IconToday,
 } from "./primitives";
 
-type ViewId = "today" | "plan" | "materials" | "practice" | "progress" | "explore" | "settings";
+type ViewId = "today" | "plan" | "materials" | "practice" | "discursive" | "simulations" | "progress" | "explore" | "settings";
 
 type CommandItem = {
   id: string;
@@ -85,6 +85,28 @@ export function CommandPalette({ isOpen, onClose, onNavigate, onToggleTheme }: C
       icon: IconProgress,
       perform: () => {
         onNavigate("progress");
+        onClose();
+      },
+    },
+    {
+      id: "nav-discursive",
+      label: "Ir para 'Discursivas'",
+      category: "Navegação",
+      shortcut: "G D",
+      icon: IconPractice,
+      perform: () => {
+        onNavigate("discursive");
+        onClose();
+      },
+    },
+    {
+      id: "nav-simulations",
+      label: "Ir para 'Simulados'",
+      category: "Navegação",
+      shortcut: "G S",
+      icon: IconPractice,
+      perform: () => {
+        onNavigate("simulations");
         onClose();
       },
     },

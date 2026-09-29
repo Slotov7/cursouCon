@@ -95,6 +95,8 @@ pub enum WorkspaceError {
     Database(String),
     #[error("Falha ao ler o formato do espaço: {0}")]
     Serialization(String),
+    #[error("Falha na consulta online: {0}")]
+    Network(String),
     #[error("O espaço é inválido: {0}")]
     InvalidWorkspace(String),
     #[error("O backup é inválido: {0}")]
@@ -119,6 +121,7 @@ impl WorkspaceError {
             Self::Io(_) => "io_error",
             Self::Database(_) => "database_error",
             Self::Serialization(_) => "serialization_error",
+            Self::Network(_) => "network_error",
             Self::InvalidWorkspace(_) => "invalid_workspace",
             Self::InvalidBackup(_) => "invalid_backup",
             Self::RevisionConflict(_) => "revision_conflict",
