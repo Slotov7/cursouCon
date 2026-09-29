@@ -4,9 +4,10 @@ use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
 use crate::domain::question::{
     AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
     CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
-    NotebookSummary, QuestionAttemptSummary, QuestionNotebookEntrySummary, QuestionOptionSummary,
-    QuestionPerformanceSummary, QuestionRevisionSummary, QuestionSummary, ReviseQuestionInput,
-    ReviseQuestionResult, SetQuestionNotebookInput,
+    NotebookSummary, QuestionAttemptSummary, QuestionContestRelationSummary,
+    QuestionNotebookEntrySummary, QuestionOptionSummary, QuestionPerformanceSummary,
+    QuestionRevisionSummary, QuestionSummary, ReviseQuestionInput, ReviseQuestionResult,
+    SetQuestionContestRelationInput, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     duplicate_external_id, export_item_from_summary, new_export_document, parse_question_document,
@@ -531,6 +532,74 @@ impl QuestionStore for LocalWorkspaceStore {
             question,
             revision: Some(revision),
         })
+    }
+
+    fn set_question_contest_relation(
+        &self,
+        input: &SetQuestionContestRelationInput,
+    ) -> Result<QuestionSummary, WorkspaceError> {
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar vínculo da questão", error))?;
+        let question_exists: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM questions WHERE id = ?1",
+                params![input.question_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_database_error("validar questão do concurso", error))?;
+        if question_exists.is_none() {
+            return Err(WorkspaceError::InvalidInput(
+                "A questão escolhida não existe mais.".to_string(),
+            ));
+        }
+        let contest_exists: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM manual_contests WHERE id = ?1",
+                params![input.contest_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| map_database_error("validar concurso da questão", error))?;
+        if contest_exists.is_none() {
+            return Err(WorkspaceError::InvalidInput(
+                "O concurso escolhido não existe mais.".to_string(),
+            ));
+        }
+
+        if input.included {
+            transaction
+                .execute(
+                    "INSERT INTO question_contest_relations
+                        (question_id, contest_id, relation_type)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(question_id, contest_id) DO UPDATE SET
+                        relation_type = excluded.relation_type,
+                        updated_at = CURRENT_TIMESTAMP",
+                    params![
+                        input.question_id.as_str(),
+                        input.contest_id.as_str(),
+                        input.relation_type.as_str(),
+                    ],
+                )
+                .map_err(|error| map_database_error("gravar vínculo da questão", error))?;
+        } else {
+            transaction
+                .execute(
+                    "DELETE FROM question_contest_relations
+                     WHERE question_id = ?1 AND contest_id = ?2",
+                    params![input.question_id.as_str(), input.contest_id.as_str()],
+                )
+                .map_err(|error| map_database_error("remover vínculo da questão", error))?;
+        }
+
+        let question = load_question(&transaction, &input.question_id)?;
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar vínculo da questão", error))?;
+        Ok(question)
     }
 
     fn list_notebook_entries(
@@ -1419,6 +1488,7 @@ fn load_question(
                     first_attempt_current_result: row.get(16)?,
                     last_attempt_current_result: row.get(17)?,
                     revision_count: row.get(18)?,
+                    contest_relations: Vec::new(),
                 })
             },
         )
@@ -1444,11 +1514,39 @@ fn load_question(
         .map_err(|error| map_database_error("consultar alternativas da questão", error))?
         .map(|row| row.map_err(|error| map_database_error("ler alternativa da questão", error)))
         .collect::<Result<Vec<_>, _>>()?;
+    let contest_relations = load_question_contest_relations(connection, question_id)?;
 
     Ok(QuestionSummary {
         options,
+        contest_relations,
         ..question
     })
+}
+
+fn load_question_contest_relations(
+    connection: &Connection,
+    question_id: &str,
+) -> Result<Vec<QuestionContestRelationSummary>, WorkspaceError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT r.contest_id, c.name, r.relation_type
+             FROM question_contest_relations r
+             JOIN manual_contests c ON c.id = r.contest_id
+             WHERE r.question_id = ?1
+             ORDER BY c.name COLLATE NOCASE, r.contest_id",
+        )
+        .map_err(|error| map_database_error("preparar relações da questão", error))?;
+    let rows = statement
+        .query_map(params![question_id], |row| {
+            Ok(QuestionContestRelationSummary {
+                contest_id: row.get(0)?,
+                contest_name: row.get(1)?,
+                relation_type: row.get(2)?,
+            })
+        })
+        .map_err(|error| map_database_error("consultar relações da questão", error))?;
+    rows.map(|row| row.map_err(|error| map_database_error("ler relação da questão", error)))
+        .collect()
 }
 
 fn load_attempt(
@@ -1513,9 +1611,11 @@ fn subject_exists(connection: &Connection, subject_id: &str) -> Result<bool, Wor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::contest_service::ContestStore;
     use crate::application::question_service::QuestionStore;
     use crate::application::study_plan_service::StudyPlanStore;
     use crate::application::workspace_service::WorkspaceStore;
+    use crate::domain::contest::{ContestStatus, SaveManualContestInput};
     use crate::domain::question::{NotebookFilter, QuestionOptionInput, ERROR_NOTEBOOK_ID};
     use crate::domain::question_transfer::{
         QuestionAttachmentReference, QuestionExportDocument, QuestionTransferItem,
@@ -1786,6 +1886,115 @@ mod tests {
         assert_eq!(xp_count, 0);
 
         drop(connection);
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn persists_explicit_question_contest_relations_idempotently() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-question-contest-{}", Uuid::new_v4()));
+        let app_data_dir = std::env::temp_dir().join(format!(
+            "cursoucon-question-contest-data-{}",
+            Uuid::new_v4()
+        ));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Relações de questões")
+            .expect("o espaço temporário deve ser criado");
+        let contest = store
+            .save_manual_contest(&SaveManualContestInput {
+                id: None,
+                name: "TRF - Analista 2032".to_string(),
+                organization: Some("TRF".to_string()),
+                role: Some("Analista".to_string()),
+                board: Some("FGV".to_string()),
+                source_url: None,
+                status: ContestStatus::Completed,
+                registration_starts_on: None,
+                registration_ends_on: None,
+                fee_deadline: None,
+                exam_date: Some("2032-05-10".to_string()),
+                notes: None,
+            })
+            .expect("o concurso manual deve ser criado");
+        let question = store
+            .create_question(&CreateQuestionInput {
+                question_type: "multiple_choice".to_string(),
+                statement_markdown: "Qual protocolo?".to_string(),
+                options: vec![
+                    QuestionOptionInput {
+                        key: "A".to_string(),
+                        text: "TCP".to_string(),
+                    },
+                    QuestionOptionInput {
+                        key: "B".to_string(),
+                        text: "UDP".to_string(),
+                    },
+                ],
+                answer_key: Some("A".to_string()),
+                explanation_markdown: None,
+                source_name: None,
+                board: Some("FGV".to_string()),
+                organization: Some("TRF".to_string()),
+                role: Some("Analista".to_string()),
+                exam_year: Some(2032),
+                subject_id: None,
+            })
+            .expect("a questão deve ser criada");
+
+        let linked = store
+            .set_question_contest_relation(&SetQuestionContestRelationInput {
+                question_id: question.id.clone(),
+                contest_id: contest.id.clone(),
+                relation_type: "official_exam".to_string(),
+                included: true,
+            })
+            .expect("a relação oficial deve ser salva");
+        assert_eq!(linked.contest_relations.len(), 1);
+        assert_eq!(linked.contest_relations[0].contest_name, contest.name);
+        assert_eq!(linked.contest_relations[0].relation_type, "official_exam");
+
+        let updated = store
+            .set_question_contest_relation(&SetQuestionContestRelationInput {
+                question_id: question.id.clone(),
+                contest_id: contest.id.clone(),
+                relation_type: "previous_exam".to_string(),
+                included: true,
+            })
+            .expect("a classificação da relação deve ser atualizada");
+        assert_eq!(updated.contest_relations.len(), 1);
+        assert_eq!(updated.contest_relations[0].relation_type, "previous_exam");
+
+        let reloaded = store
+            .list_questions(&ListQuestionsInput {
+                subject_id: None,
+                question_type: None,
+                status: Some("active".to_string()),
+                board: None,
+                exam_year: None,
+                attempt_status: None,
+                notebook_id: None,
+                search_text: None,
+                limit: 50,
+                offset: 0,
+            })
+            .expect("a lista deve carregar relações persistidas");
+        assert_eq!(
+            reloaded[0].contest_relations[0].relation_type,
+            "previous_exam"
+        );
+
+        let removed = store
+            .set_question_contest_relation(&SetQuestionContestRelationInput {
+                question_id: question.id.clone(),
+                contest_id: contest.id,
+                relation_type: "thematic_compatibility".to_string(),
+                included: false,
+            })
+            .expect("a relação deve ser removida");
+        assert!(removed.contest_relations.is_empty());
+
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);
     }

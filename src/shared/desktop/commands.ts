@@ -91,6 +91,7 @@ import {
   type QuestionResult,
   type ReviseQuestionRequest,
   type ReviseQuestionResult,
+  type SetQuestionContestRelationRequest,
   type QuestionExportResult,
   type QuestionImportPreview,
   type QuestionImportResult,
@@ -360,7 +361,7 @@ export async function getAppDiagnostic(): Promise<DiagnosticSnapshot> {
       platform: "web-preview",
       architecture: "browser",
       workspaceFormatVersion: 1,
-      schemaVersion: 30,
+      schemaVersion: 31,
       counts: {
         preparations: mockStudyPlan.preparations.length,
         subjects: mockStudyPlan.subjects.length,
@@ -1469,6 +1470,7 @@ export async function createQuestion(request: CreateQuestionRequest): Promise<Qu
       firstAttemptCurrentResult: null,
       lastAttemptCurrentResult: null,
       revisionCount: 0,
+      contestRelations: [],
     };
   }
   const response = await invoke<unknown>("create_question", { request });
@@ -1505,6 +1507,7 @@ export async function answerQuestion(request: AnswerQuestionRequest): Promise<An
       lastAttemptCurrentResult:
         request.selectedKey === null ? "blank" : request.selectedKey === "A" ? "correct" : "incorrect",
       revisionCount: 0,
+      contestRelations: [],
     };
 
     const result =
@@ -1571,6 +1574,7 @@ export async function reviseQuestion(
         firstAttemptCurrentResult: null,
         lastAttemptCurrentResult: null,
         revisionCount: 1,
+        contestRelations: [],
       },
       revision: {
         id: `revision-${Date.now()}`,
@@ -1586,6 +1590,16 @@ export async function reviseQuestion(
   }
   const response = await invoke<unknown>("revise_question", { request });
   return parseReviseQuestionResult(response);
+}
+
+export async function setQuestionContestRelation(
+  request: SetQuestionContestRelationRequest,
+): Promise<QuestionSummary> {
+  if (!isTauri()) {
+    throw new Error("O vínculo de questão e concurso está disponível no aplicativo desktop.");
+  }
+  const response = await invoke<unknown>("set_question_contest_relation", { request });
+  return parseQuestion(response);
 }
 
 export async function createExternalQuestionBatch(

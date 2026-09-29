@@ -476,6 +476,10 @@ export type NoteSummary = {
 export type QuestionType = "multiple_choice" | "true_false";
 export type QuestionConfidence = "certain" | "doubt" | "guess";
 export type QuestionResult = "correct" | "incorrect" | "blank" | "pending";
+export type QuestionContestRelationType =
+  | "official_exam"
+  | "previous_exam"
+  | "thematic_compatibility";
 export const ERROR_NOTEBOOK_ID = "notebook-errors";
 
 export type NotebookKind = "error" | "manual" | "dynamic";
@@ -508,6 +512,12 @@ export type QuestionOptionSummary = {
   text: string;
 };
 
+export type QuestionContestRelationSummary = {
+  contestId: string;
+  contestName: string;
+  relationType: QuestionContestRelationType;
+};
+
 export type QuestionSummary = {
   id: string;
   questionType: QuestionType;
@@ -529,6 +539,7 @@ export type QuestionSummary = {
   firstAttemptCurrentResult: QuestionResult | null;
   lastAttemptCurrentResult: QuestionResult | null;
   revisionCount: number;
+  contestRelations: QuestionContestRelationSummary[];
 };
 
 export type QuestionRevisionSummary = {
@@ -569,6 +580,13 @@ export type ReviseQuestionRequest = {
 export type ReviseQuestionResult = {
   question: QuestionSummary;
   revision: QuestionRevisionSummary | null;
+};
+
+export type SetQuestionContestRelationRequest = {
+  questionId: string;
+  contestId: string;
+  relationType: QuestionContestRelationType;
+  included: boolean;
 };
 
 export type CreateExternalQuestionBatchRequest = {
@@ -1471,6 +1489,28 @@ function parseQuestionOption(value: unknown): QuestionOptionSummary {
   return { key: value.key, text: value.text };
 }
 
+function parseQuestionContestRelationType(value: unknown): QuestionContestRelationType {
+  if (value === "official_exam" || value === "previous_exam" || value === "thematic_compatibility") {
+    return value;
+  }
+  throw new Error("O núcleo local devolveu um tipo de relação de questão inválido.");
+}
+
+function parseQuestionContestRelation(value: unknown): QuestionContestRelationSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.contestId !== "string" ||
+    typeof value.contestName !== "string"
+  ) {
+    throw new Error("O núcleo local devolveu uma relação de questão inválida.");
+  }
+  return {
+    contestId: value.contestId,
+    contestName: value.contestName,
+    relationType: parseQuestionContestRelationType(value.relationType),
+  };
+}
+
 function parseOptionalQuestionResult(value: unknown, fieldName: string): QuestionResult | null {
   if (value === null) return null;
   try {
@@ -1491,7 +1531,8 @@ export function parseQuestion(value: unknown): QuestionSummary {
      typeof value.revisionCount !== "number" ||
      !Number.isInteger(value.revisionCount) ||
      value.revisionCount < 0 ||
-     !Array.isArray(value.options)
+     !Array.isArray(value.options) ||
+     !Array.isArray(value.contestRelations)
   ) {
     throw new Error("O núcleo local devolveu uma questão inválida.");
   }
@@ -1523,6 +1564,7 @@ export function parseQuestion(value: unknown): QuestionSummary {
       "o último resultado reavaliado",
     ),
     revisionCount: value.revisionCount,
+    contestRelations: value.contestRelations.map(parseQuestionContestRelation),
   };
 }
 

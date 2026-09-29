@@ -55,6 +55,14 @@ pub struct ReviseQuestionInput {
     pub reason: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SetQuestionContestRelationInput {
+    pub question_id: String,
+    pub contest_id: String,
+    pub relation_type: String,
+    pub included: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuestionRevisionSummary {
@@ -73,6 +81,14 @@ pub struct QuestionRevisionSummary {
 pub struct ReviseQuestionResult {
     pub question: QuestionSummary,
     pub revision: Option<QuestionRevisionSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionContestRelationSummary {
+    pub contest_id: String,
+    pub contest_name: String,
+    pub relation_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +186,7 @@ pub struct QuestionSummary {
     pub first_attempt_current_result: Option<String>,
     pub last_attempt_current_result: Option<String>,
     pub revision_count: i64,
+    pub contest_relations: Vec<QuestionContestRelationSummary>,
 }
 
 pub fn normalize_revise_question_input(
@@ -183,6 +200,23 @@ pub fn normalize_revise_question_input(
             .map(|key| normalize_selected_key(&key))
             .transpose()?,
         reason: normalize_markdown(input.reason, "O motivo da revisão", 500)?,
+    })
+}
+
+pub fn normalize_set_question_contest_relation_input(
+    input: SetQuestionContestRelationInput,
+) -> Result<SetQuestionContestRelationInput, String> {
+    let relation_type = match input.relation_type.trim() {
+        "official_exam" | "previous_exam" | "thematic_compatibility" => {
+            input.relation_type.trim().to_string()
+        }
+        _ => return Err("O tipo de relação da questão não é válido.".to_string()),
+    };
+    Ok(SetQuestionContestRelationInput {
+        question_id: normalize_id(&input.question_id, "A questão")?,
+        contest_id: normalize_id(&input.contest_id, "O concurso")?,
+        relation_type,
+        included: input.included,
     })
 }
 
@@ -688,6 +722,29 @@ mod tests {
             reason: "   ".to_string(),
         })
         .is_err());
+    }
+
+    #[test]
+    fn normalizes_explicit_question_contest_relation_types() {
+        let normalized =
+            normalize_set_question_contest_relation_input(SetQuestionContestRelationInput {
+                question_id: format!("  {}  ", Uuid::new_v4()),
+                contest_id: format!(" {} ", Uuid::new_v4()),
+                relation_type: " previous_exam ".to_string(),
+                included: true,
+            })
+            .expect("a relação explícita deve aceitar os tipos previstos");
+
+        assert_eq!(normalized.relation_type, "previous_exam");
+        assert!(
+            normalize_set_question_contest_relation_input(SetQuestionContestRelationInput {
+                question_id: Uuid::new_v4().to_string(),
+                contest_id: Uuid::new_v4().to_string(),
+                relation_type: "inferred_by_board".to_string(),
+                included: true,
+            },)
+            .is_err()
+        );
     }
 
     #[test]

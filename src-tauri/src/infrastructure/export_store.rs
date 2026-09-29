@@ -33,6 +33,7 @@ const EXPORT_TABLES: &[&str] = &[
     "notebooks",
     "notebook_questions",
     "manual_contests",
+    "question_contest_relations",
     "study_reviews",
     "study_planning_settings",
     "study_availability",

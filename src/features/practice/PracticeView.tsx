@@ -5,6 +5,7 @@ import {
   createQuestion,
   exportQuestions,
   getDesktopErrorMessage,
+  getManualContests,
   getNotebookEntries,
   getNotebooks,
   getQuestions,
@@ -12,6 +13,7 @@ import {
   pickQuestionImportFile,
   previewQuestionImport,
   reviseQuestion,
+  setQuestionContestRelation,
   setNotebookEntry,
 } from "../../shared/desktop/commands";
 import { ERROR_NOTEBOOK_ID } from "../../shared/desktop/contracts";
@@ -19,12 +21,14 @@ import type {
   AnswerQuestionResult,
   CreateQuestionRequest,
   QuestionConfidence,
+  ManualContestSummary,
   QuestionExportResult,
   QuestionImportPreview,
   QuestionImportResult,
   QuestionNotebookEntry,
   QuestionNotebookReason,
   QuestionSummary,
+  QuestionContestRelationType,
   QuestionType,
   ReviseQuestionResult,
   NotebookAttemptStatus,
@@ -60,8 +64,19 @@ function formatAnswerKey(key: string | null): string {
   return key;
 }
 
+const QUESTION_CONTEST_RELATION_LABELS: Record<QuestionContestRelationType, string> = {
+  official_exam: "Prova oficial",
+  previous_exam: "Prova anterior",
+  thematic_compatibility: "Compatibilidade temática",
+};
+
+function formatQuestionContestRelation(type: QuestionContestRelationType): string {
+  return QUESTION_CONTEST_RELATION_LABELS[type];
+}
+
 export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
   const [questions, setQuestions] = useState<QuestionSummary[]>([]);
+  const [manualContests, setManualContests] = useState<ManualContestSummary[]>([]);
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
   const [subjectFilter, setSubjectFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState<"" | QuestionType>("");
@@ -317,6 +332,21 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
 
   useEffect(() => {
     let cancelled = false;
+    getManualContests()
+      .then((loadedContests) => {
+        if (!cancelled) setManualContests(loadedContests);
+      })
+      .catch((operationError: unknown) => {
+        if (!cancelled) setError(getDesktopErrorMessage(operationError));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  useEffect(() => {
+    let cancelled = false;
     setNotebookEntries([]);
     getNotebookEntries(activeNotebookId)
       .then((entries) => {
@@ -409,6 +439,15 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
         ? "Revisão da questão registrada no histórico local."
         : "Questão atualizada no banco local.",
     );
+  };
+
+  const handleQuestionContestRelationChanged = (updatedQuestion: QuestionSummary) => {
+    setQuestions((previous) =>
+      previous.map((question) =>
+        question.id === updatedQuestion.id ? updatedQuestion : question,
+      ),
+    );
+    setMessage("Vínculo da questão com o concurso salvo localmente.");
   };
 
   const handleCreateNotebook = async () => {
@@ -1081,7 +1120,9 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                onNext={handleNextQuestion}
                onAnswered={handleQuestionAnswered}
                onRevised={handleQuestionRevised}
-             />
+               manualContests={manualContests}
+               onContestRelationChanged={handleQuestionContestRelationChanged}
+              />
           ) : (
             <div className="rounded-2xl border border-line bg-card p-12 text-center text-muted">
               <p className="text-sm font-semibold">Nenhuma questão selecionada.</p>
@@ -1116,6 +1157,8 @@ type QuestionRunnerProps = {
   onNext: () => void;
   onAnswered: (result: AnswerQuestionResult) => void;
   onRevised: (result: ReviseQuestionResult) => void;
+  manualContests: ManualContestSummary[];
+  onContestRelationChanged: (question: QuestionSummary) => void;
 };
 
 function QuestionRunner({
@@ -1135,6 +1178,8 @@ function QuestionRunner({
   onNext,
   onAnswered,
   onRevised,
+  manualContests,
+  onContestRelationChanged,
 }: QuestionRunnerProps) {
   const startedAtRef = useRef(Date.now());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -1147,6 +1192,7 @@ function QuestionRunner({
   const [revisionAnswerKey, setRevisionAnswerKey] = useState(question.answerKey ?? "");
   const [revisionReason, setRevisionReason] = useState("");
   const [isRevisionSubmitting, setIsRevisionSubmitting] = useState(false);
+  const [isContestRelationSubmitting, setIsContestRelationSubmitting] = useState(false);
   const [notebookReason, setNotebookReason] = useState<QuestionNotebookReason | null>(null);
   const [notebookObservation, setNotebookObservation] = useState("");
 
@@ -1227,6 +1273,32 @@ function QuestionRunner({
       setRunnerError(getDesktopErrorMessage(err));
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleContestRelationChange = async (
+    contestId: string,
+    relationType: QuestionContestRelationType | "",
+  ) => {
+    const currentRelation = question.contestRelations.find(
+      (relation) => relation.contestId === contestId,
+    );
+    if ((currentRelation?.relationType ?? "") === relationType) return;
+
+    setIsContestRelationSubmitting(true);
+    setRunnerError(null);
+    try {
+      const updatedQuestion = await setQuestionContestRelation({
+        questionId: question.id,
+        contestId,
+        relationType: relationType || "official_exam",
+        included: relationType !== "",
+      });
+      onContestRelationChanged(updatedQuestion);
+    } catch (err: unknown) {
+      setRunnerError(getDesktopErrorMessage(err));
+    } finally {
+      setIsContestRelationSubmitting(false);
     }
   };
 
@@ -1457,6 +1529,62 @@ function QuestionRunner({
           </div>
         </section>
       )}
+
+      <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="contest-relations-title">
+        <div>
+          <h3 id="contest-relations-title" className="text-xs font-bold text-ink">
+            Relação com concursos
+          </h3>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted">
+            Classifique manualmente a relação. O aplicativo não associa questões por similaridade ou metadados.
+          </p>
+        </div>
+        {manualContests.length === 0 ? (
+          <p className="text-[11px] text-muted">
+            Cadastre um concurso manual para relacioná-lo a esta questão.
+          </p>
+        ) : (
+          <div className="grid gap-2">
+            {manualContests.map((contest) => {
+              const relation = question.contestRelations.find(
+                (item) => item.contestId === contest.id,
+              );
+              return (
+                <label key={contest.id} className="grid gap-1.5 text-xs text-ink sm:grid-cols-[minmax(0,1fr)_minmax(190px,auto)] sm:items-center">
+                  <span className="min-w-0 truncate" title={contest.name}>
+                    {contest.name}
+                  </span>
+                  <select
+                    className={selectClass}
+                    value={relation?.relationType ?? ""}
+                    onChange={(event) =>
+                      void handleContestRelationChange(
+                        contest.id,
+                        event.target.value as QuestionContestRelationType | "",
+                      )
+                    }
+                    disabled={isContestRelationSubmitting}
+                  >
+                    <option value="">Sem vínculo</option>
+                    <option value="official_exam">
+                      {formatQuestionContestRelation("official_exam")}
+                    </option>
+                    <option value="previous_exam">
+                      {formatQuestionContestRelation("previous_exam")}
+                    </option>
+                    <option value="thematic_compatibility">
+                      {formatQuestionContestRelation("thematic_compatibility")}
+                    </option>
+                  </select>
+                </label>
+              );
+            })}
+          </div>
+        )}
+        {isContestRelationSubmitting && (
+          <p className="text-[11px] text-muted">Salvando relação...</p>
+        )}
+      </section>
 
       {/* Meta tags badge bar */}
       <div className="flex flex-wrap items-center gap-2 text-xs">

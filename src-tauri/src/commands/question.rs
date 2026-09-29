@@ -6,7 +6,7 @@ use crate::domain::question::{
     CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
     NotebookFilter, NotebookSummary, QuestionNotebookEntrySummary, QuestionOptionInput,
     QuestionPerformanceSummary, QuestionSummary, ReviseQuestionInput, ReviseQuestionResult,
-    SetQuestionNotebookInput,
+    SetQuestionContestRelationInput, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     QuestionExportResult, QuestionImportPreview, QuestionImportResult,
@@ -69,6 +69,15 @@ pub struct ReviseQuestionRequest {
     pub status: String,
     pub answer_key: Option<String>,
     pub reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetQuestionContestRelationRequest {
+    pub question_id: String,
+    pub contest_id: String,
+    pub relation_type: String,
+    pub included: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +214,22 @@ pub fn revise_question(
             status: request.status,
             answer_key: request.answer_key,
             reason: request.reason,
+        })
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn set_question_contest_relation(
+    app: AppHandle,
+    request: SetQuestionContestRelationRequest,
+) -> Result<QuestionSummary, CommandError> {
+    let store = local_workspace_store(&app)?;
+    QuestionService::new(store)
+        .set_contest_relation(SetQuestionContestRelationInput {
+            question_id: request.question_id,
+            contest_id: request.contest_id,
+            relation_type: request.relation_type,
+            included: request.included,
         })
         .map_err(CommandError::from)
 }

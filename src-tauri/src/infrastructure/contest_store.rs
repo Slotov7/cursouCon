@@ -522,6 +522,7 @@ mod tests {
                    ALTER TABLE study_tasks DROP COLUMN material_id;
                    DROP TABLE external_question_batches;
                    DROP TABLE IF EXISTS question_revisions;
+                   DROP TABLE IF EXISTS question_contest_relations;
                    DROP INDEX IF EXISTS idx_manual_contests_notice_material;
                     ALTER TABLE manual_contests DROP COLUMN notice_material_id;
                     DELETE FROM schema_migrations WHERE version >= 20;",
