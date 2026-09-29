@@ -4,10 +4,10 @@ use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
 use crate::domain::question::{
     AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
     CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
-    NotebookSummary, QuestionAttemptSummary, QuestionContestRelationSummary,
-    QuestionNotebookEntrySummary, QuestionOptionSummary, QuestionPerformanceSummary,
-    QuestionRevisionSummary, QuestionSummary, ReviseQuestionInput, ReviseQuestionResult,
-    SetQuestionContestRelationInput, SetQuestionNotebookInput,
+    NotebookSummary, QuestionAttachmentSourceSummary, QuestionAttemptSummary,
+    QuestionContestRelationSummary, QuestionNotebookEntrySummary, QuestionOptionSummary,
+    QuestionPerformanceSummary, QuestionRevisionSummary, QuestionSummary, ReviseQuestionInput,
+    ReviseQuestionResult, SetQuestionContestRelationInput, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     duplicate_external_id, export_item_from_summary, new_export_document, parse_question_document,
@@ -600,6 +600,62 @@ impl QuestionStore for LocalWorkspaceStore {
             .commit()
             .map_err(|error| map_database_error("confirmar vínculo da questão", error))?;
         Ok(question)
+    }
+
+    fn list_question_attachment_sources(
+        &self,
+        question_id: &str,
+    ) -> Result<Vec<QuestionAttachmentSourceSummary>, WorkspaceError> {
+        let workspace = self
+            .active_workspace()?
+            .ok_or(WorkspaceError::NoActiveWorkspace)?;
+        let connection = self.active_database()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT attachment_id, sha256, relative_path
+                 FROM question_attachments
+                 WHERE question_id = ?1
+                 ORDER BY attachment_id",
+            )
+            .map_err(|error| map_database_error("preparar imagens da questão", error))?;
+        let attachments = statement
+            .query_map(params![question_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| map_database_error("consultar imagens da questão", error))?
+            .map(|row| row.map_err(|error| map_database_error("ler imagem da questão", error)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        attachments
+            .into_iter()
+            .map(|(id, sha256, relative_path)| {
+                if sha256.len() != 64 || !sha256.chars().all(|value| value.is_ascii_hexdigit()) {
+                    return Err(WorkspaceError::Database(
+                        "o hash de um anexo de questão é inválido".to_string(),
+                    ));
+                }
+                let path = workspace.path.join("blobs").join(&sha256);
+                if !path.is_file() {
+                    return Err(WorkspaceError::Io(
+                        "o arquivo de uma imagem de questão não foi encontrado".to_string(),
+                    ));
+                }
+                let source_path = path.to_str().ok_or_else(|| {
+                    WorkspaceError::Io(
+                        "o caminho de uma imagem de questão não é válido".to_string(),
+                    )
+                })?;
+                Ok(QuestionAttachmentSourceSummary {
+                    id,
+                    relative_path,
+                    source_path: source_path.to_string(),
+                })
+            })
+            .collect()
     }
 
     fn list_notebook_entries(
@@ -2373,6 +2429,27 @@ mod tests {
             .join("blobs")
             .join(&attachment_hash)
             .is_file());
+        let imported_questions = store
+            .list_questions(&ListQuestionsInput {
+                subject_id: None,
+                question_type: None,
+                status: Some("active".to_string()),
+                board: None,
+                exam_year: None,
+                attempt_status: None,
+                notebook_id: None,
+                search_text: None,
+                limit: 50,
+                offset: 0,
+            })
+            .expect("a questão importada deve ser consultável");
+        let attachment_sources = store
+            .list_question_attachment_sources(&imported_questions[0].id)
+            .expect("a origem local do anexo deve ser localizada");
+        assert_eq!(attachment_sources.len(), 1);
+        assert!(attachment_sources[0]
+            .source_path
+            .ends_with(&attachment_hash));
 
         let duplicate_preview = store
             .preview_import(&json_path)

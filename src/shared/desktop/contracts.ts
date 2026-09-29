@@ -518,6 +518,12 @@ export type QuestionContestRelationSummary = {
   relationType: QuestionContestRelationType;
 };
 
+export type QuestionAttachmentSourceSummary = {
+  id: string;
+  relativePath: string;
+  sourcePath: string;
+};
+
 export type QuestionSummary = {
   id: string;
   questionType: QuestionType;
@@ -1509,6 +1515,27 @@ function parseQuestionContestRelation(value: unknown): QuestionContestRelationSu
     contestName: value.contestName,
     relationType: parseQuestionContestRelationType(value.relationType),
   };
+}
+
+function parseQuestionAttachmentSource(value: unknown): QuestionAttachmentSourceSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    value.id.trim().length === 0 ||
+    typeof value.relativePath !== "string" ||
+    typeof value.sourcePath !== "string" ||
+    value.sourcePath.trim().length === 0
+  ) {
+    throw new Error("O núcleo local devolveu uma origem de imagem inválida.");
+  }
+  return { id: value.id, relativePath: value.relativePath, sourcePath: value.sourcePath };
+}
+
+export function parseQuestionAttachmentSources(value: unknown): QuestionAttachmentSourceSummary[] {
+  if (!Array.isArray(value)) {
+    throw new Error("O núcleo local devolveu uma lista de imagens inválida.");
+  }
+  return value.map(parseQuestionAttachmentSource);
 }
 
 function parseOptionalQuestionResult(value: unknown, fieldName: string): QuestionResult | null {

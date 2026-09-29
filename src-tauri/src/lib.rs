@@ -51,6 +51,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::question::answer_question,
             commands::question::revise_question,
             commands::question::set_question_contest_relation,
+            commands::question::get_question_attachment_sources,
             commands::question::create_external_question_batch,
             commands::question::get_external_question_batches,
             commands::question::get_question_performance,

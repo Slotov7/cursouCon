@@ -8,6 +8,7 @@ import {
   getManualContests,
   getNotebookEntries,
   getNotebooks,
+  getQuestionAttachmentSources,
   getQuestions,
   importQuestions,
   pickQuestionImportFile,
@@ -36,6 +37,7 @@ import type {
   NotebookSummary,
   StudyPlan,
 } from "../../shared/desktop/contracts";
+import { MarkdownContent } from "../../shared/ui/MarkdownContent";
 import {
   buttonOutlineLightClass,
   buttonPrimaryClass,
@@ -1193,6 +1195,7 @@ function QuestionRunner({
   const [revisionReason, setRevisionReason] = useState("");
   const [isRevisionSubmitting, setIsRevisionSubmitting] = useState(false);
   const [isContestRelationSubmitting, setIsContestRelationSubmitting] = useState(false);
+  const [attachmentSources, setAttachmentSources] = useState<Record<string, string>>({});
   const [notebookReason, setNotebookReason] = useState<QuestionNotebookReason | null>(null);
   const [notebookObservation, setNotebookObservation] = useState("");
 
@@ -1217,6 +1220,22 @@ function QuestionRunner({
     notebookEntry?.reason,
     notebookEntry?.observation,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAttachmentSources({});
+    getQuestionAttachmentSources({ questionId: question.id })
+      .then((sources) => {
+        if (!cancelled) setAttachmentSources(sources);
+      })
+      .catch((operationError: unknown) => {
+        if (!cancelled) setRunnerError(getDesktopErrorMessage(operationError));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [question.id]);
 
   const handleRevise = async () => {
     const nextAnswerKey = revisionAnswerKey || null;
@@ -1614,9 +1633,11 @@ function QuestionRunner({
       </div>
 
       {/* Statement */}
-      <div className="question-body font-reading text-pretty text-[1.05rem] font-medium leading-[1.7] text-ink whitespace-pre-line">
-        {question.statementMarkdown}
-      </div>
+      <MarkdownContent
+        source={question.statementMarkdown}
+        attachmentSources={attachmentSources}
+        className="question-body font-reading text-pretty text-[1.05rem] font-medium leading-[1.7] text-ink"
+      />
 
       {/* Alternatives List */}
       <div className="grid gap-2.5 pt-2">
@@ -1665,9 +1686,9 @@ function QuestionRunner({
               >
                 {displayKey}
               </span>
-              <span className="flex-1 leading-relaxed text-pretty text-[13px]">
-                {option.text}
-              </span>
+                <span className="flex-1 leading-relaxed text-pretty text-[13px]">
+                  {option.text}
+                </span>
             </button>
           );
         })}
@@ -1816,9 +1837,11 @@ function QuestionRunner({
             {question.explanationMarkdown && (
               <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4 text-xs leading-relaxed text-ink mt-1">
                 <h5 className="font-bold text-blue-600 mb-1">Gabarito Comentado / Fundamentação</h5>
-                <p className="text-muted whitespace-pre-line leading-relaxed">
-                  {question.explanationMarkdown}
-                </p>
+                <MarkdownContent
+                  source={question.explanationMarkdown}
+                  attachmentSources={attachmentSources}
+                  className="text-muted leading-relaxed"
+                />
               </div>
             )}
           </div>

@@ -53,6 +53,7 @@ O primeiro protótipo vertical implementa:
 - registro de lotes de questões resolvidos fora do app, com indicadores separados de primeiras tentativas e repetições, sem XP adicional;
 - núcleo e ponte IPC para importação JSON versionada de questões, com prévia, diagnóstico de inválidas/duplicadas e gravação transacional;
 - núcleo e ponte IPC para exportação das questões ativas em pacotes locais de `exports/`, preservando referências e hashes de anexos;
+- renderização local e restrita de Markdown de questões, com código, tabelas, fórmulas legíveis e imagens de anexos autorizados;
 - Caderno de Erros local persistente, com relação questão–caderno idempotente;
 - criação de cadernos manuais e vínculo persistente de questões a múltiplos cadernos;
 - criação de cadernos dinâmicos por estado da tentativa, matéria e formato;

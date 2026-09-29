@@ -25,6 +25,7 @@ import {
   parseOptionalWorkspaceSummary,
   parsePreparationSummary,
   parseQuestion,
+  parseQuestionAttachmentSources,
   parseQuestionExportResult,
   parseQuestionImportPreview,
   parseQuestionImportResult,
@@ -88,6 +89,7 @@ import {
   type OpenMaterialRequest,
   type PauseStudySessionRequest,
   type QuestionSummary,
+  type QuestionAttachmentSourceSummary,
   type QuestionResult,
   type ReviseQuestionRequest,
   type ReviseQuestionResult,
@@ -1331,6 +1333,24 @@ export async function getQuestions(request: GetQuestionsRequest): Promise<Questi
   if (!isTauri()) return [];
   const response = await invoke<unknown>("get_questions", { request });
   return parseQuestions(response);
+}
+
+export async function getQuestionAttachmentSources(
+  request: { questionId: string },
+): Promise<Record<string, string>> {
+  if (!isTauri()) return {};
+  const response = await invoke<unknown>("get_question_attachment_sources", { request });
+  const sources: QuestionAttachmentSourceSummary[] = parseQuestionAttachmentSources(response);
+  return Object.fromEntries(
+    sources.flatMap((source) => {
+      const convertedSource = convertFileSrc(source.sourcePath);
+      return [
+        [source.id, convertedSource],
+        [source.relativePath, convertedSource],
+        [`attachments/${source.id}`, convertedSource],
+      ];
+    }),
+  );
 }
 
 export async function getNotebooks(): Promise<NotebookSummary[]> {

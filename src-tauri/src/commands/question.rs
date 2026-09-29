@@ -4,16 +4,16 @@ use crate::commands::workspace::local_workspace_store;
 use crate::domain::question::{
     AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
     CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
-    NotebookFilter, NotebookSummary, QuestionNotebookEntrySummary, QuestionOptionInput,
-    QuestionPerformanceSummary, QuestionSummary, ReviseQuestionInput, ReviseQuestionResult,
-    SetQuestionContestRelationInput, SetQuestionNotebookInput,
+    NotebookFilter, NotebookSummary, QuestionAttachmentSourceSummary, QuestionNotebookEntrySummary,
+    QuestionOptionInput, QuestionPerformanceSummary, QuestionSummary, ReviseQuestionInput,
+    ReviseQuestionResult, SetQuestionContestRelationInput, SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
     QuestionExportResult, QuestionImportPreview, QuestionImportResult,
 };
 use serde::Deserialize;
 use std::path::Path;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +78,12 @@ pub struct SetQuestionContestRelationRequest {
     pub contest_id: String,
     pub relation_type: String,
     pub included: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetQuestionAttachmentSourcesRequest {
+    pub question_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,6 +238,28 @@ pub fn set_question_contest_relation(
             included: request.included,
         })
         .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn get_question_attachment_sources(
+    app: AppHandle,
+    request: GetQuestionAttachmentSourcesRequest,
+) -> Result<Vec<QuestionAttachmentSourceSummary>, CommandError> {
+    let store = local_workspace_store(&app)?;
+    let sources = QuestionService::new(store)
+        .list_attachment_sources(request.question_id)
+        .map_err(CommandError::from)?;
+    for source in &sources {
+        app.asset_protocol_scope()
+            .allow_file(std::path::Path::new(&source.source_path))
+            .map_err(|error| {
+                CommandError::new(
+                    "question_attachment_scope_error",
+                    format!("Não foi possível autorizar a imagem da questão: {error}"),
+                )
+            })?;
+    }
+    Ok(sources)
 }
 
 #[tauri::command]

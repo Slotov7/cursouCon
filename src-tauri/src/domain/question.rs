@@ -91,6 +91,14 @@ pub struct QuestionContestRelationSummary {
     pub relation_type: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionAttachmentSourceSummary {
+    pub id: String,
+    pub relative_path: String,
+    pub source_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateExternalQuestionBatchInput {
     pub preparation_id: String,
@@ -218,6 +226,10 @@ pub fn normalize_set_question_contest_relation_input(
         relation_type,
         included: input.included,
     })
+}
+
+pub fn normalize_question_id(value: &str) -> Result<String, String> {
+    normalize_id(value, "A questão")
 }
 
 #[derive(Debug, Clone, Serialize)]

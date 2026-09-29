@@ -2,12 +2,13 @@ use crate::application::workspace_service::WorkspaceError;
 use crate::domain::question::{
     normalize_answer_question_input, normalize_create_notebook_input,
     normalize_create_question_input, normalize_external_question_batch_input,
-    normalize_list_questions_input, normalize_notebook_id, normalize_revise_question_input,
-    normalize_set_question_contest_relation_input, normalize_set_question_notebook_input,
-    AnswerQuestionInput, AnswerQuestionResult, CreateExternalQuestionBatchInput,
-    CreateNotebookInput, CreateQuestionInput, ExternalQuestionBatchSummary, ListQuestionsInput,
-    NotebookSummary, QuestionNotebookEntrySummary, QuestionPerformanceSummary, QuestionSummary,
-    ReviseQuestionInput, ReviseQuestionResult, SetQuestionContestRelationInput,
+    normalize_list_questions_input, normalize_notebook_id, normalize_question_id,
+    normalize_revise_question_input, normalize_set_question_contest_relation_input,
+    normalize_set_question_notebook_input, AnswerQuestionInput, AnswerQuestionResult,
+    CreateExternalQuestionBatchInput, CreateNotebookInput, CreateQuestionInput,
+    ExternalQuestionBatchSummary, ListQuestionsInput, NotebookSummary,
+    QuestionAttachmentSourceSummary, QuestionNotebookEntrySummary, QuestionPerformanceSummary,
+    QuestionSummary, ReviseQuestionInput, ReviseQuestionResult, SetQuestionContestRelationInput,
     SetQuestionNotebookInput,
 };
 use crate::domain::question_transfer::{
@@ -36,6 +37,10 @@ pub trait QuestionStore {
         &self,
         input: &SetQuestionContestRelationInput,
     ) -> Result<QuestionSummary, WorkspaceError>;
+    fn list_question_attachment_sources(
+        &self,
+        question_id: &str,
+    ) -> Result<Vec<QuestionAttachmentSourceSummary>, WorkspaceError>;
     fn list_notebooks(&self) -> Result<Vec<NotebookSummary>, WorkspaceError>;
     fn create_notebook(
         &self,
@@ -143,6 +148,15 @@ impl<S: QuestionStore> QuestionService<S> {
         let normalized = normalize_set_question_contest_relation_input(input)
             .map_err(WorkspaceError::InvalidInput)?;
         self.store.set_question_contest_relation(&normalized)
+    }
+
+    pub fn list_attachment_sources(
+        &self,
+        question_id: String,
+    ) -> Result<Vec<QuestionAttachmentSourceSummary>, WorkspaceError> {
+        let normalized =
+            normalize_question_id(&question_id).map_err(WorkspaceError::InvalidInput)?;
+        self.store.list_question_attachment_sources(&normalized)
     }
 
     pub fn preview_import(
