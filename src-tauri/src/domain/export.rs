@@ -11,3 +11,10 @@ pub struct WorkspaceDataExportResult {
     pub exported_notes: i64,
     pub exported_attachments: i64,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyProgressCsvExportResult {
+    pub path: String,
+    pub row_count: i64,
+}

@@ -1,16 +1,24 @@
 use crate::application::backup_service::BackupService;
 use crate::commands::error::CommandError;
 use crate::commands::workspace::local_workspace_store;
-use crate::domain::backup::{BackupInspectionSummary, BackupSummary};
+use crate::domain::backup::{BackupInspectionSummary, BackupSettings, BackupSummary};
 use crate::domain::workspace::WorkspaceSummary;
 use serde::Deserialize;
 use std::path::Path;
 use tauri::AppHandle;
 
+#[tauri::command]
+pub fn get_backup_settings(app: AppHandle) -> Result<BackupSettings, CommandError> {
+    local_workspace_store(&app)?
+        .backup_settings()
+        .map_err(Into::into)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateBackupRequest {
     pub destination_parent_path: String,
+    pub keep_last: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,7 +41,10 @@ pub fn create_workspace_backup(
 ) -> Result<BackupSummary, CommandError> {
     let store = local_workspace_store(&app)?;
     BackupService::new(store)
-        .create(Path::new(&request.destination_parent_path))
+        .create(
+            Path::new(&request.destination_parent_path),
+            request.keep_last,
+        )
         .map_err(CommandError::from)
 }
 

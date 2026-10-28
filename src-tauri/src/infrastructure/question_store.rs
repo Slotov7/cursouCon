@@ -1064,6 +1064,105 @@ fn load_external_batch(
         .map_err(|error| map_database_error("ler lote externo salvo", error))
 }
 
+impl LocalWorkspaceStore {
+    pub(crate) fn create_questions_batch(
+        &self,
+        inputs: Vec<CreateQuestionInput>,
+    ) -> Result<usize, WorkspaceError> {
+        use crate::domain::question::normalize_create_question_input;
+        if inputs.is_empty() || inputs.len() > 100 {
+            return Err(WorkspaceError::InvalidInput(
+                "Selecione de 1 a 100 questões por lote.".into(),
+            ));
+        }
+        let normalized = inputs
+            .into_iter()
+            .map(|input| {
+                normalize_create_question_input(input).map_err(WorkspaceError::InvalidInput)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar importação de questões", error))?;
+        for input in &normalized {
+            let hash = question_content_hash(input).map_err(WorkspaceError::Serialization)?;
+            let exists: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM questions WHERE content_hash = ?1 AND status = 'active'",
+                    params![hash],
+                    |row| row.get(0),
+                )
+                .map_err(|error| map_database_error("verificar questões repetidas", error))?;
+            if exists > 0 {
+                return Err(WorkspaceError::InvalidInput(
+                    "Uma questão do lote já existe no banco. Nenhuma questão foi importada.".into(),
+                ));
+            }
+            insert_question(&transaction, input)?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar importação de questões", error))?;
+        Ok(normalized.len())
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use crate::application::workspace_service::WorkspaceStore;
+    use crate::domain::question::QuestionOptionInput;
+
+    #[test]
+    fn invalid_question_rolls_back_the_whole_pdf_batch() {
+        let portable = std::env::temp_dir().join(format!("pdf-batch-{}", Uuid::new_v4()));
+        let app_data = std::env::temp_dir().join(format!("pdf-batch-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data.clone());
+        store
+            .create_workspace(&portable, "Prova temporária")
+            .expect("criar espaço");
+        let first = CreateQuestionInput {
+            question_type: "true_false".into(),
+            statement_markdown: "Primeira questão".into(),
+            options: vec![
+                QuestionOptionInput {
+                    key: "true".into(),
+                    text: "Certo".into(),
+                },
+                QuestionOptionInput {
+                    key: "false".into(),
+                    text: "Errado".into(),
+                },
+            ],
+            answer_key: None,
+            explanation_markdown: None,
+            source_name: Some("PDF".into()),
+            board: None,
+            organization: None,
+            role: None,
+            exam_year: None,
+            subject_id: None,
+        };
+        let mut invalid = first.clone();
+        invalid.subject_id = Some(Uuid::new_v4().to_string());
+        assert!(store
+            .create_questions_batch(vec![first.clone(), invalid])
+            .is_err());
+        assert!(store
+            .create_questions_batch(vec![first.clone(), first])
+            .is_err());
+        let connection = store.active_database().expect("abrir banco");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM questions", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(count, 0);
+        drop(connection);
+        let _ = fs::remove_dir_all(portable);
+        let _ = fs::remove_dir_all(app_data);
+    }
+}
+
 fn insert_question(
     transaction: &Transaction<'_>,
     input: &CreateQuestionInput,
@@ -1899,7 +1998,7 @@ mod tests {
                     "INSERT INTO question_attempts
                         (id, question_id, selected_key, confidence, elapsed_seconds, answer_key_at_attempt, result, answered_at)
                      VALUES (?1, ?2, ?3, 'certain', 10, 'A', ?4, ?5)",
-                    params![Uuid::new_v4().to_string(), question_id, selected, answered_at, result],
+                    params![Uuid::new_v4().to_string(), question_id, selected, result, answered_at],
                 )
                 .expect("a tentativa sintética deve ser criada");
         }

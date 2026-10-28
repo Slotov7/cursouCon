@@ -5,6 +5,7 @@ pub mod database;
 pub mod diagnostic_store;
 pub mod discursive_store;
 pub mod export_store;
+pub mod flashcard_store;
 pub mod material_store;
 pub mod note_store;
 pub mod online_contest_store;

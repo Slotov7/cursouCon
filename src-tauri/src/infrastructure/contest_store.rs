@@ -525,6 +525,19 @@ mod tests {
                    DROP TABLE IF EXISTS question_contest_relations;
                    DROP INDEX IF EXISTS idx_manual_contests_notice_material;
                     ALTER TABLE manual_contests DROP COLUMN notice_material_id;
+                    DROP TABLE IF EXISTS flashcard_reviews;
+                    DROP TABLE IF EXISTS flashcards;
+                    DROP TABLE IF EXISTS discursive_attempts;
+                    DROP TABLE IF EXISTS discursive_question_details;
+                    DROP TABLE IF EXISTS simulation_diagnostics;
+                    DROP TABLE IF EXISTS simulation_results;
+                    DROP TABLE IF EXISTS simulation_answers;
+                    DROP TABLE IF EXISTS simulation_questions;
+                    DROP TABLE IF EXISTS simulations;
+                    DROP TABLE IF EXISTS online_contest_source_state;
+                    DROP TABLE IF EXISTS online_contest_history;
+                    DROP TABLE IF EXISTS online_contest_opportunities;
+                    ALTER TABLE questions DROP COLUMN is_discursive;
                     DELETE FROM schema_migrations WHERE version >= 20;",
             )
             .expect("a fixture deve representar um banco na versão 19");

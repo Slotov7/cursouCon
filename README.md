@@ -30,6 +30,11 @@ O primeiro protótipo vertical implementa:
 - classificação explícita do documento da preparação como referência pré-edital ou edital vigente confirmado;
 - preferências de tema, contraste, movimento, fuso do plano diário/revisões e visibilidade do painel de gamificação salvas no computador, fora das revisões portáteis;
 - tela de diagnóstico com versão e contagens agregadas, exportável em JSON sem conteúdo de materiais, notas ou caminhos locais;
+- guia de primeiros passos na tela Hoje, que acompanha preparação, assuntos, ciclo e primeira tarefa e desaparece quando a configuração inicial termina;
+- banner de sessão interrompida na tela Hoje, com retomada em um clique ou revisão explícita do tempo incerto;
+- flashcards de texto por espaço, com assunto opcional, avaliações transacionais no SQLite e agendamento determinístico versionado; cartões antigos do armazenamento da interface podem ser importados manualmente para o espaço escolhido, preservando o agendamento; imagens em cartões ainda não são suportadas;
+- importação assistida de questões de PDFs previamente importados: extrai texto de até 100 páginas, sugere separação por número, permite revisar enunciados e gabarito e confirma o lote em uma transação; PDFs digitalizados precisam de OCR externo;
+- retenção opcional no backup manual (em branco não remove nada), com destino, limite e histórico das últimas execuções salvos neste computador fora da pasta portátil; somente backups íntegros do mesmo espaço e já registrados no histórico são candidatos à limpeza após criar a nova cópia, e falhas na limpeza aparecem como aviso;
 - criação de tarefas para uma data com material opcional importado ou link, e plano diário local;
 - material e notas do assunto/tarefa acessíveis em Hoje, com leitor PDF e página salva entre aberturas;
 - sugestão explícita da próxima ação do ciclo em Hoje, com criação transacional de tarefa e avanço idempotente;
@@ -81,6 +86,11 @@ npm run tauri dev
 ```
 
 `npm run dev` abre apenas a interface Vite. A criação e abertura de espaços dependem do shell Tauri e do comando Rust.
+
+No Linux/GNOME, o script `scripts/tauri-dev.sh` usa um schema GTK local com as
+chaves legadas de antialiasing, além de isolar módulos GTK e usar backend de memória.
+Isso evita que o WebKitGTK encerre antes de abrir a janela sem alterar schemas,
+configurações ou dados do sistema.
 
 ## Linux e Debian
 

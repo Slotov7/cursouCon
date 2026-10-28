@@ -50,6 +50,39 @@ export type WorkspaceDataExportResult = {
   exportedAttachments: number;
 };
 
+export type StudyProgressCsvExportResult = {
+  path: string;
+  rowCount: number;
+};
+
+export type FlashcardSummary = {
+  id: string;
+  subjectId: string | null;
+  front: string;
+  back: string;
+  intervalDays: number;
+  ease: number;
+  repetitions: number;
+  dueDate: string;
+  algorithmVersion: number;
+};
+
+export function parseFlashcard(value: unknown): FlashcardSummary {
+  if (!isRecord(value) || typeof value.id !== "string" ||
+    !(value.subjectId === null || typeof value.subjectId === "string") ||
+    typeof value.front !== "string" || typeof value.back !== "string" ||
+    typeof value.intervalDays !== "number" || typeof value.ease !== "number" ||
+    typeof value.repetitions !== "number" || typeof value.dueDate !== "string" ||
+    value.algorithmVersion !== 1) {
+    throw new Error("O núcleo local devolveu um flashcard inválido.");
+  }
+  return {
+    id: value.id, subjectId: value.subjectId, front: value.front, back: value.back,
+    intervalDays: value.intervalDays, ease: value.ease, repetitions: value.repetitions,
+    dueDate: value.dueDate, algorithmVersion: 1,
+  };
+}
+
 export type WorkspaceRequest = {
   workspacePath: string;
   name: string;
@@ -59,7 +92,35 @@ export type BackupSummary = {
   path: string;
   workspaceName: string;
   createdAtEpochSeconds: number;
+  retentionWarning?: string | null;
 };
+
+export type BackupSettings = {
+  destinationParentPath: string;
+  keepLast: number | null;
+  history: Array<{
+    createdAtEpochSeconds: number;
+    path: string | null;
+    error: string | null;
+  }>;
+};
+
+export function parseBackupSettings(value: unknown): BackupSettings {
+  if (!isRecord(value) || typeof value.destinationParentPath !== "string" ||
+    !(value.keepLast === null || (typeof value.keepLast === "number" && Number.isInteger(value.keepLast))) ||
+    !Array.isArray(value.history)) {
+    throw new Error("O núcleo local devolveu configurações de backup inválidas.");
+  }
+  const history = value.history.map((entry: unknown) => {
+    if (!isRecord(entry) || typeof entry.createdAtEpochSeconds !== "number" ||
+      !(entry.path === null || typeof entry.path === "string") ||
+      !(entry.error === null || typeof entry.error === "string")) {
+      throw new Error("O núcleo local devolveu um histórico de backup inválido.");
+    }
+    return { createdAtEpochSeconds: entry.createdAtEpochSeconds, path: entry.path, error: entry.error };
+  });
+  return { destinationParentPath: value.destinationParentPath, keepLast: value.keepLast, history };
+}
 
 export type BackupInspectionSummary = {
   path: string;
@@ -102,6 +163,7 @@ export type ConfigureSyncDestinationRequest = {
 
 export type CreateBackupRequest = {
   destinationParentPath: string;
+  keepLast?: number;
 };
 
 export type InspectBackupRequest = {
@@ -1166,6 +1228,22 @@ export function parseWorkspaceDataExportResult(value: unknown): WorkspaceDataExp
   };
 }
 
+export function parseStudyProgressCsvExportResult(
+  value: unknown,
+): StudyProgressCsvExportResult {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== "string" ||
+    typeof value.rowCount !== "number" ||
+    !Number.isInteger(value.rowCount) ||
+    value.rowCount < 0
+  ) {
+    throw new Error("O núcleo local devolveu uma exportação de evolução inválida.");
+  }
+
+  return { path: value.path, rowCount: value.rowCount };
+}
+
 export function parseBackupSummary(value: unknown): BackupSummary {
   if (
     !isRecord(value) ||
@@ -1182,6 +1260,7 @@ export function parseBackupSummary(value: unknown): BackupSummary {
     path: value.path,
     workspaceName: value.workspaceName,
     createdAtEpochSeconds: value.createdAtEpochSeconds,
+    retentionWarning: typeof value.retentionWarning === "string" ? value.retentionWarning : null,
   };
 }
 

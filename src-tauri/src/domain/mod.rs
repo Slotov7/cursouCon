@@ -3,6 +3,7 @@ pub mod contest;
 pub mod diagnostic;
 pub mod discursive;
 pub mod export;
+pub mod flashcard;
 pub mod material;
 pub mod note;
 pub mod online_contest;

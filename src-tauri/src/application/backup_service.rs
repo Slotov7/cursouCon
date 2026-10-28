@@ -4,7 +4,11 @@ use crate::domain::workspace::WorkspaceSummary;
 use std::path::Path;
 
 pub trait BackupStore {
-    fn create_backup(&self, destination_parent: &Path) -> Result<BackupSummary, WorkspaceError>;
+    fn create_backup(
+        &self,
+        destination_parent: &Path,
+        keep_last: Option<u32>,
+    ) -> Result<BackupSummary, WorkspaceError>;
     fn inspect_backup(&self, backup_path: &Path)
         -> Result<BackupInspectionSummary, WorkspaceError>;
     fn restore_backup(
@@ -23,8 +27,12 @@ impl<S: BackupStore> BackupService<S> {
         Self { store }
     }
 
-    pub fn create(&self, destination_parent: &Path) -> Result<BackupSummary, WorkspaceError> {
-        self.store.create_backup(destination_parent)
+    pub fn create(
+        &self,
+        destination_parent: &Path,
+        keep_last: Option<u32>,
+    ) -> Result<BackupSummary, WorkspaceError> {
+        self.store.create_backup(destination_parent, keep_last)
     }
 
     pub fn inspect(&self, backup_path: &Path) -> Result<BackupInspectionSummary, WorkspaceError> {

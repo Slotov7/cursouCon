@@ -4,6 +4,7 @@ import {
   finishStudySession,
   getDesktopErrorMessage,
   getMaterials,
+  getStudyPlanning,
   openMaterial,
   pauseStudySession,
   rescheduleStudyTask,
@@ -19,9 +20,15 @@ import type {
   StudyPlan,
   StudySessionSummary,
   StudyCycleSuggestion,
+  StudyPlanningSummary,
   StudyTaskSummary,
   StudyTaskStatus,
 } from "../../shared/desktop/contracts";
+import { GettingStartedChecklist } from "./GettingStartedChecklist";
+import {
+  notifyPomodoroPhaseCompleted,
+  preparePomodoroNotifications,
+} from "./pomodoroNotification";
 import { ReviewQueue } from "./ReviewQueue";
 import { NotesPanel } from "../materials/NotesPanel";
 import { displayTimezone } from "../../shared/date";
@@ -97,10 +104,43 @@ export function TodayView({
   const [contextMaterials, setContextMaterials] = useState<MaterialSummary[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string | null>(null);
+  const [studyPlanning, setStudyPlanning] = useState<StudyPlanningSummary | null>(null);
+  const [isStudyPlanningLoading, setIsStudyPlanningLoading] = useState(false);
+  const [isStudyPlanningUnavailable, setIsStudyPlanningUnavailable] = useState(false);
+  const [isChecklistDismissed, setIsChecklistDismissed] = useState(false);
 
   const primaryPreparation = plan?.preparations.find((prep) => prep.isPrimary);
   const activeSession = dailyPlan?.activeSession ?? null;
   const cycleSuggestion = dailyPlan?.cycleSuggestion ?? null;
+
+  useEffect(() => {
+    if (!primaryPreparation) {
+      setStudyPlanning(null);
+      setIsStudyPlanningUnavailable(false);
+      setIsStudyPlanningLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsStudyPlanningLoading(true);
+    setIsStudyPlanningUnavailable(false);
+    void getStudyPlanning({ preparationId: primaryPreparation.id })
+      .then((planning) => {
+        if (!cancelled) setStudyPlanning(planning);
+      })
+      .catch(() => {
+        // O guia é orientativo: uma falha na leitura do ciclo não deve acusar
+        // configuração ausente nem interromper a tela Hoje.
+        if (!cancelled) setIsStudyPlanningUnavailable(true);
+      })
+      .finally(() => {
+        if (!cancelled) setIsStudyPlanningLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [primaryPreparation?.id]);
 
   useEffect(() => {
     setReviewOn("");
@@ -236,6 +276,12 @@ export function TodayView({
             ? "Foco concluído. A sessão foi pausada e começou o intervalo longo."
             : "Foco concluído. A sessão foi pausada e começou o intervalo curto.",
         );
+        notifyPomodoroPhaseCompleted(
+          "Foco concluído",
+          nextPhase === "long_break"
+            ? "Sessão pausada. Hora do intervalo longo."
+            : "Sessão pausada. Hora do intervalo curto.",
+        );
         onDataChanged();
       } else {
         if (activeSession.status !== "paused") {
@@ -259,6 +305,10 @@ export function TodayView({
         setPomodoroPhase("focus");
         setPomodoroSecondsLeft(pomodoroSettings.focusMinutes * 60);
         setPomodoroMessage("Intervalo concluído. O próximo foco começou.");
+        notifyPomodoroPhaseCompleted(
+          "Intervalo concluído",
+          "O próximo bloco de foco começou.",
+        );
         onDataChanged();
       }
 
@@ -488,6 +538,7 @@ export function TodayView({
     if (pomodoroSecondsLeft === 0) {
       setPomodoroSecondsLeft(getPomodoroPhaseSeconds(pomodoroPhase, pomodoroSettings));
     }
+    preparePomodoroNotifications();
     setPomodoroRunning(true);
     setPomodoroMessage(
       pomodoroPhase === "focus" ? "Foco iniciado." : "Intervalo retomado.",
@@ -555,6 +606,43 @@ export function TodayView({
             Tentar novamente
           </button>
         </div>
+      )}
+
+      {activeSession?.status === "interrupted" && (
+        <section
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-500/40 bg-red-500/10 p-4 shadow-xs"
+          role="alert"
+          aria-labelledby="interrupted-banner-title"
+        >
+          <div className="min-w-0">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-red-600">
+              Sessão interrompida
+            </p>
+            <h2 id="interrupted-banner-title" className="mt-0.5 font-heading text-base font-bold text-ink">
+              Uma sessão anterior foi encerrada sem aviso
+            </h2>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted">
+              O tempo desde o último checkpoint não foi somado. Retome descartando esse trecho ou confirme o tempo efetivo.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className={`${buttonPrimaryClass} text-xs`}
+              type="button"
+              onClick={() => void handleResume()}
+              disabled={isBusy}
+            >
+              Retomar sessão
+            </button>
+            <button
+              className={`${buttonSecondaryClass} text-xs`}
+              type="button"
+              onClick={() => document.getElementById("interrupted-session-review")?.focus()}
+            >
+              Revisar tempo
+            </button>
+          </div>
+        </section>
       )}
 
       {/* 1. Hero Study Banner - Clean Typography & Tactile Glass Surface */}
@@ -643,7 +731,7 @@ export function TodayView({
           </div>
 
           {activeSession?.status === "interrupted" && (
-            <section className="grid max-w-2xl gap-3 rounded-xl border border-red-300/35 bg-red-950/20 p-3" aria-labelledby="interrupted-session-title">
+            <section className="grid max-w-2xl gap-3 rounded-xl border border-red-300/35 bg-red-950/20 p-3" id="interrupted-session-review" tabIndex={-1} aria-labelledby="interrupted-session-title">
               <div>
                 <h3 id="interrupted-session-title" className="text-xs font-bold text-red-100">Revise o trecho incerto</h3>
                 <p className="mt-1 text-[11px] leading-relaxed text-red-100/80">
@@ -758,6 +846,18 @@ export function TodayView({
           )}
         </div>
       </section>
+
+      {plan && !isChecklistDismissed && (
+        <GettingStartedChecklist
+          hasPreparation={plan.preparations.length > 0}
+          hasSubjects={plan.subjects.length > 0}
+          hasCycle={isStudyPlanningUnavailable || (studyPlanning?.cycleSlots.length ?? 0) > 0}
+          isCyclePending={isStudyPlanningLoading}
+          hasTaskToday={tasksToRender.length > 0 || activeSession !== null}
+          onOpenPlan={onOpenPlan}
+          onDismiss={() => setIsChecklistDismissed(true)}
+        />
+      )}
 
       {contextTask && (
         <section id="task-study-context" tabIndex={-1} className="grid gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs" aria-labelledby="task-context-title">

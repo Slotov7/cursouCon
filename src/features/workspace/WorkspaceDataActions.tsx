@@ -4,6 +4,7 @@ import {
   createWorkspaceRevision,
   configureSyncDestination,
   exportWorkspaceData,
+  getBackupSettings,
   getDesktopErrorMessage,
   getRecentWorkspaces,
   getSyncDestinationSettings,
@@ -17,6 +18,7 @@ import {
 } from "../../shared/desktop/commands";
 import type {
   BackupInspectionSummary,
+  BackupSettings,
   RevisionSummary,
   WorkspaceSummary,
 } from "../../shared/desktop/contracts";
@@ -56,6 +58,8 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
   const [revisionDestinationPath, setRevisionDestinationPath] = useState("");
   const [syncDestinationEnabled, setSyncDestinationEnabled] = useState(false);
   const [backupPath, setBackupPath] = useState("");
+  const [backupRetention, setBackupRetention] = useState("");
+  const [backupHistory, setBackupHistory] = useState<BackupSettings["history"]>([]);
   const [backupPreview, setBackupPreview] = useState<BackupInspectionSummary | null>(null);
   const [restoreDestinationPath, setRestoreDestinationPath] = useState("");
   const [recentWorkspaces, setRecentWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -67,6 +71,22 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
   const [pendingAction, setPendingAction] = useState<PendingAction>("idle");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBackupDestinationPath("");
+    setBackupRetention("");
+    setBackupHistory([]);
+    void getBackupSettings().then((settings) => {
+      if (cancelled) return;
+      setBackupDestinationPath(settings.destinationParentPath);
+      setBackupRetention(settings.keepLast?.toString() ?? "");
+      setBackupHistory(settings.history);
+    }).catch((failure: unknown) => {
+      if (!cancelled) setError(getDesktopErrorMessage(failure));
+    });
+    return () => { cancelled = true; };
+  }, [workspace.workspaceId]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -101,16 +121,25 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
     if (!backupDestinationPath) {
       return;
     }
+    const keepLast = backupRetention.trim() ? Number(backupRetention) : undefined;
+    if (keepLast !== undefined && (!Number.isInteger(keepLast) || keepLast < 1 || keepLast > 100)) {
+      setError("A retenção deve estar entre 1 e 100, ou vazia para preservar todos os backups.");
+      return;
+    }
     setError(null);
     setMessage(null);
     setPendingAction("creatingBackup");
     try {
       const backup = await createWorkspaceBackup({
         destinationParentPath: backupDestinationPath,
+        keepLast,
       });
-      setMessage(`Backup criado em ${backup.path}`);
+      setMessage(`Backup criado em ${backup.path}${backup.retentionWarning ? ` Atenção: ${backup.retentionWarning}` : ""}`);
+      void getBackupSettings().then((settings) => setBackupHistory(settings.history))
+        .catch((failure: unknown) => setError(`Backup criado, mas não foi possível consultar o histórico: ${getDesktopErrorMessage(failure)}`));
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
+      void getBackupSettings().then((settings) => setBackupHistory(settings.history)).catch(() => undefined);
     } finally {
       setPendingAction("idle");
     }
@@ -580,6 +609,11 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
                     </button>
                   </div>
                 </label>
+                <label className={fieldClass}>
+                  Manter últimos backups (opcional)
+                  <input className={inputClass} type="number" min="1" max="100" placeholder="Vazio: não apagar backups" value={backupRetention} onChange={(event) => setBackupRetention(event.target.value)} />
+                  <span className="text-[11px] font-normal text-muted">Em branco, nada é apagado. Com um número, somente backups válidos deste espaço e desta pasta podem ser removidos após criar o novo.</span>
+                </label>
                 <button
                   type="button"
                   className={`${buttonPrimaryClass} justify-self-start`}
@@ -588,6 +622,14 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
                 >
                   {pendingAction === "creatingBackup" ? "Validando e copiando..." : "Criar backup"}
                 </button>
+              </section>
+
+              <section className="grid gap-2 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="backup-history-title">
+                <h3 id="backup-history-title" className="font-heading font-bold text-ink">Histórico de backups deste espaço</h3>
+                {backupHistory.length === 0 ? <p className="text-xs text-muted">Nenhuma execução registrada neste computador.</p> :
+                  <ul className="grid max-h-40 gap-2 overflow-auto">{backupHistory.slice(0, 20).map((entry, index) => <li key={`${entry.createdAtEpochSeconds}-${index}`} className="text-xs text-muted">
+                    {new Date(entry.createdAtEpochSeconds * 1000).toLocaleString("pt-BR")}: {entry.error ? `Falhou: ${entry.error}` : `Criado em ${entry.path}`}
+                  </li>)}</ul>}
               </section>
 
               <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="restore-backup-title">

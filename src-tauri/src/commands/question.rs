@@ -38,6 +38,47 @@ pub struct CreateQuestionRequest {
     pub subject_id: Option<String>,
 }
 
+impl From<CreateQuestionRequest> for CreateQuestionInput {
+    fn from(request: CreateQuestionRequest) -> Self {
+        Self {
+            question_type: request.question_type,
+            statement_markdown: request.statement_markdown,
+            options: request
+                .options
+                .into_iter()
+                .map(|option| QuestionOptionInput {
+                    key: option.key,
+                    text: option.text,
+                })
+                .collect(),
+            answer_key: request.answer_key,
+            explanation_markdown: request.explanation_markdown,
+            source_name: request.source_name,
+            board: request.board,
+            organization: request.organization,
+            role: request.role,
+            exam_year: request.exam_year,
+            subject_id: request.subject_id,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateQuestionsBatchRequest {
+    pub questions: Vec<CreateQuestionRequest>,
+}
+
+#[tauri::command]
+pub fn create_questions_batch(
+    app: AppHandle,
+    request: CreateQuestionsBatchRequest,
+) -> Result<usize, CommandError> {
+    local_workspace_store(&app)?
+        .create_questions_batch(request.questions.into_iter().map(Into::into).collect())
+        .map_err(Into::into)
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListQuestionsRequest {

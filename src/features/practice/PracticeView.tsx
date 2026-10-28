@@ -38,6 +38,7 @@ import type {
   StudyPlan,
 } from "../../shared/desktop/contracts";
 import { MarkdownContent } from "../../shared/ui/MarkdownContent";
+import { PdfQuestionImport } from "./PdfQuestionImport";
 import {
   buttonOutlineLightClass,
   buttonPrimaryClass,
@@ -105,6 +106,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
 
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isPdfImportOpen, setIsPdfImportOpen] = useState(false);
   const [importFilePath, setImportFilePath] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<QuestionImportPreview | null>(null);
   const [isImporting, setIsImporting] = useState(false);
@@ -584,6 +586,9 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
             >
               Importar JSON
             </button>
+            <button type="button" className={buttonOutlineLightClass} onClick={() => setIsPdfImportOpen((open) => !open)}>
+              Importar prova em PDF
+            </button>
             <button
               type="button"
               onClick={handleExport}
@@ -602,6 +607,8 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
           </div>
         </div>
       </section>
+
+      {isPdfImportOpen && <PdfQuestionImport plan={plan} onClose={() => setIsPdfImportOpen(false)} onSaved={() => loadQuestions(0)} />}
 
       {error && (
         <div className="flex items-center justify-between gap-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-xs text-red-600">

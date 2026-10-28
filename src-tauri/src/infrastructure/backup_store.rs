@@ -5,8 +5,8 @@ use super::{
 use crate::application::backup_service::BackupStore;
 use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
 use crate::domain::backup::{
-    BackupInspectionSummary, BackupManifest, BackupSummary, BACKUP_DATABASE_FILE,
-    BACKUP_FORMAT_VERSION, BACKUP_MANIFEST_FILE,
+    BackupHistoryEntry, BackupInspectionSummary, BackupManifest, BackupSettings, BackupSummary,
+    BACKUP_DATABASE_FILE, BACKUP_FORMAT_VERSION, BACKUP_MANIFEST_FILE,
 };
 use crate::domain::workspace::{WorkspaceManifest, WORKSPACE_MANIFEST_FILE};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -48,7 +48,11 @@ impl ValidatedBackup {
 }
 
 impl BackupStore for LocalWorkspaceStore {
-    fn create_backup(&self, destination_parent: &Path) -> Result<BackupSummary, WorkspaceError> {
+    fn create_backup(
+        &self,
+        destination_parent: &Path,
+        keep_last: Option<u32>,
+    ) -> Result<BackupSummary, WorkspaceError> {
         let workspace = self
             .active_workspace()?
             .ok_or(WorkspaceError::NoActiveWorkspace)?;
@@ -57,6 +61,11 @@ impl BackupStore for LocalWorkspaceStore {
         if path_is_within(&destination_parent, &workspace.path) {
             return Err(WorkspaceError::InvalidInput(
                 "O backup precisa ser salvo fora da pasta do espaço ativo.".to_string(),
+            ));
+        }
+        if keep_last.is_some_and(|limit| !(1..=100).contains(&limit)) {
+            return Err(WorkspaceError::InvalidInput(
+                "A retenção deve estar entre 1 e 100 backups.".to_string(),
             ));
         }
 
@@ -116,10 +125,35 @@ impl BackupStore for LocalWorkspaceStore {
 
             fs::rename(&staging_path, &final_path)
                 .map_err(|error| map_io_error("publicar backup", error))?;
+            let retention_warning = if let Some(limit) = keep_last {
+                match self.backup_settings() {
+                    Ok(settings) => {
+                        let known_paths: HashSet<PathBuf> = settings
+                            .history
+                            .iter()
+                            .filter_map(|entry| entry.path.as_ref().map(PathBuf::from))
+                            .collect();
+                        prune_backups(
+                            &destination_parent,
+                            &workspace_stem,
+                            &final_path,
+                            limit as usize,
+                            workspace.manifest.workspace_id,
+                            &known_paths,
+                        )
+                    }
+                    Err(error) => Some(format!(
+                        "Retenção não aplicada: histórico indisponível ({error})."
+                    )),
+                }
+            } else {
+                None
+            };
             Ok(BackupSummary {
                 path: path_to_string(&final_path)?,
                 workspace_name: workspace.manifest.name.clone(),
                 created_at_epoch_seconds,
+                retention_warning,
             })
         })();
 
@@ -127,6 +161,17 @@ impl BackupStore for LocalWorkspaceStore {
             let _ = fs::remove_dir_all(&staging_path);
         }
 
+        let mut result = result;
+        if let Err(error) = self.record_backup_attempt(&destination_parent, keep_last, &result) {
+            if let Ok(ref mut summary) = result {
+                let warning =
+                    format!("O backup foi criado, mas o histórico local não foi salvo: {error}");
+                summary.retention_warning = Some(match summary.retention_warning.take() {
+                    Some(previous) => format!("{previous} {warning}"),
+                    None => warning,
+                });
+            }
+        }
         result
     }
 
@@ -215,6 +260,99 @@ impl BackupStore for LocalWorkspaceStore {
 
         result
     }
+}
+
+impl LocalWorkspaceStore {
+    fn backup_settings_path(&self) -> Result<PathBuf, WorkspaceError> {
+        let active = self
+            .active_workspace()?
+            .ok_or(WorkspaceError::NoActiveWorkspace)?;
+        Ok(self
+            .app_data_dir()
+            .join("workspaces")
+            .join(active.manifest.workspace_id.to_string())
+            .join("backup-settings.json"))
+    }
+
+    pub(crate) fn backup_settings(&self) -> Result<BackupSettings, WorkspaceError> {
+        let path = self.backup_settings_path()?;
+        if !path.exists() {
+            return Ok(BackupSettings::default());
+        }
+        let content = fs::read_to_string(path)
+            .map_err(|error| map_io_error("ler histórico de backups", error))?;
+        serde_json::from_str(&content).map_err(|error| {
+            WorkspaceError::Serialization(format!("histórico de backups inválido: {error}"))
+        })
+    }
+
+    fn record_backup_attempt(
+        &self,
+        destination: &Path,
+        keep_last: Option<u32>,
+        result: &Result<BackupSummary, WorkspaceError>,
+    ) -> Result<(), WorkspaceError> {
+        let mut settings = self.backup_settings()?;
+        if result.is_ok() {
+            settings.destination_parent_path = path_to_string(destination)?;
+            settings.keep_last = keep_last;
+        }
+        settings.history.insert(
+            0,
+            BackupHistoryEntry {
+                created_at_epoch_seconds: current_epoch_seconds()?,
+                path: result.as_ref().ok().map(|summary| summary.path.clone()),
+                error: result.as_ref().err().map(ToString::to_string),
+            },
+        );
+        settings.history.truncate(100);
+        super::workspace_store::write_json_atomically(&self.backup_settings_path()?, &settings)
+    }
+}
+
+fn prune_backups(
+    directory: &Path,
+    stem: &str,
+    newest: &Path,
+    keep: usize,
+    workspace_id: Uuid,
+    known_paths: &HashSet<PathBuf>,
+) -> Option<String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return Some(format!(
+                "Não foi possível consultar backups antigos: {error}"
+            ))
+        }
+    };
+    let mut backups: Vec<_> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir() && !path.is_symlink() && path != newest && known_paths.contains(path)
+        })
+        .filter(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with(&format!("{stem}-backup-"))
+            })
+        })
+        .filter_map(|path| {
+            let validated = inspect_backup(&path).ok()?;
+            (validated.manifest.workspace_id == workspace_id)
+                .then_some((validated.manifest.created_at_epoch_seconds, path))
+        })
+        .collect();
+    backups.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let remove_count = backups.len().saturating_sub(keep.saturating_sub(1));
+    let mut failures = 0;
+    for (_, path) in backups.into_iter().take(remove_count) {
+        if fs::remove_dir_all(path).is_err() {
+            failures += 1;
+        }
+    }
+    (failures > 0).then(|| format!("Não foi possível remover {failures} backup(s) antigo(s)."))
 }
 
 fn inspect_backup(path: &Path) -> Result<ValidatedBackup, WorkspaceError> {
@@ -701,6 +839,59 @@ mod tests {
     use crate::application::workspace_service::WorkspaceStore;
 
     #[test]
+    fn retention_preserves_unverified_folders_and_other_workspaces() {
+        let workspace_path =
+            std::env::temp_dir().join(format!("retention-workspace-{}", Uuid::new_v4()));
+        let app_data = std::env::temp_dir().join(format!("retention-data-{}", Uuid::new_v4()));
+        let destination = std::env::temp_dir().join(format!("retention-output-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data.clone());
+        store
+            .create_workspace(&workspace_path, "Estudos")
+            .expect("workspace temporário");
+        fs::create_dir_all(&destination).expect("destino temporário");
+        let unrelated = destination.join(format!("Estudos-backup-{}", Uuid::new_v4()));
+        fs::create_dir_all(&unrelated).expect("pasta alheia");
+        fs::write(unrelated.join("dados.txt"), "não apagar").expect("fixture");
+        let first = store
+            .create_backup(&destination, Some(1))
+            .expect("primeiro backup");
+        let copied = destination.join(format!("Estudos-backup-{}", Uuid::new_v4()));
+        copy_directory_contents(Path::new(&first.path), &copied).expect("cópia manual válida");
+        let second = store
+            .create_backup(&destination, Some(1))
+            .expect("segundo backup");
+        let settings = store.backup_settings().expect("histórico local");
+        assert_eq!(settings.keep_last, Some(1));
+        assert_eq!(settings.history.len(), 2);
+        let reopened = LocalWorkspaceStore::new(app_data.clone());
+        assert_eq!(
+            reopened
+                .backup_settings()
+                .expect("preferências persistidas")
+                .history
+                .len(),
+            2
+        );
+        assert_eq!(
+            settings.history[0].path.as_deref(),
+            Some(second.path.as_str())
+        );
+        assert!(!Path::new(&first.path).exists());
+        assert!(
+            copied.exists(),
+            "cópias manuais não pertencem ao histórico de retenção"
+        );
+        assert!(Path::new(&second.path).exists());
+        assert_eq!(
+            fs::read_to_string(unrelated.join("dados.txt")).expect("pasta intacta"),
+            "não apagar"
+        );
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data);
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
     fn creates_and_restores_a_verified_backup_in_a_new_workspace() {
         let workspace_path =
             std::env::temp_dir().join(format!("cursoucon-backup-workspace-{}", Uuid::new_v4()));
@@ -722,9 +913,12 @@ mod tests {
             b"revision",
         )
         .expect("a revisão de fixture deve ser gravada");
+        let card = store
+            .create_flashcard("Frente", "Verso", None, "2032-01-01", None)
+            .expect("flashcard do espaço original");
 
         let backup = store
-            .create_backup(&backup_parent)
+            .create_backup(&backup_parent, Some(5))
             .expect("o backup deve ser criado");
         let backup_path = PathBuf::from(&backup.path);
         assert!(backup_path.join(BACKUP_MANIFEST_FILE).is_file());
@@ -772,6 +966,13 @@ mod tests {
             .expect("o espaço restaurado deve ser consultável")
             .expect("deve existir espaço ativo");
         assert_eq!(active.manifest.workspace_id, restored.workspace_id);
+        assert_eq!(
+            store
+                .list_flashcards("2032-01-01", 0)
+                .expect("cartões restaurados")[0]
+                .id,
+            card.id
+        );
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

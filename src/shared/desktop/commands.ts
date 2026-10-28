@@ -41,6 +41,9 @@ import {
   parseReviseQuestionResult,
   parseRevisionSummary,
   parseStudyPlanning,
+  parseStudyProgressCsvExportResult,
+  parseFlashcard,
+  parseBackupSettings,
   parseSyncDestinationSettings,
   parseStudyPlan,
   parseStudyProgress,
@@ -131,6 +134,9 @@ import {
   type StartStudySessionRequest,
   type StudyPlan,
   type StudyPlanningSummary,
+  type StudyProgressCsvExportResult,
+  type FlashcardSummary,
+  type BackupSettings,
   type PreparationSummary,
   type SaveStudyPlanningRequest,
   type SaveAppPreferencesRequest,
@@ -429,6 +435,67 @@ export async function exportWorkspaceData(): Promise<WorkspaceDataExportResult> 
   return parseWorkspaceDataExportResult(response);
 }
 
+export async function exportStudyProgressCsv(): Promise<StudyProgressCsvExportResult> {
+  if (!isTauri()) {
+    return { path: "exports/evolucao-demo.csv", rowCount: 3 };
+  }
+  const response = await invoke<unknown>("export_study_progress_csv");
+  return parseStudyProgressCsvExportResult(response);
+}
+
+const previewFlashcards: FlashcardSummary[] = [];
+
+export async function getFlashcards(asOf: string, offset = 0): Promise<FlashcardSummary[]> {
+  if (!isTauri()) return previewFlashcards.slice(offset, offset + 100);
+  const response = await invoke<unknown>("get_flashcards", { request: { asOf, offset } });
+  if (!Array.isArray(response)) throw new Error("Lista de flashcards inválida.");
+  return response.map(parseFlashcard);
+}
+
+export async function createFlashcard(request: {
+  front: string; back: string; subjectId: string | null; today: string;
+  legacySchedule?: { intervalDays: number; ease: number; repetitions: number; dueDate: string };
+}): Promise<FlashcardSummary> {
+  if (!isTauri()) {
+    const card: FlashcardSummary = {
+      id: crypto.randomUUID(), subjectId: request.subjectId,
+      front: request.front, back: request.back, dueDate: request.legacySchedule?.dueDate ?? request.today,
+      intervalDays: request.legacySchedule?.intervalDays ?? 0,
+      ease: request.legacySchedule?.ease ?? 250,
+      repetitions: request.legacySchedule?.repetitions ?? 0,
+      algorithmVersion: 1,
+    };
+    previewFlashcards.push(card);
+    return card;
+  }
+  return parseFlashcard(await invoke<unknown>("create_flashcard", { request }));
+}
+
+export async function createQuestionsBatch(questions: CreateQuestionRequest[]): Promise<number> {
+  if (!isTauri()) {
+    for (const question of questions) await createQuestion(question);
+    return questions.length;
+  }
+  const response = await invoke<unknown>("create_questions_batch", { request: { questions } });
+  if (!Number.isInteger(response) || (response as number) !== questions.length) {
+    throw new Error("O núcleo não confirmou o lote de questões.");
+  }
+  return response as number;
+}
+
+export async function reviewFlashcard(request: {
+  id: string; rating: "again" | "hard" | "good" | "easy"; today: string; operationId: string;
+}): Promise<FlashcardSummary> {
+  if (!isTauri()) {
+    const card = previewFlashcards.find((item) => item.id === request.id);
+    if (!card) throw new Error("Flashcard não encontrado.");
+    const next = { ...card, dueDate: request.today, intervalDays: 1, repetitions: card.repetitions + 1 };
+    previewFlashcards.splice(previewFlashcards.indexOf(card), 1, next);
+    return next;
+  }
+  return parseFlashcard(await invoke<unknown>("review_flashcard", { request }));
+}
+
 export async function getRecentWorkspaces(): Promise<WorkspaceSummary[]> {
   if (!isTauri()) return [mockWorkspace];
   const response = await invoke<unknown>("get_recent_workspaces");
@@ -482,6 +549,11 @@ export async function createWorkspaceBackup(
   }
   const response = await invoke<unknown>("create_workspace_backup", { request });
   return parseBackupSummary(response);
+}
+
+export async function getBackupSettings(): Promise<BackupSettings> {
+  if (!isTauri()) return { destinationParentPath: "", keepLast: null, history: [] };
+  return parseBackupSettings(await invoke<unknown>("get_backup_settings"));
 }
 
 export async function inspectWorkspaceBackup(

@@ -3,6 +3,7 @@ import {
   createExternalQuestionBatch,
   correctStudySessionDuration,
   createManualStudy,
+  exportStudyProgressCsv,
   getDesktopErrorMessage,
   getExternalQuestionBatches,
   getQuestionPerformance,
@@ -33,6 +34,7 @@ type ProgressViewProps = {
   refreshKey: number;
   showGamification: boolean;
   timezone: string;
+  onOpenToday: () => void;
 };
 
 // Level definitions based on total XP
@@ -63,7 +65,7 @@ function calculateLevel(totalXp: number): {
   return { level, title, currentXpInLevel, xpRequiredForNextLevel, percent };
 }
 
-export function ProgressView({ refreshKey, showGamification, timezone }: ProgressViewProps) {
+export function ProgressView({ refreshKey, showGamification, timezone, onOpenToday }: ProgressViewProps) {
   const [summary, setSummary] = useState<StudyProgressSummary | null>(null);
   const [plan, setPlan] = useState<StudyPlan | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -95,6 +97,7 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
   const [externalAnswered, setExternalAnswered] = useState("");
   const [externalCorrect, setExternalCorrect] = useState("");
   const [isSavingExternal, setIsSavingExternal] = useState(false);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setIsLoading(true);
@@ -309,6 +312,22 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
     );
   }
 
+  const handleExportCsv = async () => {
+    setIsExportingCsv(true);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const result = await exportStudyProgressCsv();
+      setActionMessage(
+        `Evolução exportada com ${result.rowCount} dia(s) de estudo: ${result.path}`,
+      );
+    } catch (operationError: unknown) {
+      setActionError(getDesktopErrorMessage(operationError));
+    } finally {
+      setIsExportingCsv(false);
+    }
+  };
+
   return (
     <div className="grid gap-6">
       {/* 1. Hero Header Banner */}
@@ -353,6 +372,14 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
             }}
           >
             {isExternalFormOpen ? "Fechar lote externo" : "Registrar questões externas"}
+          </button>
+          <button
+            type="button"
+            className={`${buttonSecondaryClass} justify-self-start`}
+            onClick={() => void handleExportCsv()}
+            disabled={isExportingCsv}
+          >
+            {isExportingCsv ? "Exportando..." : "Exportar evolução (CSV)"}
           </button>
         </div>
       </section>
@@ -852,6 +879,9 @@ export function ProgressView({ refreshKey, showGamification, timezone }: Progres
           <div className="mt-4 rounded-xl border border-dashed border-line bg-paper p-8 text-center text-xs text-muted">
             <p className="font-semibold text-ink">Nenhuma sessão registrada ainda.</p>
             <p className="mt-1">Inicie e conclua sua primeira tarefa na tela "Hoje" para acumular horas e XP.</p>
+            <button type="button" className={`${buttonPrimaryClass} mt-4 text-xs`} onClick={onOpenToday}>
+              Ir para Hoje
+            </button>
           </div>
         )}
       </section>

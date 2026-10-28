@@ -22,6 +22,7 @@ import { ExploreView } from "../features/explore/ExploreView";
 import { WorkspaceSetup } from "../features/workspace/WorkspaceSetup";
 import { WorkspaceDataActions } from "../features/workspace/WorkspaceDataActions";
 import { SettingsView } from "../features/settings/SettingsView";
+import { FlashcardsView } from "../features/flashcards/FlashcardsView";
 import { CommandPalette } from "../shared/ui/CommandPalette";
 
 import {
@@ -37,7 +38,7 @@ import {
   ThemeToggle,
 } from "../shared/ui/primitives";
 
-type ViewId = "today" | "plan" | "materials" | "practice" | "discursive" | "simulations" | "progress" | "explore" | "settings";
+type ViewId = "today" | "plan" | "materials" | "practice" | "flashcards" | "discursive" | "simulations" | "progress" | "explore" | "settings";
 
 const navigation: Array<{
   id: ViewId;
@@ -50,6 +51,7 @@ const navigation: Array<{
   { id: "plan", label: "Plano & Edital", note: "ciclo de estudo", icon: IconPlan },
   { id: "materials", label: "Materiais", note: "apostilas & pdfs", icon: IconMaterials },
   { id: "practice", label: "Questões", note: "banco de questões", badge: "Novo", icon: IconPractice },
+  { id: "flashcards", label: "Flashcards", note: "revisão espaçada", icon: IconPractice },
   { id: "discursive", label: "Discursivas", note: "respostas abertas", icon: IconPractice },
   { id: "simulations", label: "Simulados", note: "treino e prova", icon: IconPractice },
   { id: "progress", label: "Evolução & Sinais", note: "desempenho local", icon: IconProgress },
@@ -487,6 +489,8 @@ function AppShell({
             <MaterialsView plan={studyPlan} refreshKey={refreshVersion} />
           ) : activeView === "practice" ? (
             <PracticeView plan={studyPlan} refreshKey={refreshVersion} />
+          ) : activeView === "flashcards" ? (
+            <FlashcardsView key={workspace.workspaceId} plan={studyPlan} timezone={appPreferences.timezone} />
           ) : activeView === "discursive" ? (
             <DiscursiveView plan={studyPlan} refreshKey={refreshVersion} />
           ) : activeView === "simulations" ? (
@@ -496,6 +500,7 @@ function AppShell({
               refreshKey={refreshVersion}
               showGamification={appPreferences.gamificationVisible}
               timezone={appPreferences.timezone}
+              onOpenToday={() => onNavigate("today")}
             />
           ) : activeView === "explore" ? (
             <ExploreView refreshKey={refreshVersion} timezone={appPreferences.timezone} />

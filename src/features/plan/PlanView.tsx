@@ -523,6 +523,41 @@ export function PlanView({
         </div>
       </section>
 
+      <section className="rounded-2xl border border-blue-500/25 bg-card p-5 shadow-xs lg:p-6" aria-labelledby="plan-start-title">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <Eyebrow>Comece por aqui</Eyebrow>
+            <h3 id="plan-start-title" className="mt-1 font-heading text-lg font-bold text-ink">Monte seu primeiro dia em 4 passos</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted">Siga a ordem abaixo. Você não precisa preencher o edital inteiro para começar.</p>
+          </div>
+          <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-bold text-blue-700 dark:text-blue-300">
+            {[currentPlan.preparations.length > 0, subjects.length > 0, Boolean(studyPlanning?.cycleSlots.length), Boolean(selectedPreparation)].filter(Boolean).length} / 4
+          </span>
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-4">
+          <button type="button" className="rounded-xl border border-line bg-paper p-3 text-left hover:border-blue-500/50" onClick={() => setActiveModal("preparation")}>
+            <span className="text-xs font-bold text-blue-600">1 · Concurso</span>
+            <strong className="mt-1 block text-sm text-ink">{currentPlan.preparations.length ? "Preparação criada ✓" : "Criar concurso"}</strong>
+            <span className="mt-1 block text-[11px] text-muted">Órgão, cargo, banca e data</span>
+          </button>
+          <button type="button" className="rounded-xl border border-line bg-paper p-3 text-left hover:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => { setFormError(null); setSubjectParentId(""); setActiveModal("subject"); }} disabled={!selectedPreparation}>
+            <span className="text-xs font-bold text-blue-600">2 · Edital</span>
+            <strong className="mt-1 block text-sm text-ink">{subjects.length ? "Assuntos adicionados ✓" : "Adicionar disciplinas"}</strong>
+            <span className="mt-1 block text-[11px] text-muted">Comece com uma disciplina e seus tópicos</span>
+          </button>
+          <button type="button" className="rounded-xl border border-line bg-paper p-3 text-left hover:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => document.getElementById("study-cycle-panel")?.scrollIntoView({ behavior: "smooth", block: "center" })} disabled={!subjects.length}>
+            <span className="text-xs font-bold text-blue-600">3 · Ciclo</span>
+            <strong className="mt-1 block text-sm text-ink">{studyPlanning?.cycleSlots.length ? "Ciclo configurado ✓" : "Configurar ciclo"}</strong>
+            <span className="mt-1 block text-[11px] text-muted">Disponibilidade e ordem das matérias</span>
+          </button>
+          <button type="button" className="rounded-xl border border-line bg-paper p-3 text-left hover:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => { setFormError(null); setActiveModal("task"); }} disabled={!selectedPreparation || !subjects.length}>
+            <span className="text-xs font-bold text-blue-600">4 · Hoje</span>
+            <strong className="mt-1 block text-sm text-ink">Agendar primeira tarefa</strong>
+            <span className="mt-1 block text-[11px] text-muted">Transforme o plano em uma ação concreta</span>
+          </button>
+        </div>
+      </section>
+
       {/* 2. Edital Metrics Bar */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:gap-4">
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">

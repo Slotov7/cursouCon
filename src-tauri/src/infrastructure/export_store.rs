@@ -1,7 +1,9 @@
 use super::{map_database_error, map_io_error, workspace_store::LocalWorkspaceStore};
 use crate::application::export_service::ExportStore;
 use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
-use crate::domain::export::{WorkspaceDataExportResult, WORKSPACE_DATA_EXPORT_SCHEMA_VERSION};
+use crate::domain::export::{
+    StudyProgressCsvExportResult, WorkspaceDataExportResult, WORKSPACE_DATA_EXPORT_SCHEMA_VERSION,
+};
 use rusqlite::{types::ValueRef, Transaction};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -49,6 +51,8 @@ const EXPORT_TABLES: &[&str] = &[
     "study_availability",
     "study_cycle_slots",
     "study_session_duration_corrections",
+    "flashcards",
+    "flashcard_reviews",
 ];
 
 #[derive(Debug, Serialize)]
@@ -208,6 +212,89 @@ impl ExportStore for LocalWorkspaceStore {
             })?,
             exported_attachments: i64::try_from(attachment_hashes.len()).map_err(|_| {
                 WorkspaceError::InvalidInput("Há anexos demais para exportar.".to_string())
+            })?,
+        })
+    }
+
+    fn export_study_progress_csv(&self) -> Result<StudyProgressCsvExportResult, WorkspaceError> {
+        let workspace = self
+            .active_workspace()?
+            .ok_or(WorkspaceError::NoActiveWorkspace)?;
+        let connection = self.active_database()?;
+        let mut days: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
+
+        let mut sessions_statement = connection
+            .prepare(
+                "SELECT date(started_at), COUNT(*), COALESCE(SUM(effective_seconds), 0)
+                 FROM study_sessions
+                 WHERE status = 'completed'
+                 GROUP BY date(started_at)",
+            )
+            .map_err(|error| map_database_error("preparar evolução das sessões", error))?;
+        let sessions = sessions_statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|error| map_database_error("consultar evolução das sessões", error))?;
+        for row in sessions {
+            let (date, session_count, effective_seconds) =
+                row.map_err(|error| map_database_error("ler evolução das sessões", error))?;
+            let entry = days.entry(date).or_insert((0, 0, 0));
+            entry.0 += session_count;
+            entry.1 += effective_seconds;
+        }
+
+        let mut xp_statement = connection
+            .prepare(
+                "SELECT date(created_at), COALESCE(SUM(points), 0)
+                 FROM xp_events
+                 GROUP BY date(created_at)",
+            )
+            .map_err(|error| map_database_error("preparar evolução do XP", error))?;
+        let points = xp_statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|error| map_database_error("consultar evolução do XP", error))?;
+        for row in points {
+            let (date, xp) =
+                row.map_err(|error| map_database_error("ler evolução do XP", error))?;
+            days.entry(date).or_insert((0, 0, 0)).2 += xp;
+        }
+
+        let exports_directory = workspace.path.join("exports");
+        fs::create_dir_all(&exports_directory)
+            .map_err(|error| map_io_error("preparar pasta de exportações", error))?;
+        let file_name = format!("evolucao-{}.csv", Uuid::new_v4().simple());
+        let path = exports_directory.join(file_name);
+
+        let mut file =
+            File::create(&path).map_err(|error| map_io_error("criar evolução em CSV", error))?;
+        // BOM para o Excel reconhecer UTF-8 e separador ";" conforme uso pt-BR.
+        file.write_all(&[0xEF, 0xBB, 0xBF])
+            .map_err(|error| map_io_error("gravar evolução em CSV", error))?;
+        writeln!(
+            file,
+            "data;sessoes_concluidas;segundos_efetivos;minutos_efetivos;xp"
+        )
+        .map_err(|error| map_io_error("gravar cabeçalho da evolução", error))?;
+        for (date, (session_count, effective_seconds, xp)) in &days {
+            writeln!(
+                file,
+                "{date};{session_count};{effective_seconds};{};{xp}",
+                effective_seconds / 60
+            )
+            .map_err(|error| map_io_error("gravar linha da evolução", error))?;
+        }
+
+        Ok(StudyProgressCsvExportResult {
+            path: path.to_string_lossy().to_string(),
+            row_count: i64::try_from(days.len()).map_err(|_| {
+                WorkspaceError::InvalidInput("Há dias demais para exportar.".to_string())
             })?,
         })
     }
@@ -524,6 +611,73 @@ mod tests {
         let note = fs::read_to_string(note_path).expect("a nota Markdown deve existir");
         assert!(note.contains("Nota exportada"));
         assert!(note.contains("Conteúdo"));
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn exports_daily_study_evolution_as_csv() {
+        use crate::application::study_plan_service::StudyPlanStore;
+        use crate::application::study_service::StudyStore;
+        use crate::domain::study::{
+            CreateStudyTaskInput, FinishStudySessionInput, StartStudySessionInput, TaskCompletion,
+        };
+        use crate::domain::study_plan::CreatePreparationInput;
+
+        let workspace_path = std::env::temp_dir().join(format!("cursoucon-csv-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-csv-app-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Evolução em CSV")
+            .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        let task = store
+            .create_study_task(&CreateStudyTaskInput {
+                preparation_id: preparation.id,
+                subject_id: None,
+                material_id: None,
+                title: "Bloco de teoria".to_string(),
+                objective: None,
+                planned_minutes: 30,
+                scheduled_for: "2032-03-01".to_string(),
+            })
+            .expect("a tarefa deve ser criada");
+        let session = store
+            .start_study_session(&StartStudySessionInput { task_id: task.id })
+            .expect("a sessão deve iniciar");
+        store
+            .finish_study_session(&FinishStudySessionInput {
+                session_id: session.id,
+                effective_seconds: 1_800,
+                task_status: TaskCompletion::Completed,
+                review_on: None,
+                summary_markdown: None,
+                difficulty: None,
+                next_steps: None,
+            })
+            .expect("a sessão deve ser concluída");
+
+        let result = store
+            .export_study_progress_csv()
+            .expect("a evolução deve ser exportada");
+        assert_eq!(result.row_count, 1);
+        let contents = fs::read_to_string(&result.path).expect("o arquivo CSV deve ser legível");
+        assert!(contents.contains("data;sessoes_concluidas;segundos_efetivos;minutos_efetivos;xp"));
+        assert!(
+            contents.contains(";1;1800;30;30"),
+            "linha diária inesperada: {contents}"
+        );
 
         let _ = fs::remove_dir_all(workspace_path);
         let _ = fs::remove_dir_all(app_data_dir);

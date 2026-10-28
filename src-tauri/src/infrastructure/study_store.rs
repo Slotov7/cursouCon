@@ -1943,6 +1943,108 @@ mod tests {
     }
 
     #[test]
+    fn caps_session_xp_per_day_across_sessions() {
+        use crate::domain::study::SESSION_XP_DAILY_CAP;
+
+        let workspace_path =
+            std::env::temp_dir().join(format!("cursoucon-xp-cap-{}", Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("cursoucon-xp-cap-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        store
+            .create_workspace(&workspace_path, "Teto de XP")
+            .expect("o espaço de fixture deve ser criado");
+        let preparation = store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+
+        let mut granted_points = Vec::new();
+        let mut last_session_id = String::new();
+        for index in 1..=3 {
+            let task = store
+                .create_study_task(&CreateStudyTaskInput {
+                    preparation_id: preparation.id.clone(),
+                    subject_id: None,
+                    material_id: None,
+                    title: format!("Bloco de estudo {index}"),
+                    objective: None,
+                    planned_minutes: 60,
+                    scheduled_for: "2032-02-01".to_string(),
+                })
+                .expect("a tarefa deve ser criada");
+            let session = store
+                .start_study_session(&StartStudySessionInput { task_id: task.id })
+                .expect("a sessão deve iniciar");
+            last_session_id = session.id.clone();
+            let finished = store
+                .finish_study_session(&FinishStudySessionInput {
+                    session_id: session.id,
+                    effective_seconds: 3_600,
+                    task_status: TaskCompletion::Completed,
+                    review_on: None,
+                    summary_markdown: None,
+                    difficulty: None,
+                    next_steps: None,
+                })
+                .expect("a sessão deve ser concluída");
+            granted_points.push(finished.xp_granted);
+        }
+
+        assert!(
+            granted_points.iter().all(|points| *points <= 60),
+            "nenhuma sessão de 60 minutos pode exceder 60 XP: {granted_points:?}"
+        );
+
+        // O teto é do dia, não da sessão: uma nova conclusão pode redistribuir
+        // pontos entre sessões do mesmo dia, mas o total persistido não passa do teto.
+        let connection = store
+            .active_database()
+            .expect("o banco ativo deve poder ser consultado");
+        let (event_count, persisted_points): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(points), 0)
+                 FROM xp_events WHERE source_type = 'study_session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("o XP das sessões deve ser consultado");
+        assert_eq!(event_count, 3);
+        assert_eq!(
+            persisted_points, SESSION_XP_DAILY_CAP,
+            "três sessões de uma hora devem parar no teto diário de {SESSION_XP_DAILY_CAP} XP"
+        );
+
+        let repeated_finish = store
+            .finish_study_session(&FinishStudySessionInput {
+                session_id: last_session_id,
+                effective_seconds: 3_600,
+                task_status: TaskCompletion::Completed,
+                review_on: None,
+                summary_markdown: None,
+                difficulty: None,
+                next_steps: None,
+            })
+            .expect("repetir o encerramento deve ser idempotente");
+        assert_eq!(repeated_finish.xp_granted, 0);
+
+        let progress = store
+            .study_progress("2032-02-01")
+            .expect("o progresso deve ser lido");
+        assert_eq!(progress.total_xp, SESSION_XP_DAILY_CAP);
+        assert_eq!(progress.completed_sessions, 3);
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
     fn records_manual_study_and_audits_duration_correction_without_duplicate_xp() {
         let workspace_path =
             std::env::temp_dir().join(format!("cursoucon-manual-study-{}", Uuid::new_v4()));

@@ -9,6 +9,7 @@ pub fn run() -> Result<(), tauri::Error> {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::backup::create_workspace_backup,
+            commands::backup::get_backup_settings,
             commands::backup::inspect_workspace_backup,
             commands::backup::restore_workspace_backup,
             commands::workspace::create_workspace,
@@ -37,6 +38,10 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::discursive::create_discursive_question,
             commands::discursive::answer_discursive_question,
             commands::export::export_workspace_data,
+            commands::export::export_study_progress_csv,
+            commands::flashcard::get_flashcards,
+            commands::flashcard::create_flashcard,
+            commands::flashcard::review_flashcard,
             commands::material::get_materials,
             commands::material::import_material,
             commands::material::register_material_link,
@@ -55,6 +60,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::preferences::save_app_preferences,
             commands::question::get_questions,
             commands::question::create_question,
+            commands::question::create_questions_batch,
             commands::question::answer_question,
             commands::question::revise_question,
             commands::question::set_question_contest_relation,

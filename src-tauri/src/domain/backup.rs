@@ -22,6 +22,7 @@ pub struct BackupSummary {
     pub path: String,
     pub workspace_name: String,
     pub created_at_epoch_seconds: i64,
+    pub retention_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,4 +38,20 @@ pub struct BackupInspectionSummary {
     pub blob_count: i64,
     pub revision_file_count: i64,
     pub export_file_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupHistoryEntry {
+    pub created_at_epoch_seconds: i64,
+    pub path: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSettings {
+    pub destination_parent_path: String,
+    pub keep_last: Option<u32>,
+    pub history: Vec<BackupHistoryEntry>,
 }

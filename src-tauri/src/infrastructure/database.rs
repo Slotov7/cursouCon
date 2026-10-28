@@ -3,8 +3,9 @@ use crate::application::workspace_service::{WorkspaceError, WorkspaceStore};
 use crate::domain::workspace::WorkspaceManifest;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
+use std::path::Path;
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 34;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 35;
 
 impl LocalWorkspaceStore {
     pub(crate) fn prepare_active_database(
@@ -23,6 +24,7 @@ impl LocalWorkspaceStore {
         let mut connection = Connection::open(&database_file)
             .map_err(|error| WorkspaceError::Database(format!("abrir o banco local: {error}")))?;
         enable_foreign_keys(&connection)?;
+        ensure_pre_migration_recovery(&connection, database_directory)?;
         apply_migrations(&mut connection)?;
         ensure_workspace_metadata(&connection, manifest)
     }
@@ -44,6 +46,90 @@ fn enable_foreign_keys(connection: &Connection) -> Result<(), WorkspaceError> {
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|error| map_database_error("ativar integridade", error))
+}
+
+const PRE_MIGRATION_RECOVERY_DIRECTORY: &str = "recovery";
+const PRE_MIGRATION_RECOVERY_LIMIT: usize = 5;
+
+/// Copia o banco para `recovery/` antes de aplicar qualquer migração pendente.
+///
+/// A cópia usa `VACUUM INTO`, que gera um arquivo SQLite consistente sem copiar
+/// o banco aberto byte a byte. O arquivo é independente do banco ativo e serve
+/// como recuperação caso uma migração futura falhe.
+fn ensure_pre_migration_recovery(
+    connection: &Connection,
+    database_directory: &Path,
+) -> Result<(), WorkspaceError> {
+    let has_migrations_table: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| map_database_error("verificar controle de migração", error))?;
+    if has_migrations_table == 0 {
+        // Banco novo: não há dados a preservar antes da primeira migração.
+        return Ok(());
+    }
+
+    let current_version: i64 = connection
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| map_database_error("ler versão do esquema", error))?;
+    if current_version >= CURRENT_SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    let recovery_directory = database_directory.join(PRE_MIGRATION_RECOVERY_DIRECTORY);
+    fs::create_dir_all(&recovery_directory)
+        .map_err(|error| map_io_error("criar pasta de recuperação", error))?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let recovery_file = recovery_directory.join(format!(
+        "pre-migration-v{current_version}-{created_at}.sqlite3"
+    ));
+    let recovery_path = recovery_file.to_string_lossy().to_string();
+
+    connection
+        .execute("VACUUM INTO ?1", params![recovery_path])
+        .map_err(|error| map_database_error("criar recuperação antes da migração", error))?;
+
+    prune_old_recovery_files(&recovery_directory);
+    Ok(())
+}
+
+/// Mantém apenas as recuperações mais recentes; falhas de limpeza não impedem
+/// a abertura do espaço nem apagam a cópia recém-criada.
+fn prune_old_recovery_files(recovery_directory: &Path) {
+    let Ok(entries) = fs::read_dir(recovery_directory) else {
+        return;
+    };
+    let mut recovery_files: Vec<_> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.to_string_lossy() == "sqlite3")
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("pre-migration-"))
+        })
+        .collect();
+    if recovery_files.len() <= PRE_MIGRATION_RECOVERY_LIMIT {
+        return;
+    }
+
+    recovery_files.sort();
+    let excess = recovery_files.len() - PRE_MIGRATION_RECOVERY_LIMIT;
+    for path in recovery_files.into_iter().take(excess) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 fn apply_migrations(connection: &mut Connection) -> Result<(), WorkspaceError> {
@@ -195,6 +281,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), WorkspaceError> {
             34_i64,
             include_str!("../../migrations/034_online_contests.sql"),
         ),
+        (35_i64, include_str!("../../migrations/035_flashcards.sql")),
     ];
 
     for (version, sql) in migrations {
@@ -252,4 +339,107 @@ fn ensure_workspace_metadata(
         .map_err(|error| map_database_error("gravar metadados do espaço", error))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::study_plan_service::StudyPlanStore;
+    use crate::application::workspace_service::WorkspaceStore;
+    use crate::domain::study_plan::CreatePreparationInput;
+    use uuid::Uuid;
+
+    fn fixture_store(
+        prefix: &str,
+    ) -> (LocalWorkspaceStore, std::path::PathBuf, std::path::PathBuf) {
+        let workspace_path = std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()));
+        let app_data_dir = std::env::temp_dir().join(format!("{prefix}-data-{}", Uuid::new_v4()));
+        let store = LocalWorkspaceStore::new(app_data_dir.clone());
+        (store, workspace_path, app_data_dir)
+    }
+
+    fn set_older_schema(store: &LocalWorkspaceStore) {
+        let connection = store
+            .active_database()
+            .expect("o banco ativo deve abrir para preparar a fixture");
+        connection
+            .execute_batch(
+                "DROP TABLE IF EXISTS flashcard_reviews;
+                 DROP TABLE IF EXISTS flashcards;
+                 DROP TABLE IF EXISTS discursive_attempts;
+                 DROP TABLE IF EXISTS discursive_question_details;
+                 DROP TABLE IF EXISTS simulation_diagnostics;
+                 DROP TABLE IF EXISTS simulation_results;
+                 DROP TABLE IF EXISTS simulation_answers;
+                 DROP TABLE IF EXISTS simulation_questions;
+                 DROP TABLE IF EXISTS simulations;
+                 DROP TABLE IF EXISTS online_contest_source_state;
+                 DROP TABLE IF EXISTS online_contest_history;
+                 DROP TABLE IF EXISTS online_contest_opportunities;
+                 ALTER TABLE questions DROP COLUMN is_discursive;
+                 DELETE FROM schema_migrations WHERE version >= 32;",
+            )
+            .expect("a fixture deve voltar ao esquema anterior");
+    }
+
+    #[test]
+    fn new_workspace_does_not_create_a_pre_migration_recovery() {
+        let (store, workspace_path, app_data_dir) = fixture_store("cursoucon-recovery-new");
+        let record = store
+            .create_workspace(&workspace_path, "Espaço novo")
+            .expect("o espaço deve ser criado");
+        let recovery_directory = store
+            .active_database_file(record.manifest.workspace_id)
+            .parent()
+            .expect("o banco deve ter uma pasta")
+            .join(PRE_MIGRATION_RECOVERY_DIRECTORY);
+
+        assert!(!recovery_directory.exists());
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
+
+    #[test]
+    fn creates_a_consistent_recovery_before_applying_pending_migrations() {
+        let (store, workspace_path, app_data_dir) = fixture_store("cursoucon-recovery");
+        let record = store
+            .create_workspace(&workspace_path, "Espaço antigo")
+            .expect("o espaço deve ser criado");
+        store
+            .create_preparation(&CreatePreparationInput {
+                name: "Preparação preservada".to_string(),
+                organization: None,
+                role: None,
+                board: None,
+                exam_date: None,
+                make_primary: true,
+            })
+            .expect("a preparação deve ser criada");
+        set_older_schema(&store);
+        let database_file = store.active_database_file(record.manifest.workspace_id);
+
+        store
+            .open_workspace(&workspace_path)
+            .expect("a migração pendente deve ser aplicada");
+
+        let recovery_directory = database_file
+            .parent()
+            .expect("o banco deve ter uma pasta")
+            .join(PRE_MIGRATION_RECOVERY_DIRECTORY);
+        let recovery_files: Vec<_> = fs::read_dir(&recovery_directory)
+            .expect("a pasta de recuperação deve existir")
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(recovery_files.len(), 1);
+
+        let recovery_connection =
+            Connection::open(recovery_files[0].path()).expect("a cópia de recuperação deve abrir");
+        let preparation_count: i64 = recovery_connection
+            .query_row("SELECT COUNT(*) FROM preparations", [], |row| row.get(0))
+            .expect("os dados anteriores devem estar na cópia");
+        assert_eq!(preparation_count, 1);
+
+        let _ = fs::remove_dir_all(workspace_path);
+        let _ = fs::remove_dir_all(app_data_dir);
+    }
 }

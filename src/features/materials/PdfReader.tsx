@@ -39,6 +39,11 @@ export function PdfReader({ material, onClose, onMaterialUpdated }: PdfReaderPro
   const [pageSaveState, setPageSaveState] = useState<PageSaveState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<number[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractedText, setExtractedText] = useState("");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -157,6 +162,46 @@ export function PdfReader({ material, onClose, onMaterialUpdated }: PdfReaderPro
       });
   };
 
+  const searchPdf = async () => {
+    const query = searchQuery.trim().toLocaleLowerCase();
+    if (!pdf || !query) {
+      setSearchResults([]);
+      return;
+    }
+    setIsSearching(true);
+    try {
+      const matches: number[] = [];
+      for (let page = 1; page <= pdf.numPages; page += 1) {
+        const content = await (await pdf.getPage(page)).getTextContent();
+        const text = content.items
+          .map((item) => ("str" in item ? item.str : ""))
+          .join(" ")
+          .toLocaleLowerCase();
+        if (text.includes(query)) matches.push(page);
+      }
+      setSearchResults(matches);
+      if (matches[0]) changePage(matches[0]);
+    } catch (operationError: unknown) {
+      setError(`Não foi possível pesquisar este PDF. ${getDesktopErrorMessage(operationError)}`);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const extractCurrentPage = async () => {
+    if (!pdf) return;
+    setIsExtracting(true);
+    setError(null);
+    try {
+      const content = await (await pdf.getPage(pageNumber)).getTextContent();
+      setExtractedText(content.items.map((item) => ("str" in item ? item.str : "")).join(" "));
+    } catch (operationError: unknown) {
+      setError(`Não foi possível extrair o texto da página. ${getDesktopErrorMessage(operationError)}`);
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
   const commitPageInput = () => {
     const requestedPage = Number(pageInput);
     if (!Number.isInteger(requestedPage) || requestedPage < 1) {
@@ -247,6 +292,21 @@ export function PdfReader({ material, onClose, onMaterialUpdated }: PdfReaderPro
             >
               +
             </button>
+            <div className="flex w-full items-center gap-2 border-t border-line pt-3 sm:ml-2 sm:w-auto sm:border-t-0 sm:pt-0">
+              <label className="sr-only" htmlFor="pdf-search">Pesquisar no PDF</label>
+              <input
+                id="pdf-search"
+                className={`${buttonSecondaryClass} min-h-9 w-44 px-3 text-xs font-normal`}
+                placeholder="Pesquisar no PDF"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") void searchPdf(); }}
+              />
+              <button className={`${buttonSecondaryClass} min-h-9 px-3 text-xs`} type="button" onClick={() => void searchPdf()} disabled={isSearching}>
+                {isSearching ? "Buscando..." : "Buscar"}
+              </button>
+              {searchQuery && !isSearching ? <span className="text-[11px] text-muted">{searchResults.length} página(s)</span> : null}
+            </div>
             <span className="ml-auto text-xs text-muted" role="status" aria-live="polite">
               {isRendering ? "Renderizando..." : pageSaveState === "saving" ? "Salvando posição..." : pageSaveState === "saved" ? "Posição salva" : "Leitura local"}
             </span>
@@ -257,6 +317,18 @@ export function PdfReader({ material, onClose, onMaterialUpdated }: PdfReaderPro
               <canvas ref={canvasRef} aria-label={`Página ${pageNumber} de ${pageCount}`} />
             </div>
           </div>
+          <section className="grid gap-3 border-t border-line bg-card p-4" aria-labelledby="pdf-import-preview-title">
+            <div>
+              <Eyebrow>Importação assistida</Eyebrow>
+              <h4 id="pdf-import-preview-title" className="mt-1 font-heading text-base font-bold text-ink">Prévia de texto para revisar</h4>
+              <p className="mt-1 text-xs text-muted">Extraia uma página, revise a separação das questões e copie o texto para o cadastro manual. O app não cria questões automaticamente sem sua conferência.</p>
+            </div>
+            <button type="button" className={`${buttonSecondaryClass} justify-self-start text-xs`} onClick={() => void extractCurrentPage()} disabled={isExtracting}>
+              {isExtracting ? "Extraindo..." : "Extrair texto desta página"}
+            </button>
+            {extractedText ? <textarea className="min-h-32 w-full rounded-xl border border-line bg-paper p-3 text-sm text-ink" value={extractedText} onChange={(event) => setExtractedText(event.target.value)} aria-label="Texto extraído para revisão" /> : null}
+            {extractedText ? <button type="button" className={`${buttonSecondaryClass} justify-self-start text-xs`} onClick={() => void navigator.clipboard?.writeText(extractedText)}>Copiar texto revisado</button> : null}
+          </section>
         </>
       ) : null}
 
