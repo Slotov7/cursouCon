@@ -69,7 +69,18 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged, contex
       )
     : notes;
 
+  const selectedNote = notes.find((note) => note.id === selectedNoteId) ?? null;
+  const hasUnsavedChanges = selectedNote
+    ? title !== selectedNote.title || contentMarkdown !== selectedNote.contentMarkdown ||
+      materialId !== (selectedNote.materialId ?? "") || subjectId !== (selectedNote.subjectId ?? "")
+    : Boolean(title.trim() || contentMarkdown.trim() ||
+      materialId !== (contextMaterialId ?? "") || subjectId !== (contextSubjectId ?? ""));
+
+  const confirmDiscardChanges = () =>
+    !hasUnsavedChanges || window.confirm("Descartar as alterações desta nota que ainda não foram salvas?");
+
   const startNewNote = () => {
+    if (!confirmDiscardChanges()) return;
     setSelectedNoteId(null);
     setTitle("");
     setContentMarkdown("");
@@ -80,6 +91,7 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged, contex
   };
 
   const selectNote = (note: NoteSummary) => {
+    if (note.id === selectedNoteId || !confirmDiscardChanges()) return;
     setSelectedNoteId(note.id);
     setTitle(note.title);
     setContentMarkdown(note.contentMarkdown);
@@ -110,7 +122,7 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged, contex
       setContentMarkdown(savedNote.contentMarkdown);
       setMaterialId(savedNote.materialId ?? "");
       setSubjectId(savedNote.subjectId ?? "");
-      setMessage("Nota salva localmente.");
+      setMessage("Nota salva neste material.");
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -123,7 +135,7 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged, contex
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <Eyebrow>Anotações</Eyebrow>
-          <h3 id="notes-title" className="mt-2 text-2xl font-extrabold tracking-[-.05em] text-forest-ink">Escreva o que precisa voltar amanhã.</h3>
+          <h3 id="notes-title" className="mt-2 text-2xl font-extrabold tracking-[-.05em] text-forest-ink">Anotações de estudo</h3>
         </div>
         <button className={`${buttonQuietClass} min-h-9 px-3 text-xs`} type="button" onClick={startNewNote} disabled={isSaving}>
           Nova nota
@@ -131,8 +143,7 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged, contex
       </div>
 
       <p className="mt-3 max-w-[64ch] text-sm leading-relaxed text-muted">
-        O texto é salvo como Markdown e continua ligado ao material ou assunto escolhido.
-        A renderização segura entra junto com o leitor integrado.
+        Guarde pontos importantes, dúvidas e lembretes. Se quiser, associe a nota a um material ou assunto para encontrá-la depois.
       </p>
 
       {error ? <p className={`${feedbackClass} mt-5`} role="alert">{error}</p> : null}
@@ -151,7 +162,7 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged, contex
                 onClick={() => selectNote(note)}
               >
                 <strong className="block truncate text-sm">{note.title}</strong>
-                <span className="mt-1 block truncate text-xs">{note.subjectName ?? note.materialName ?? "vínculo local"}</span>
+            <span className="mt-1 block truncate text-xs">{note.subjectName ?? note.materialName ?? "Sem material ou assunto associado"}</span>
               </button>
             ))}
           </div>
@@ -181,8 +192,8 @@ export function NotesPanel({ plan, materials, refreshKey, onNotesChanged, contex
           </label>
 
           <label className={fieldClass} htmlFor="note-content">
-            Conteúdo Markdown
-            <textarea className={`${textareaClass} min-h-[190px]`} id="note-content" value={contentMarkdown} placeholder="# Ideia principal\n\n- evidência\n- dúvida para revisar" onChange={(event) => setContentMarkdown(event.target.value)} disabled={isSaving} rows={8} />
+            Anotação
+            <textarea className={`${textareaClass} min-h-[190px]`} id="note-content" value={contentMarkdown} placeholder="Escreva aqui o que você quer lembrar ou revisar depois." onChange={(event) => setContentMarkdown(event.target.value)} disabled={isSaving} rows={8} />
           </label>
 
           <button className={`${buttonPrimaryClass} justify-self-start`} type="button" onClick={handleSave} disabled={isSaving}>

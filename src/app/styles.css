@@ -29,6 +29,7 @@
 }
 
 :root {
+  color-scheme: light;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -39,6 +40,7 @@
 }
 
 :root.dark {
+  color-scheme: dark;
   --color-ink: #f8fafc;
   --color-muted: #94a3b8;
   --color-paper: #0a0e17;
@@ -170,11 +172,44 @@ textarea {
   font: inherit;
 }
 
+select option {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+@supports (appearance: base-select) {
+  select:not([multiple]) {
+    appearance: base-select;
+  }
+
+  select:not([multiple])::picker(select) {
+    appearance: base-select;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    border: 1px solid var(--color-line);
+    border-radius: 0.75rem;
+    padding: 0.25rem;
+    box-shadow: 0 12px 28px -12px rgb(0 0 0 / 0.55);
+  }
+
+  select:not([multiple]) option {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  select:not([multiple]) option:checked {
+    background: var(--color-lime);
+    color: #fff;
+  }
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--color-coral);
+  outline: 2px solid var(--color-lime);
   outline-offset: 2px;
 }
 

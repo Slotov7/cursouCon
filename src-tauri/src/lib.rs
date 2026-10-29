@@ -43,6 +43,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::flashcard::create_flashcard,
             commands::flashcard::review_flashcard,
             commands::material::get_materials,
+            commands::material::delete_material,
             commands::material::import_material,
             commands::material::register_material_link,
             commands::material::open_material,

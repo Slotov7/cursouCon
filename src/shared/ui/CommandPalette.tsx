@@ -1,15 +1,18 @@
 import { useEffect, useState, useRef, type ReactElement } from "react";
 import {
   IconExplore,
+  IconFlashcards,
   IconMaterials,
   IconPlan,
   IconPractice,
   IconProgress,
   IconSettings,
+  IconSimulation,
   IconToday,
+  IconWriting,
 } from "./primitives";
 
-type ViewId = "today" | "plan" | "materials" | "practice" | "discursive" | "simulations" | "progress" | "explore" | "settings";
+type ViewId = "today" | "plan" | "materials" | "practice" | "flashcards" | "discursive" | "simulations" | "progress" | "explore" | "settings";
 
 type CommandItem = {
   id: string;
@@ -89,11 +92,22 @@ export function CommandPalette({ isOpen, onClose, onNavigate, onToggleTheme }: C
       },
     },
     {
+      id: "nav-flashcards",
+      label: "Ir para 'Cartões de revisão'",
+      category: "Navegação",
+      shortcut: "G R",
+      icon: IconFlashcards,
+      perform: () => {
+        onNavigate("flashcards");
+        onClose();
+      },
+    },
+    {
       id: "nav-discursive",
       label: "Ir para 'Discursivas'",
       category: "Navegação",
       shortcut: "G D",
-      icon: IconPractice,
+      icon: IconWriting,
       perform: () => {
         onNavigate("discursive");
         onClose();
@@ -104,7 +118,7 @@ export function CommandPalette({ isOpen, onClose, onNavigate, onToggleTheme }: C
       label: "Ir para 'Simulados'",
       category: "Navegação",
       shortcut: "G S",
-      icon: IconPractice,
+      icon: IconSimulation,
       perform: () => {
         onNavigate("simulations");
         onClose();

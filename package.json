@@ -9,7 +9,7 @@
     "build:deb": "tauri build --bundles deb",
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
-    "tauri": "bash scripts/tauri-dev.sh",
+    "tauri": "node scripts/tauri-dev.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

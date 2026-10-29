@@ -16,6 +16,7 @@ export function ReviewQueue({ reviews, onDataChanged, timezone }: ReviewQueuePro
   const [dueDate, setDueDate] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const isEmpty = reviews.length === 0;
 
   const handleComplete = async (review: StudyReviewSummary) => {
     setPendingReviewId(review.id);
@@ -57,27 +58,37 @@ export function ReviewQueue({ reviews, onDataChanged, timezone }: ReviewQueuePro
   };
 
   return (
-    <section className="glass-card grid gap-4 rounded-2xl p-5 shadow-xs lg:p-6" aria-labelledby="review-queue-title">
-      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line pb-4">
-        <div>
-          <Eyebrow>Revisões de conteúdo</Eyebrow>
-          <h3 id="review-queue-title" className="mt-1 font-heading text-lg font-bold text-ink">
-            Para revisar hoje
-          </h3>
+    <section
+      className={isEmpty
+        ? "rounded-xl border border-line bg-card px-4 py-3"
+        : "glass-card grid gap-4 rounded-2xl p-5 shadow-xs lg:p-6"}
+      aria-labelledby="review-queue-title"
+    >
+      {isEmpty ? (
+        <div className="flex flex-wrap items-center gap-x-2 text-xs">
+          <h3 id="review-queue-title" className="font-semibold text-ink">Para revisar hoje</h3>
+          <span className="text-muted">
+            · 0 pendentes · Nenhuma revisão vencida. Ao concluir uma sessão vinculada a um assunto, você pode agendar a próxima.
+          </span>
         </div>
-        <span className="text-xs font-semibold text-muted">
-          {reviews.length} {reviews.length === 1 ? "pendente" : "pendentes"}
-        </span>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line pb-4">
+          <div>
+            <Eyebrow>Revisões de conteúdo</Eyebrow>
+            <h3 id="review-queue-title" className="mt-1 font-heading text-lg font-bold text-ink">
+              Para revisar hoje
+            </h3>
+          </div>
+          <span className="text-xs font-semibold text-muted">
+            {reviews.length} {reviews.length === 1 ? "pendente" : "pendentes"}
+          </span>
+        </div>
+      )}
 
       {error && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">{error}</p>}
       {message && <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs font-medium text-emerald-700 dark:text-emerald-300" role="status">{message}</p>}
 
-      {reviews.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-line bg-paper p-5 text-center text-xs text-muted">
-          Nenhuma revisão vencida. Ao concluir uma sessão vinculada a um assunto, você pode agendar a próxima.
-        </p>
-      ) : (
+      {!isEmpty && (
         <ul className="grid gap-3">
           {reviews.map((review) => {
             const isOverdue = review.dueDate < dateKeyForTimezone(timezone);

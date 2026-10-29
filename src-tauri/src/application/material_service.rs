@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 pub trait MaterialStore {
     fn list_materials(&self) -> Result<Vec<MaterialSummary>, WorkspaceError>;
+    fn delete_material(&self, material_id: &str) -> Result<u64, WorkspaceError>;
     fn import_material(
         &self,
         input: &ImportMaterialInput,
@@ -45,6 +46,10 @@ impl<S: MaterialStore> MaterialService<S> {
 
     pub fn list(&self) -> Result<Vec<MaterialSummary>, WorkspaceError> {
         self.store.list_materials()
+    }
+
+    pub fn delete(&self, material_id: &str) -> Result<u64, WorkspaceError> {
+        self.store.delete_material(material_id)
     }
 
     pub fn import(&self, input: ImportMaterialInput) -> Result<MaterialSummary, WorkspaceError> {

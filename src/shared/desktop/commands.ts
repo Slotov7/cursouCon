@@ -1250,6 +1250,17 @@ export async function pickMaterialFile(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
+export async function pickPdfFile(): Promise<string | null> {
+  if (!isTauri()) return "C:/Documentos/Prova.pdf";
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    title: "Escolha uma prova ou edital em PDF",
+    filters: [{ name: "Documentos PDF", extensions: ["pdf"] }],
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
 export async function getMaterials(): Promise<MaterialSummary[]> {
   if (!isTauri()) {
     return mockMaterials.map((material) => ({
@@ -1260,6 +1271,22 @@ export async function getMaterials(): Promise<MaterialSummary[]> {
   }
   const response = await invoke<unknown>("get_materials");
   return parseMaterials(response);
+}
+
+export async function deleteMaterial(materialId: string): Promise<number> {
+  if (!isTauri()) {
+    const materialExists = mockMaterials.some((material) => material.id === materialId);
+    if (!materialExists) throw new Error("O material escolhido não existe mais.");
+    mockMaterials = mockMaterials.filter((material) => material.id !== materialId);
+    return 0;
+  }
+  const removedNotes = await invoke<unknown>("delete_material", {
+    request: { materialId },
+  });
+  if (typeof removedNotes !== "number" || !Number.isSafeInteger(removedNotes) || removedNotes < 0) {
+    throw new Error("O aplicativo retornou uma contagem inválida de anotações removidas.");
+  }
+  return removedNotes;
 }
 
 export async function importMaterial(request: ImportMaterialRequest): Promise<MaterialSummary> {

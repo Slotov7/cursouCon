@@ -83,9 +83,9 @@ export function SettingsView({ preferences, onSaved }: SettingsViewProps) {
     <div className="grid gap-6">
       <section className="glass-hero relative overflow-hidden rounded-3xl border border-white/12 p-6 text-white shadow-xl lg:p-8">
         <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-300">Preferências locais</p>
-        <h2 className="mt-2 font-heading text-2xl font-bold leading-tight lg:text-3xl">Configurações e diagnóstico</h2>
+        <h2 className="mt-2 font-heading text-2xl font-bold leading-tight lg:text-3xl">Preferências do app</h2>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-200/85">
-          Ajuste a leitura e o comportamento da interface. Estas preferências ficam no armazenamento local do computador e não entram em revisões portáteis.
+          Ajuste aparência e comportamento. Essas preferências ficam salvas neste computador.
         </p>
       </section>
 
@@ -180,8 +180,8 @@ export function SettingsView({ preferences, onSaved }: SettingsViewProps) {
               disabled={isSaving}
             />
             <span>
-              <strong className="block font-semibold">Mostrar painel de gamificação</strong>
-              <span className="mt-1 block text-muted">Ocultar o painel não apaga XP, histórico ou métricas já registrados.</span>
+              <strong className="block font-semibold">Mostrar recompensas (XP)</strong>
+              <span className="mt-1 block text-muted">Ocultar este painel não apaga seus registros.</span>
             </span>
           </label>
         </div>
@@ -193,7 +193,12 @@ export function SettingsView({ preferences, onSaved }: SettingsViewProps) {
         </div>
       </section>
 
-      <section className="glass-card rounded-2xl p-5 shadow-xs" aria-labelledby="diagnostic-title">
+      <details className="rounded-2xl border border-line bg-card shadow-xs">
+        <summary className="cursor-pointer list-none p-4 font-semibold text-ink">
+          <span className="block text-sm">Diagnóstico e suporte</span>
+          <span className="mt-1 block text-xs font-normal text-muted">Informações técnicas para ajudar a investigar problemas.</span>
+        </summary>
+      <section className="glass-card rounded-b-2xl border-t border-line p-5 shadow-xs" aria-labelledby="diagnostic-title">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
           <div>
             <h3 id="diagnostic-title" className="font-heading text-xl font-bold text-ink">Diagnóstico do aplicativo</h3>
@@ -223,6 +228,7 @@ export function SettingsView({ preferences, onSaved }: SettingsViewProps) {
           <p className="mt-4 text-xs text-muted">O diagnóstico não pôde ser carregado.</p>
         )}
       </section>
+      </details>
     </div>
   );
 }

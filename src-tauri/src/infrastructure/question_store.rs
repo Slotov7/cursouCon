@@ -767,6 +767,7 @@ impl QuestionStore for LocalWorkspaceStore {
         let mut issues = Vec::new();
         let mut valid = 0_i64;
         let mut duplicates = 0_i64;
+        let mut legacy_discipline_unmatched = false;
 
         for (position, item_result) in document.questions.iter().enumerate() {
             let index = i64::try_from(position + 1).map_err(|_| {
@@ -795,7 +796,7 @@ impl QuestionStore for LocalWorkspaceStore {
                 });
                 continue;
             }
-            let input = match transfer_item_to_input(item) {
+            let mut input = match transfer_item_to_input(item) {
                 Ok(input) => input,
                 Err(message) => {
                     issues.push(QuestionImportIssue {
@@ -807,6 +808,12 @@ impl QuestionStore for LocalWorkspaceStore {
                     continue;
                 }
             };
+            if let Some(discipline) = document.legacy_discipline.as_deref() {
+                match subject_id_by_name(&connection, discipline)? {
+                    Some(subject_id) => input.subject_id = Some(subject_id),
+                    None => legacy_discipline_unmatched = true,
+                }
+            }
             if let Err(message) = prepare_item_attachments(&document.attachments, item, source_path)
             {
                 issues.push(QuestionImportIssue {
@@ -846,6 +853,17 @@ impl QuestionStore for LocalWorkspaceStore {
         let total = i64::try_from(document.questions.len()).map_err(|_| {
             WorkspaceError::InvalidInput("O lote de questões é grande demais.".to_string())
         })?;
+        if legacy_discipline_unmatched {
+            issues.push(QuestionImportIssue {
+                index: 1,
+                kind: "warning".to_string(),
+                external_id: None,
+                message: format!(
+                    "A disciplina '{}' não foi encontrada de forma única neste espaço. As questões serão importadas sem vínculo com uma disciplina.",
+                    document.legacy_discipline.as_deref().unwrap_or_default()
+                ),
+            });
+        }
         let invalid = total - valid - duplicates;
         Ok(QuestionImportPreview {
             schema_version: document.schema_version,
@@ -890,13 +908,16 @@ impl QuestionStore for LocalWorkspaceStore {
                 skipped_invalid += 1;
                 continue;
             }
-            let input = match transfer_item_to_input(item) {
+            let mut input = match transfer_item_to_input(item) {
                 Ok(input) => input,
                 Err(_) => {
                     skipped_invalid += 1;
                     continue;
                 }
             };
+            if let Some(discipline) = document.legacy_discipline.as_deref() {
+                input.subject_id = subject_id_by_name(&connection, discipline)?;
+            }
             let attachments =
                 match prepare_item_attachments(&document.attachments, item, source_path) {
                     Ok(attachments) => attachments,
@@ -1762,6 +1783,25 @@ fn subject_exists(connection: &Connection, subject_id: &str) -> Result<bool, Wor
         .optional()
         .map_err(|error| map_database_error("verificar assunto da questão", error))?;
     Ok(exists.is_some())
+}
+
+fn subject_id_by_name(
+    connection: &Connection,
+    name: &str,
+) -> Result<Option<String>, WorkspaceError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id FROM subjects
+             WHERE archived_at IS NULL AND lower(trim(name)) = lower(trim(?1))
+             LIMIT 2",
+        )
+        .map_err(|error| map_database_error("preparar vínculo da disciplina importada", error))?;
+    let matches = statement
+        .query_map(params![name], |row| row.get::<_, String>(0))
+        .map_err(|error| map_database_error("buscar disciplina importada", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| map_database_error("ler disciplina importada", error))?;
+    Ok((matches.len() == 1).then(|| matches[0].clone()))
 }
 
 #[cfg(test)]

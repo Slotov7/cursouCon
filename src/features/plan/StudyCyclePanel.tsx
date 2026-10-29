@@ -112,7 +112,7 @@ export function StudyCyclePanel({
       });
       setCycleDirty(false);
       onChanged(nextPlanning);
-      setSavedMessage("Ritmo e prioridades salvos localmente.");
+      setSavedMessage("Ritmo e prioridades salvos no Plano.");
     } catch (saveError: unknown) {
       setOperationError(getDesktopErrorMessage(saveError));
     } finally {

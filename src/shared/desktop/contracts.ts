@@ -773,7 +773,7 @@ export type SetQuestionNotebookRequest = {
 
 export type QuestionImportIssue = {
   index: number;
-  kind: "invalid" | "duplicate";
+  kind: "invalid" | "duplicate" | "warning";
   externalId: string | null;
   message: string;
 };
@@ -2452,7 +2452,7 @@ function parseQuestionImportIssue(value: unknown): QuestionImportIssue {
     typeof value.index !== "number" ||
     !Number.isInteger(value.index) ||
     value.index < 1 ||
-    (value.kind !== "invalid" && value.kind !== "duplicate") ||
+    (value.kind !== "invalid" && value.kind !== "duplicate" && value.kind !== "warning") ||
     typeof value.message !== "string"
   ) {
     throw new Error("O núcleo local devolveu um diagnóstico de importação inválido.");

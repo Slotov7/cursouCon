@@ -31,7 +31,7 @@ export GTK_MODULES=
 export GSETTINGS_BACKEND=memory
 export GSETTINGS_SCHEMA_DIR="$SCHEMA_DIR"
 export XDG_CURRENT_DESKTOP=Unity
-TAURI_PATH="$HOME/.cargo/bin:$ROOT_DIR/node_modules/.bin:$HOME/.nvm/versions/node/v24.14.1/bin:/usr/local/bin:/usr/bin:/bin"
+TAURI_PATH="$HOME/.cargo/bin:$ROOT_DIR/node_modules/.bin:/home/slotov/.nvm/versions/node/v24.21.0/bin:/usr/local/bin:/usr/bin:/bin"
 exec env -i \
   HOME="$HOME" USER="${USER:-}" \
   PATH="$TAURI_PATH" PWD="$ROOT_DIR" \

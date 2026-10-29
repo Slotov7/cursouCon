@@ -98,6 +98,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
   const [notebookEntries, setNotebookEntries] = useState<QuestionNotebookEntry[]>([]);
   const [notebookPendingQuestionId, setNotebookPendingQuestionId] = useState<string | null>(null);
   const [isNotebookEditorOpen, setIsNotebookEditorOpen] = useState(false);
+  const [isQuestionFiltersOpen, setIsQuestionFiltersOpen] = useState(false);
   const [notebookNameInput, setNotebookNameInput] = useState("");
   const [notebookKindInput, setNotebookKindInput] = useState<"manual" | "dynamic">("manual");
   const [dynamicAttemptStatus, setDynamicAttemptStatus] =
@@ -417,8 +418,16 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
   const handleQuestionCreated = (newQ: QuestionSummary) => {
     setSelectedQuestionId(newQ.id);
     setIsEditorOpen(false);
-    setMessage("Questão cadastrada no banco de dados local.");
+    setMessage("Questão salva em Questões e selecionada para responder.");
     loadQuestions();
+  };
+
+  const handleAnswerNext = () => {
+    const nextQuestion = filteredQuestions.find((question) => (question.attemptsCount ?? 0) === 0);
+    if (!nextQuestion) return;
+    setSelectedQuestionId(nextQuestion.id);
+    setMessage(null);
+    requestAnimationFrame(() => document.getElementById("question-answer-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   };
 
   const handleQuestionAnswered = (res: AnswerQuestionResult) => {
@@ -451,7 +460,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
         question.id === updatedQuestion.id ? updatedQuestion : question,
       ),
     );
-    setMessage("Vínculo da questão com o concurso salvo localmente.");
+    setMessage("Vínculo entre questão e concurso salvo em Questões.");
   };
 
   const handleCreateNotebook = async () => {
@@ -521,7 +530,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
       setImportFilePath(null);
       setImportPreview(null);
       setMessage(
-        `Importação concluída com sucesso! ${res.imported} questões importadas (${res.skippedDuplicates} duplicadas ignoradas, ${res.skippedInvalid} inválidas puladas).`
+        `${res.imported} questões salvas em Questões. ${res.skippedDuplicates} duplicadas foram ignoradas e ${res.skippedInvalid} inválidas não foram importadas.`
       );
       loadQuestions();
     } catch (err: unknown) {
@@ -548,13 +557,13 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
   };
 
   return (
-    <div className="grid gap-6">
+    <div className="grid min-w-0 gap-6">
       {/* 1. Hero Banner Header */}
-      <section className="glass-hero relative overflow-hidden rounded-3xl p-6 text-white shadow-xl lg:p-8 border border-white/12">
-        <div className="relative z-10 grid gap-4 max-w-3xl">
+      <section className="glass-hero relative min-w-0 rounded-3xl border border-white/12 p-4 text-white shadow-xl sm:p-6 lg:p-8">
+        <div className="relative z-10 grid w-full min-w-0 max-w-3xl gap-4">
           <div className="flex flex-wrap items-center gap-3">
             <span className="rounded-full bg-blue-500/20 border border-blue-400/30 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 backdrop-blur-xs">
-              Banco Local de Questões
+              Seu treino
             </span>
             <span className="text-xs font-medium text-slate-300/85">
               {questions.length} questões carregadas
@@ -563,47 +572,31 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
 
           <div>
             <h2 className="font-heading text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
-              Treino de Questões & Revisão
+              Questões
             </h2>
-            <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
-              Resolva questões offline, registre sua confiança e revise erros sem perder o histórico de tentativas.
+            <p className="mt-2 w-full min-w-0 max-w-2xl break-words text-pretty text-sm leading-relaxed text-slate-200/85">
+              Responda questões e acompanhe seus erros e acertos. Tudo fica salvo neste espaço.
             </p>
           </div>
 
-          {/* Action buttons */}
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               type="button"
               onClick={() => setIsEditorOpen(true)}
               className={buttonPrimaryClass}
             >
-              + Nova Questão Manual
+              + Adicionar questão
             </button>
-            <button
-              type="button"
-              onClick={handleStartImport}
-              className={buttonOutlineLightClass}
-            >
-              Importar JSON
-            </button>
-            <button type="button" className={buttonOutlineLightClass} onClick={() => setIsPdfImportOpen((open) => !open)}>
-              Importar prova em PDF
-            </button>
-            <button
-              type="button"
-              onClick={handleExport}
-              disabled={isExporting}
-              className={buttonOutlineLightClass}
-            >
-              {isExporting ? "Exportando..." : "Exportar JSON"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsNotebookEditorOpen(true)}
-              className={buttonOutlineLightClass}
-            >
-              + Novo Caderno
-            </button>
+            <details className="relative">
+              <summary className={`${buttonOutlineLightClass} cursor-pointer list-none`}>
+                {questions.length === 0 ? "Importar questões" : "Importar ou exportar"}
+              </summary>
+              <div className="absolute left-0 top-full z-20 mt-2 grid min-w-56 gap-1 rounded-xl border border-line bg-card p-2 text-ink shadow-xl">
+                <button type="button" onClick={handleStartImport} className="rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-paper">Importar arquivo JSON</button>
+                <button type="button" onClick={() => setIsPdfImportOpen((open) => !open)} className="rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-paper">Importar questões de PDF</button>
+                {questions.length > 0 && <button type="button" onClick={handleExport} disabled={isExporting} className="rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-paper disabled:opacity-50">{isExporting ? "Exportando..." : "Exportar questões (JSON)"}</button>}
+              </div>
+            </details>
           </div>
         </div>
       </section>
@@ -824,33 +817,27 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
       )}
 
       {/* 2. Main Question Grid */}
-      <div className="grid gap-6 xl:grid-cols-[minmax(330px,.85fr)_minmax(0,1.15fr)]">
+      <div className={`grid gap-6 ${selectedQuestion ? "xl:grid-cols-[minmax(330px,.85fr)_minmax(0,1.15fr)]" : ""}`}>
         {/* Left Question Selection List & Filters */}
-        <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs flex flex-col">
+        <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs flex flex-col" aria-label="Questões disponíveis">
           <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
-            <div>
-              <Eyebrow>Navegação</Eyebrow>
-              <h3 className="font-heading text-lg font-bold text-ink">Banco de Questões</h3>
-            </div>
-            <span className="font-mono text-xs font-bold text-muted bg-paper-deep px-2.5 py-1 rounded-lg">
-              {filteredQuestions.length} carregadas
-            </span>
+            <span className="text-xs font-medium text-muted">{filteredQuestions.length} questões na lista</span>
+            {filteredQuestions.length > 0 && <button type="button" onClick={handleAnswerNext} disabled={!filteredQuestions.some((question) => (question.attemptsCount ?? 0) === 0)} className={`${buttonPrimaryClass} px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50`}>
+              {filteredQuestions.some((question) => (question.attemptsCount ?? 0) === 0) ? "Responder próxima inédita" : "Todas já respondidas"}
+            </button>}
           </div>
 
-          {/* Search bar */}
-          <div className="mb-3">
-            <input
-              type="text"
-              aria-label="Buscar questões por texto, assunto, banca, órgão ou cargo"
-              className={inputClass}
-              placeholder="Buscar por enunciado, banca ou tema..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
+          {(questions.length > 0 || hasActiveQuestionFilters) && <>
+          <details className="mb-4 rounded-xl border border-line bg-paper px-3 py-2" open={isQuestionFiltersOpen}
+            onToggle={(event) => setIsQuestionFiltersOpen((event.currentTarget as HTMLDetailsElement).open)}>
+          <summary className="cursor-pointer text-xs font-semibold text-muted">Buscar, filtrar ou escolher caderno</summary>
+          <div className="mt-3">
+            <input type="text" aria-label="Buscar questões por texto, assunto, banca, órgão ou cargo" className={inputClass}
+              placeholder="Buscar por enunciado, banca ou tema..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
           </div>
 
           {/* Status filter tabs */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mb-3.5 p-1 rounded-xl bg-paper border border-line">
+          <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-1.5 mb-3.5 p-1 rounded-xl bg-card border border-line">
             <button
               type="button"
               onClick={() => { setStatusFilter("all"); setHistoryFilter(""); }}
@@ -900,7 +887,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
             </button>
           </div>
 
-          <div className="mb-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <div className="mb-3 mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
             <label className={fieldClass}>
               Caderno ativo
               <select
@@ -928,8 +915,10 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
             </button>
           </div>
 
+          <details className="mb-4 rounded-xl border border-line bg-paper px-3 py-2">
+          <summary className="cursor-pointer text-xs font-semibold text-muted">Mais filtros <span className="font-normal">(banca, ano, situação e histórico)</span></summary>
           {/* Filtros combinados aplicados no banco antes da paginação */}
-          <div className="grid gap-2.5 sm:grid-cols-2 mb-4">
+          <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
             <label className={fieldClass}>
               Assunto
               <select className={selectClass} value={subjectFilter} onChange={(event) => setSubjectFilter(event.target.value)}>
@@ -977,9 +966,12 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               </select>
             </label>
           </div>
+          </details>
+          </details>
+          </>}
 
           {/* Questions Scrollable List */}
-          <div className="grid gap-2 max-h-[520px] overflow-y-auto pr-1">
+          <div className="grid gap-2 max-h-[520px] overflow-y-auto pr-1" aria-label="Lista de questões">
             {isLoading && questions.length === 0 ? (
               <div className="py-12 text-center text-xs text-muted">
                 Carregando banco de questões...
@@ -988,33 +980,16 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
               <div className="rounded-xl border border-dashed border-line p-6 text-center text-muted">
                 <p className="text-xs font-semibold text-ink">
                   {!hasActiveQuestionFilters && questions.length === 0
-                    ? "Nenhuma questão ativa encontrada."
+                    ? "Seu banco de questões está vazio."
                     : "Nenhuma questão encontrada com estes filtros."}
                 </p>
                 <p className="mt-1 text-[11px]">
                   {!hasActiveQuestionFilters && questions.length === 0
-                    ? "Cadastre ou importe questões; outras situações podem ser vistas no filtro de situação."
+                    ? "Importe um arquivo pelo menu acima ou adicione uma questão manualmente."
                     : "Tente redefinir os critérios de busca."}
                 </p>
-                <div className="mt-3 flex justify-center gap-2">
-                  {!hasActiveQuestionFilters && questions.length === 0 ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => setIsEditorOpen(true)}
-                        className={`${buttonPrimaryClass} text-xs px-3 py-1.5`}
-                      >
-                        + Nova Questão
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleStartImport}
-                        className={`${buttonSecondaryClass} text-xs px-3 py-1.5`}
-                      >
-                        Importar JSON
-                      </button>
-                    </>
-                  ) : (
+                {(questions.length > 0 || hasActiveQuestionFilters) && (
+                  <div className="mt-3 flex justify-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -1031,8 +1006,8 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                     >
                       Limpar todos os filtros
                     </button>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             ) : (
               filteredQuestions.map((q, idx) => {
@@ -1091,7 +1066,7 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                       {q.questionType === "true_false" ? (
                         <span className="font-mono">C/E</span>
                       ) : (
-                        <span className="font-mono">A-D</span>
+                        <span className="font-mono">{q.options.map((option) => option.key).join("/")}</span>
                       )}
                     </div>
                   </button>
@@ -1107,8 +1082,8 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
         </section>
 
         {/* Right Question Resolution Canvas */}
-        <section className="min-w-0">
-          {selectedQuestion ? (
+        {selectedQuestion && (
+        <section id="question-answer-panel" className="min-w-0 scroll-mt-6">
             <QuestionRunner
               key={selectedQuestion.id}
               question={selectedQuestion}
@@ -1132,15 +1107,8 @@ export function PracticeView({ plan, refreshKey }: PracticeViewProps) {
                manualContests={manualContests}
                onContestRelationChanged={handleQuestionContestRelationChanged}
               />
-          ) : (
-            <div className="rounded-2xl border border-line bg-card p-12 text-center text-muted">
-              <p className="text-sm font-semibold">Nenhuma questão selecionada.</p>
-              <p className="mt-1 text-xs">
-                Selecione uma questão na lista à esquerda ou cadastre uma nova questão.
-              </p>
-            </div>
-          )}
         </section>
+        )}
       </div>
     </div>
   );
@@ -1503,7 +1471,7 @@ function QuestionRunner({
               Detalhes em {notebookName}
             </h3>
             <p className="mt-1 text-[11px] text-muted">
-              O motivo e a observação ficam salvos localmente junto da marcação.
+              O motivo e a observação ficam salvos com esta questão.
             </p>
           </div>
           <label className={fieldClass}>
@@ -1881,6 +1849,7 @@ function QuestionEditor({
   const [optB, setOptB] = useState("");
   const [optC, setOptC] = useState("");
   const [optD, setOptD] = useState("");
+  const [optE, setOptE] = useState("");
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -1902,6 +1871,7 @@ function QuestionEditor({
             { key: "B", text: optB.trim() },
             { key: "C", text: optC.trim() },
             { key: "D", text: optD.trim() },
+            { key: "E", text: optE.trim() },
           ].filter((option) => option.text.length > 0);
 
     if (questionType === "multiple_choice" && options.length < 2) {
@@ -1942,27 +1912,34 @@ function QuestionEditor({
   };
 
   return (
-    <div className="rounded-2xl border border-blue-500/30 bg-card p-6 shadow-lg animate-fade-in max-w-2xl">
-      <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
-        <div>
+    <div className="fixed inset-0 z-40 grid place-items-center bg-slate-950/65 p-3 backdrop-blur-xs sm:p-6">
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="question-editor-title"
+        className="flex w-full max-w-2xl max-h-[calc(100dvh-1.5rem)] flex-col overflow-hidden rounded-2xl border border-blue-500/30 bg-card p-4 shadow-2xl animate-fade-in sm:max-h-[calc(100dvh-3rem)] sm:p-6"
+      >
+      <div className="mb-4 flex shrink-0 items-center justify-between gap-3 border-b border-line pb-3">
+        <div className="min-w-0">
           <Eyebrow>Cadastro Manual</Eyebrow>
-          <h3 className="font-heading text-lg font-bold text-ink">Nova Questão</h3>
+          <h3 id="question-editor-title" className="font-heading text-lg font-bold text-ink">Nova Questão</h3>
         </div>
         <button
           type="button"
           onClick={onCancel}
-          className="text-xs text-muted hover:text-ink font-semibold"
+          className="shrink-0 whitespace-nowrap text-xs font-semibold text-muted hover:text-ink"
         >
           ✕ Cancelar
         </button>
       </div>
 
       {formError && (
-        <p className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600">
+        <p className="mb-4 shrink-0 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600">
           {formError}
         </p>
       )}
 
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
       <div className="grid gap-4">
         <div className="grid gap-4 sm:grid-cols-3">
           <label className={fieldClass}>
@@ -1976,7 +1953,7 @@ function QuestionEditor({
                 setAnswerKey("");
               }}
             >
-              <option value="multiple_choice">Múltipla Escolha (A-D)</option>
+              <option value="multiple_choice">Múltipla Escolha (A-E)</option>
               <option value="true_false">Certo / Errado (C/E)</option>
             </select>
           </label>
@@ -1998,7 +1975,7 @@ function QuestionEditor({
           </label>
 
           <label className={fieldClass}>
-            Gabarito Oficial
+            Resposta correta
             <select
               className={selectClass}
               value={answerKey}
@@ -2016,13 +1993,16 @@ function QuestionEditor({
                   <option value="B">Alternativa B</option>
                   <option value="C">Alternativa C</option>
                   <option value="D">Alternativa D</option>
+                  <option value="E">Alternativa E</option>
                 </>
               )}
             </select>
           </label>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-4">
+        <details className="rounded-xl border border-line bg-paper p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-ink">Dados opcionais da prova (banca, órgão, cargo e ano)</summary>
+          <div className="mt-3 grid gap-4 sm:grid-cols-4">
           <label className={fieldClass}>
             Banca <span className="text-muted font-normal">(opcional)</span>
             <input
@@ -2066,7 +2046,8 @@ function QuestionEditor({
               onChange={(e) => setYear(e.target.value)}
             />
           </label>
-        </div>
+          </div>
+        </details>
 
         <label className={fieldClass}>
           Enunciado da Questão
@@ -2131,22 +2112,39 @@ function QuestionEditor({
                   onChange={(e) => setOptD(e.target.value)}
                 />
               </div>
+              <div className="flex items-center gap-2">
+                <span className="size-7 flex items-center justify-center font-mono font-bold rounded-lg bg-paper-deep text-xs text-muted">
+                  E
+                </span>
+                <input
+                  type="text"
+                  className={inputClass}
+                  placeholder="Texto da Alternativa E (opcional)"
+                  value={optE}
+                  onChange={(e) => setOptE(e.target.value)}
+                />
+              </div>
             </div>
           </div>
         )}
 
-        <label className={fieldClass}>
-          Gabarito Comentado / Fundamentação <span className="text-muted font-normal">(opcional)</span>
-          <textarea
-            className={textareaClass}
-            rows={2}
-            value={explanation}
-            onChange={(e) => setExplanation(e.target.value)}
-            placeholder="Artigo de lei, jurisprudência ou fundamentação da banca..."
-          />
-        </label>
+        <details className="rounded-xl border border-line bg-paper p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-ink">Adicionar explicação (opcional)</summary>
+          <label className={`${fieldClass} mt-3`}>
+            Explicação da resposta
+            <textarea
+              className={textareaClass}
+              rows={2}
+              value={explanation}
+              onChange={(e) => setExplanation(e.target.value)}
+              placeholder="Artigo de lei, jurisprudência ou explicação da banca..."
+            />
+          </label>
+        </details>
 
-        <div className="flex justify-end gap-2 pt-3 border-t border-line">
+      </div>
+      </div>
+      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-line bg-card pt-3">
           <button
             type="button"
             onClick={onCancel}
@@ -2163,8 +2161,8 @@ function QuestionEditor({
           >
             {isSubmitting ? "Salvando..." : "Salvar Questão"}
           </button>
-        </div>
       </div>
+      </section>
     </div>
   );
 }

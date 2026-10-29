@@ -712,7 +712,9 @@ mod tests {
         assert!(enabled.enabled);
         assert_eq!(
             enabled.destination_path.as_deref(),
-            destination_path.to_str()
+            fs::canonicalize(&destination_path)
+                .expect("o destino deve continuar acessível")
+                .to_str()
         );
 
         let reopened_store = LocalWorkspaceStore::new(app_data_dir.clone());

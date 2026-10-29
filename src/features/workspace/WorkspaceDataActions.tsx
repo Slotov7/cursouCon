@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   createWorkspaceBackup,
   createWorkspaceRevision,
@@ -391,9 +392,9 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
         Dados & backup
       </button>
 
-      {isOpen ? (
+      {isOpen ? createPortal((
         <div
-          className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 px-4 py-6 backdrop-blur-sm"
+          className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/60 px-4 py-4 backdrop-blur-sm"
           role="presentation"
           onMouseDown={() => {
             if (!isBusy) {
@@ -402,7 +403,7 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
           }}
         >
           <section
-            className="max-h-[calc(100vh-3rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-line bg-card p-5 shadow-2xl sm:p-6"
+            className="my-auto max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-line bg-card p-5 shadow-2xl sm:p-6"
             role="dialog"
             aria-modal="true"
             aria-labelledby="workspace-data-title"
@@ -429,7 +430,7 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
             </div>
 
             <div className="mt-5 grid gap-5">
-              <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="recent-workspaces-title">
+              {(isLoadingRecent || recentWorkspaces.length > 0) && <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="recent-workspaces-title">
                 <div>
                   <h3 id="recent-workspaces-title" className="font-heading font-bold text-ink">Espaços recentes</h3>
                   <p className="mt-1 text-xs leading-relaxed text-muted">
@@ -461,7 +462,7 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
                 ) : (
                   <p className="text-xs text-muted">Nenhum outro espaço recente válido foi encontrado.</p>
                 )}
-              </section>
+              </section>}
 
               {revisionWorkspacePath ? (
                 <section className="grid gap-3 rounded-xl border border-orange-500/30 bg-orange-500/5 p-4" aria-labelledby="choose-revision-title">
@@ -497,6 +498,9 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
                 </section>
               ) : null}
 
+              <details className="grid gap-3">
+                <summary className="cursor-pointer text-sm font-semibold text-ink">Transferir ou exportar dados</summary>
+                <div className="grid gap-4">
               <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="create-revision-title">
                 <div>
                   <h3 id="create-revision-title" className="font-heading font-bold text-ink">Preparar revisão portátil</h3>
@@ -592,6 +596,8 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
                   {pendingAction === "publishingRevision" ? "Copiando espaço portátil..." : "Publicar revisão"}
                 </button>
               </section>
+                </div>
+              </details>
 
               <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="create-backup-title">
                 <div>
@@ -624,13 +630,13 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
                 </button>
               </section>
 
-              <section className="grid gap-2 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="backup-history-title">
+              {backupHistory.length > 0 && <section className="grid gap-2 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="backup-history-title">
                 <h3 id="backup-history-title" className="font-heading font-bold text-ink">Histórico de backups deste espaço</h3>
                 {backupHistory.length === 0 ? <p className="text-xs text-muted">Nenhuma execução registrada neste computador.</p> :
                   <ul className="grid max-h-40 gap-2 overflow-auto">{backupHistory.slice(0, 20).map((entry, index) => <li key={`${entry.createdAtEpochSeconds}-${index}`} className="text-xs text-muted">
                     {new Date(entry.createdAtEpochSeconds * 1000).toLocaleString("pt-BR")}: {entry.error ? `Falhou: ${entry.error}` : `Criado em ${entry.path}`}
                   </li>)}</ul>}
-              </section>
+              </section>}
 
               <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="restore-backup-title">
                 <div>
@@ -720,7 +726,7 @@ export function WorkspaceDataActions({ workspace, onWorkspaceRestored }: Workspa
             </div>
           </section>
         </div>
-      ) : null}
+      ), document.body) : null}
     </>
   );
 }

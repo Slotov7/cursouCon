@@ -30,7 +30,7 @@ O primeiro protótipo vertical implementa:
 - classificação explícita do documento da preparação como referência pré-edital ou edital vigente confirmado;
 - preferências de tema, contraste, movimento, fuso do plano diário/revisões e visibilidade do painel de gamificação salvas no computador, fora das revisões portáteis;
 - tela de diagnóstico com versão e contagens agregadas, exportável em JSON sem conteúdo de materiais, notas ou caminhos locais;
-- guia de primeiros passos na tela Hoje, que acompanha preparação, assuntos, ciclo e primeira tarefa e desaparece quando a configuração inicial termina;
+- guia de primeiros passos na tela Hoje, que leva diretamente a criar um concurso, adicionar uma disciplina e agendar o estudo de hoje; o ciclo pode ser configurado depois e o guia desaparece ao concluir essas ações;
 - banner de sessão interrompida na tela Hoje, com retomada em um clique ou revisão explícita do tempo incerto;
 - flashcards de texto por espaço, com assunto opcional, avaliações transacionais no SQLite e agendamento determinístico versionado; cartões antigos do armazenamento da interface podem ser importados manualmente para o espaço escolhido, preservando o agendamento; imagens em cartões ainda não são suportadas;
 - importação assistida de questões de PDFs previamente importados: extrai texto de até 100 páginas, sugere separação por número, permite revisar enunciados e gabarito e confirma o lote em uma transação; PDFs digitalizados precisam de OCR externo;
@@ -87,6 +87,10 @@ npm run tauri dev
 
 `npm run dev` abre apenas a interface Vite. A criação e abertura de espaços dependem do shell Tauri e do comando Rust.
 
+No Windows, execute `npm run tauri dev` em um terminal **PowerShell** aberto em `E:\MyProjects\cursouCon`.
+Um terminal WSL usa o caminho `/mnt/e/...` e compila a versão Linux. O comando `tauri` detecta a plataforma:
+PowerShell usa a CLI nativa do Windows; Linux/WSL usa `scripts/tauri-dev.sh`.
+
 No Linux/GNOME, o script `scripts/tauri-dev.sh` usa um schema GTK local com as
 chaves legadas de antialiasing, além de isolar módulos GTK e usar backend de memória.
 Isso evita que o WebKitGTK encerre antes de abrir a janela sem alterar schemas,
@@ -99,7 +103,7 @@ O bundle Debian pode ser gerado em uma distribuição Debian/Ubuntu com WebKitGT
 
 ```bash
 sudo apt update
-sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
+sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev build-essential curl wget file \
   libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 

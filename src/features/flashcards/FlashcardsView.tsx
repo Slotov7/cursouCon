@@ -31,6 +31,7 @@ export function FlashcardsView({ plan, timezone }: { plan: StudyPlan | null; tim
   const [front, setFront] = useState("");
   const [back, setBack] = useState("");
   const [subjectId, setSubjectId] = useState("");
+  const [isCreateFormOpen, setIsCreateFormOpen] = useState(false);
   const [showBack, setShowBack] = useState(false);
   const [legacyCount, setLegacyCount] = useState(() => legacyCards().length);
   const [offset, setOffset] = useState(0);
@@ -62,7 +63,8 @@ export function FlashcardsView({ plan, timezone }: { plan: StudyPlan | null; tim
     try {
       await createFlashcard({ front: front.trim(), back: back.trim(), subjectId: subjectId || null, today });
       setFront(""); setBack(""); setSubjectId("");
-      setMessage("Cartão salvo no espaço de estudos.");
+      setIsCreateFormOpen(false);
+      setMessage("Cartão salvo em Cartões de revisão. Ele aparecerá na fila de revisão quando estiver na hora.");
       await load();
     } catch (failure: unknown) { setError(getDesktopErrorMessage(failure)); }
     finally { setBusy(false); }
@@ -76,7 +78,7 @@ export function FlashcardsView({ plan, timezone }: { plan: StudyPlan | null; tim
       await reviewFlashcard({ id: due.id, rating, today, operationId: operationId.current });
       operationId.current = null;
       setShowBack(false);
-      setMessage("Avaliação salva no espaço de estudos.");
+      setMessage("Avaliação salva no histórico de Cartões de revisão.");
       await load();
     } catch (failure: unknown) { setError(getDesktopErrorMessage(failure)); }
     finally { setBusy(false); }
@@ -99,7 +101,7 @@ export function FlashcardsView({ plan, timezone }: { plan: StudyPlan | null; tim
         localStorage.setItem(LEGACY_KEY, JSON.stringify(pending.slice(i + 1)));
         setLegacyCount(pending.length - i - 1);
       }
-      setMessage("Cartões antigos importados para este espaço.");
+      setMessage("Cartões importados e salvos em Cartões de revisão.");
       await load();
     } catch (failure: unknown) { setError(getDesktopErrorMessage(failure)); }
     finally { setBusy(false); }
@@ -107,9 +109,20 @@ export function FlashcardsView({ plan, timezone }: { plan: StudyPlan | null; tim
 
   return <div className="grid gap-6">
     <section className="glass-hero rounded-3xl p-6 text-white lg:p-8">
-      <Eyebrow light>Revisão espaçada · algoritmo v1</Eyebrow>
-      <h2 className="mt-2 font-heading text-3xl font-bold">Flashcards</h2>
-      <p className="mt-2 text-sm text-white/75">{dueCount} cartão(ões) vencido(s) entre os {cards.length} carregados. Dados salvos no SQLite do espaço.</p>
+      <Eyebrow light>Revisão de hoje</Eyebrow>
+      <h2 className="mt-2 font-heading text-3xl font-bold">Cartões de revisão</h2>
+      <p className="mt-2 text-sm text-white/75">
+        {loading ? "Carregando seus cartões..." : dueCount > 0
+          ? `${dueCount} cartão(ões) para revisar nesta lista.`
+          : hasMore
+            ? "Nenhuma revisão pendente nesta lista. Carregue mais cartões para conferir o restante."
+            : cards.length === 0
+              ? "Você ainda não tem cartões. Crie um para começar a revisar."
+              : "Você está em dia. Nenhuma revisão pendente agora."}
+      </p>
+      <button type="button" className={`${buttonPrimaryClass} mt-4`} onClick={() => setIsCreateFormOpen((open) => !open)}>
+        {isCreateFormOpen ? "Cancelar criação" : "+ Criar cartão"}
+      </button>
     </section>
     {error && <p className="rounded-xl border border-danger-line bg-danger-soft p-4 text-sm text-danger" role="alert">{error} <button type="button" onClick={() => void load()} className={buttonSecondaryClass}>Tentar novamente</button></p>}
     {message && <p className="text-sm text-forest-ink" role="status">{message}</p>}
@@ -117,10 +130,11 @@ export function FlashcardsView({ plan, timezone }: { plan: StudyPlan | null; tim
       <p>{legacyCount} cartão(ões) da versão anterior foram encontrados neste dispositivo. Eles não estavam associados a um espaço: confirme que este é o espaço correto antes de importar.</p>
       <button type="button" className={`${buttonSecondaryClass} mt-3`} onClick={() => void importLegacy()} disabled={busy}>Importar cartões antigos para este espaço</button>
     </section>}
-    <section className="grid gap-3 rounded-2xl border border-line bg-card p-5" aria-labelledby="new-flashcard-title">
-      <h3 id="new-flashcard-title" className="font-heading text-lg font-bold text-ink">Criar flashcard</h3>
-      <label className={fieldClass}>Frente <textarea className={textareaClass} maxLength={5000} value={front} onChange={(event) => setFront(event.target.value)} /></label>
-      <label className={fieldClass}>Verso <textarea className={textareaClass} maxLength={10000} value={back} onChange={(event) => setBack(event.target.value)} /></label>
+    {isCreateFormOpen && <section className="grid gap-3 rounded-2xl border border-line bg-card p-5" aria-labelledby="new-flashcard-title">
+      <h3 id="new-flashcard-title" className="font-heading text-lg font-bold text-ink">Criar cartão</h3>
+      <p className="text-xs leading-relaxed text-muted">Escreva uma pergunta na frente e a resposta no verso.</p>
+      <label className={fieldClass}>Pergunta (frente) <textarea className={textareaClass} maxLength={5000} value={front} onChange={(event) => setFront(event.target.value)} /></label>
+      <label className={fieldClass}>Resposta (verso) <textarea className={textareaClass} maxLength={10000} value={back} onChange={(event) => setBack(event.target.value)} /></label>
       <label className={fieldClass}>Assunto (opcional)
         <select className={selectClass} value={subjectId} onChange={(event) => setSubjectId(event.target.value)}>
           <option value="">Sem assunto</option>
@@ -128,15 +142,17 @@ export function FlashcardsView({ plan, timezone }: { plan: StudyPlan | null; tim
         </select>
       </label>
       <button type="button" className={`${buttonPrimaryClass} justify-self-start`} onClick={() => void create()} disabled={busy || !front.trim() || !back.trim()}>{busy ? "Salvando..." : "Salvar cartão"}</button>
-    </section>
-    {loading && cards.length === 0 ? <p className="text-sm text-muted">Carregando flashcards...</p> : due ?
-      <section className="mx-auto grid w-full max-w-2xl gap-5 rounded-2xl border border-line bg-card p-6 text-center shadow-xs" aria-label="Revisar flashcard">
-        <span className="text-xs font-bold uppercase text-muted">Próxima revisão · {due.dueDate}</span>
+    </section>}
+    {loading && cards.length === 0 ? null : due ?
+      <section className="mx-auto grid w-full max-w-2xl gap-5 rounded-2xl border border-line bg-card p-6 text-center shadow-xs" aria-label="Cartão de revisão">
+        <span className="text-xs font-bold uppercase text-muted">Tente lembrar a resposta antes de revelar</span>
         <button type="button" className="grid min-h-48 place-items-center rounded-2xl border border-line bg-paper p-8 text-left text-ink" onClick={() => setShowBack((visible) => !visible)}>{showBack ? due.back : due.front}</button>
         {!showBack ? <button type="button" className={`${buttonPrimaryClass} justify-self-center`} onClick={() => setShowBack(true)}>Mostrar resposta</button> :
-          <div className="grid gap-2 sm:grid-cols-4">{(["again", "hard", "good", "easy"] as const).map((rating, index) =>
+          <div className="grid gap-2 sm:grid-cols-4">
+            <p className="text-xs leading-relaxed text-muted sm:col-span-4">Escolha como foi lembrar. Isso define quando o cartão volta para revisão.</p>
+            {(["again", "hard", "good", "easy"] as const).map((rating, index) =>
             <button key={rating} type="button" className={buttonSecondaryClass} disabled={busy} onClick={() => void rate(rating)}>{["Novamente", "Difícil", "Bom", "Fácil"][index]}</button>)}</div>}
-      </section> : <p className="rounded-xl border border-line bg-card p-5 text-sm text-muted">Nenhuma revisão vencida entre os cartões carregados.</p>}
+      </section> : cards.length > 0 ? <p className="rounded-xl border border-line bg-card p-5 text-sm text-muted">Nenhuma revisão pendente agora.</p> : null}
     {hasMore && <button type="button" className={buttonSecondaryClass} disabled={loading} onClick={() => void load(offset + 100)}>Carregar mais cartões</button>}
   </div>;
 }

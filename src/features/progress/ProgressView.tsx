@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import {
+  createPreparation,
   createExternalQuestionBatch,
   correctStudySessionDuration,
   createManualStudy,
@@ -20,6 +21,7 @@ import type {
 } from "../../shared/desktop/contracts";
 import { dateKeyForTimezone } from "../../shared/date";
 import {
+  buttonOutlineLightClass,
   buttonPrimaryClass,
   buttonQuietClass,
   buttonSecondaryClass,
@@ -35,6 +37,7 @@ type ProgressViewProps = {
   showGamification: boolean;
   timezone: string;
   onOpenToday: () => void;
+  onDataChanged: () => void;
 };
 
 // Level definitions based on total XP
@@ -65,7 +68,7 @@ function calculateLevel(totalXp: number): {
   return { level, title, currentXpInLevel, xpRequiredForNextLevel, percent };
 }
 
-export function ProgressView({ refreshKey, showGamification, timezone, onOpenToday }: ProgressViewProps) {
+export function ProgressView({ refreshKey, showGamification, timezone, onOpenToday, onDataChanged }: ProgressViewProps) {
   const [summary, setSummary] = useState<StudyProgressSummary | null>(null);
   const [plan, setPlan] = useState<StudyPlan | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -158,12 +161,23 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
     (subject) => subject.preparationId === primaryPreparation?.id,
   ) ?? [];
 
+  const ensureStudyPreparation = async () => {
+    if (primaryPreparation) return primaryPreparation;
+    const created = await createPreparation({
+      name: "Meus estudos",
+      organization: null,
+      role: null,
+      board: null,
+      examDate: null,
+      makePrimary: true,
+    });
+    setPlan(await getStudyPlan());
+    onDataChanged();
+    return created;
+  };
+
   const handleCreateManualStudy = async () => {
     const minutes = Number(manualMinutes);
-    if (!primaryPreparation) {
-      setActionError("Cadastre uma preparação antes de registrar um estudo manual.");
-      return;
-    }
     if (!manualTitle.trim() || !Number.isInteger(minutes) || minutes < 1 || minutes > 10_080) {
       setActionError("Informe título e uma duração entre 1 e 10.080 minutos.");
       return;
@@ -173,8 +187,9 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
     setActionMessage(null);
     setIsSavingManual(true);
     try {
+      const preparation = await ensureStudyPreparation();
       const result = await createManualStudy({
-        preparationId: primaryPreparation.id,
+        preparationId: preparation.id,
         subjectId: manualSubjectId || null,
         title: manualTitle,
         studiedOn: manualDate,
@@ -184,9 +199,9 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
         nextSteps: manualNextSteps.trim() ? manualNextSteps : null,
       });
       setActionMessage(
-        showGamification && result.xpGranted > 0
-          ? `Estudo manual registrado. +${result.xpGranted} XP.`
-          : "Estudo manual registrado.",
+        primaryPreparation
+          ? "Estudo salvo em Progresso."
+          : "Estudo salvo em Progresso, em Meus estudos.",
       );
       setIsManualFormOpen(false);
       setManualTitle("");
@@ -194,6 +209,7 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
       setManualNextSteps("");
       setManualDifficulty("");
       setRetryVersion((current) => current + 1);
+      onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
     } finally {
@@ -204,10 +220,6 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
   const handleCreateExternalBatch = async () => {
     const answeredCount = Number(externalAnswered);
     const correctCount = Number(externalCorrect);
-    if (!primaryPreparation) {
-      setActionError("Cadastre uma preparação antes de registrar questões externas.");
-      return;
-    }
     if (!externalDate || !Number.isInteger(answeredCount) || answeredCount < 1 ||
       !Number.isInteger(correctCount) || correctCount < 0 || correctCount > answeredCount) {
       setActionError("Informe data, número de respondidas acima de zero e acertos entre zero e o total respondido.");
@@ -217,8 +229,9 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
     setActionMessage(null);
     setIsSavingExternal(true);
     try {
+      const preparation = await ensureStudyPreparation();
       await createExternalQuestionBatch({
-        preparationId: primaryPreparation.id,
+        preparationId: preparation.id,
         subjectId: externalSubjectId || null,
         sourceName: externalSource.trim() || null,
         studiedOn: externalDate,
@@ -229,8 +242,9 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
       setExternalSource("");
       setExternalAnswered("");
       setExternalCorrect("");
-      setActionMessage("Lote externo salvo localmente, separado das tentativas individuais e sem XP.");
+      setActionMessage("Resultados salvos em Progresso. Eles ficam separados das respostas feitas em Questões.");
       setRetryVersion((current) => current + 1);
+      onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
     } finally {
@@ -253,7 +267,7 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
       return;
     }
     if (!correctionReason.trim()) {
-      setActionError("Informe o motivo da correção para manter o histórico auditável.");
+      setActionError("Informe por que está alterando a duração, para deixar o histórico claro.");
       return;
     }
 
@@ -312,6 +326,13 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
     );
   }
 
+  const hasQuestionActivity = questionPerformance !== null && (
+    questionPerformance.firstAttemptGraded > 0 ||
+    questionPerformance.repeatGraded > 0 ||
+    questionPerformance.externalAnswered > 0 ||
+    questionPerformance.externalBatches > 0
+  );
+
   const handleExportCsv = async () => {
     setIsExportingCsv(true);
     setActionError(null);
@@ -335,22 +356,25 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
         <div className="relative z-10 grid gap-4 max-w-3xl">
           <div className="flex flex-wrap items-center gap-3">
             <span className="rounded-full bg-blue-500/20 border border-blue-400/30 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 backdrop-blur-xs">
-              Evolução & Desempenho
+              Seu progresso
             </span>
             <span className="text-xs font-medium text-slate-300/85">
-              SQLite Local · 100% Offline e Privado
+              Seus registros de estudo neste espaço
             </span>
           </div>
 
           <div>
             <h2 className="font-heading text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
-              Painel de Desempenho & Conquistas de Estudo
+              Seu progresso de estudo
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
-              Acompanhe horas líquidas acumuladas, histórico local e evolução de nível de experiência.
+              Veja quanto estudou e acompanhe suas sessões ao longo do tempo.
             </p>
           </div>
 
+          <details className="justify-self-start">
+          <summary className={`${buttonOutlineLightClass} cursor-pointer list-none`}>Registrar atividade ou baixar relatório</summary>
+          <div className="mt-2 grid gap-2 rounded-xl border border-line bg-card p-2 text-ink shadow-lg">
           <button
             type="button"
             className={`${buttonPrimaryClass} justify-self-start`}
@@ -360,7 +384,7 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
               setActionMessage(null);
             }}
           >
-            {isManualFormOpen ? "Fechar registro manual" : "Registrar estudo manual"}
+            {isManualFormOpen ? "Fechar registro manual" : "Registrar estudo feito fora do app"}
           </button>
           <button
             type="button"
@@ -371,7 +395,7 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
               setActionMessage(null);
             }}
           >
-            {isExternalFormOpen ? "Fechar lote externo" : "Registrar questões externas"}
+            {isExternalFormOpen ? "Fechar registro de questões" : "Registrar questões de outra plataforma"}
           </button>
           <button
             type="button"
@@ -379,8 +403,10 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
             onClick={() => void handleExportCsv()}
             disabled={isExportingCsv}
           >
-            {isExportingCsv ? "Exportando..." : "Exportar evolução (CSV)"}
+            {isExportingCsv ? "Preparando..." : "Baixar relatório (CSV)"}
           </button>
+          </div>
+          </details>
         </div>
       </section>
 
@@ -398,12 +424,12 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
       {isManualFormOpen ? (
         <section className="glass-card rounded-2xl p-5 lg:p-6" aria-labelledby="manual-study-heading">
           <div className="border-b border-line pb-3">
-            <Eyebrow>Registro auditável</Eyebrow>
+            <Eyebrow>Registro manual</Eyebrow>
             <h3 id="manual-study-heading" className="mt-1 font-heading text-lg font-bold text-ink">
               Estudo realizado fora do cronômetro
             </h3>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted">
-              Use para registrar leitura, aula ou revisão feita fora do app. O tempo entra nas métricas e recebe XP uma única vez.
+              Registre uma leitura, aula ou revisão feita fora do app. O tempo aparece no seu histórico de estudos.
             </p>
           </div>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -458,45 +484,50 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
                 ))}
               </select>
             </label>
-            <label className={fieldClass} htmlFor="manual-study-difficulty">
-              Dificuldade percebida <span className="font-normal text-muted">(opcional)</span>
-              <select
-                id="manual-study-difficulty"
-                className={selectClass}
-                value={manualDifficulty}
-                onChange={(event) => setManualDifficulty(event.target.value as StudySessionDifficulty | "")}
-                disabled={isSavingManual}
-              >
-                <option value="">Não informar</option>
-                <option value="easy">Fácil</option>
-                <option value="normal">Regular</option>
-                <option value="hard">Difícil</option>
-              </select>
-            </label>
-            <label className={`${fieldClass} sm:col-span-2`} htmlFor="manual-study-summary">
-              Resumo <span className="font-normal text-muted">(opcional)</span>
-              <textarea
-                id="manual-study-summary"
-                className={textareaClass}
-                rows={3}
-                value={manualSummary}
-                onChange={(event) => setManualSummary(event.target.value)}
-                placeholder="O que foi estudado?"
-                disabled={isSavingManual}
-              />
-            </label>
-            <label className={`${fieldClass} sm:col-span-2`} htmlFor="manual-study-next-steps">
-              Próximos passos <span className="font-normal text-muted">(opcional)</span>
-              <textarea
-                id="manual-study-next-steps"
-                className={textareaClass}
-                rows={2}
-                value={manualNextSteps}
-                onChange={(event) => setManualNextSteps(event.target.value)}
-                placeholder="O que revisar depois?"
-                disabled={isSavingManual}
-              />
-            </label>
+            <details className="sm:col-span-2 rounded-xl border border-line bg-paper/40 p-3">
+              <summary className="cursor-pointer text-sm font-semibold text-ink">Adicionar detalhes (opcional)</summary>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <label className={fieldClass} htmlFor="manual-study-difficulty">
+                  Como foi o estudo?
+                  <select
+                    id="manual-study-difficulty"
+                    className={selectClass}
+                    value={manualDifficulty}
+                    onChange={(event) => setManualDifficulty(event.target.value as StudySessionDifficulty | "")}
+                    disabled={isSavingManual}
+                  >
+                    <option value="">Não informar</option>
+                    <option value="easy">Fácil</option>
+                    <option value="normal">Regular</option>
+                    <option value="hard">Difícil</option>
+                  </select>
+                </label>
+                <label className={`${fieldClass} sm:col-span-2`} htmlFor="manual-study-summary">
+                  Resumo
+                  <textarea
+                    id="manual-study-summary"
+                    className={textareaClass}
+                    rows={3}
+                    value={manualSummary}
+                    onChange={(event) => setManualSummary(event.target.value)}
+                    placeholder="O que foi estudado?"
+                    disabled={isSavingManual}
+                  />
+                </label>
+                <label className={`${fieldClass} sm:col-span-2`} htmlFor="manual-study-next-steps">
+                  O que revisar depois?
+                  <textarea
+                    id="manual-study-next-steps"
+                    className={textareaClass}
+                    rows={2}
+                    value={manualNextSteps}
+                    onChange={(event) => setManualNextSteps(event.target.value)}
+                    placeholder="Ex.: revisar os tópicos com mais erros"
+                    disabled={isSavingManual}
+                  />
+                </label>
+              </div>
+            </details>
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <button type="button" className={buttonQuietClass} onClick={() => setIsManualFormOpen(false)} disabled={isSavingManual}>
@@ -513,8 +544,8 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
         <section className="glass-card rounded-2xl p-5 lg:p-6" aria-labelledby="external-batch-heading">
           <div className="border-b border-line pb-3">
             <Eyebrow>Resolução fora do app</Eyebrow>
-            <h3 id="external-batch-heading" className="mt-1 font-heading text-lg font-bold text-ink">Lote de questões respondidas</h3>
-            <p className="mt-2 text-xs text-muted">Registre apenas totais conhecidos. Este lote não cria tentativas individuais nem concede XP.</p>
+            <h3 id="external-batch-heading" className="mt-1 font-heading text-lg font-bold text-ink">Questões respondidas fora do CursouCon</h3>
+            <p className="mt-2 text-xs text-muted">Informe quantas questões respondeu e acertou. Elas não serão adicionadas à sua lista de Questões.</p>
           </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <label className={fieldClass}>
@@ -537,14 +568,14 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
               <input className={inputClass} type="number" min="0" step="1" max={externalAnswered || undefined} value={externalCorrect} onChange={(event) => setExternalCorrect(event.target.value)} disabled={isSavingExternal} placeholder="Ex.: 28" />
             </label>
             <label className={`${fieldClass} sm:col-span-2`}>
-              Origem <span className="font-normal text-muted">(opcional)</span>
-              <input className={inputClass} value={externalSource} onChange={(event) => setExternalSource(event.target.value)} maxLength={160} disabled={isSavingExternal} placeholder="Ex.: Caderno impresso" />
+              Onde respondeu <span className="font-normal text-muted">(opcional)</span>
+              <input className={inputClass} value={externalSource} onChange={(event) => setExternalSource(event.target.value)} maxLength={160} disabled={isSavingExternal} placeholder="Ex.: Caderno impresso ou site" />
             </label>
           </div>
           <div className="mt-4 flex justify-end gap-2 border-t border-line pt-3">
             <button type="button" className={buttonQuietClass} onClick={() => setIsExternalFormOpen(false)} disabled={isSavingExternal}>Cancelar</button>
             <button type="button" className={buttonPrimaryClass} onClick={() => void handleCreateExternalBatch()} disabled={isSavingExternal}>
-              {isSavingExternal ? "Salvando..." : "Salvar lote externo"}
+              {isSavingExternal ? "Salvando..." : "Registrar respostas"}
             </button>
           </div>
         </section>
@@ -553,11 +584,14 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
       <section className="glass-card rounded-2xl p-5 lg:p-6" aria-labelledby="question-performance-title">
         <div className="border-b border-line pb-3">
           <Eyebrow>Questões</Eyebrow>
-          <h3 id="question-performance-title" className="mt-1 font-heading text-lg font-bold text-ink">Desempenho por origem</h3>
-          <p className="mt-1 text-xs text-muted">
+          <h3 id="question-performance-title" className="mt-1 font-heading text-lg font-bold text-ink">Seu desempenho em questões</h3>
+          <details className="mt-2 text-xs text-muted">
+            <summary className="cursor-pointer font-medium">Como calculamos</summary>
+            <p className="mt-2">
             {questionPerformance ? `Acumulado até ${questionPerformance.asOfDate}. ` : ""}
             Tentativas individuais usam data UTC e o resultado registrado na época; anuladas, respostas em branco e pendentes não entram nas taxas.
-          </p>
+            </p>
+          </details>
         </div>
         {isQuestionMetricsLoading ? (
           <p className="mt-4 text-sm text-muted" aria-live="polite">Carregando indicadores de questões...</p>
@@ -568,14 +602,20 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
           </div>
         ) : questionPerformance && (
           <>
-            <div className="mt-4 grid gap-3 sm:grid-cols-3">
-              <QuestionMetric label="Primeiras tentativas" correct={questionPerformance.firstAttemptCorrect} total={questionPerformance.firstAttemptGraded} detail="Tentativas avaliadas pela primeira vez" />
-              <QuestionMetric label="Repetições" correct={questionPerformance.repeatCorrect} total={questionPerformance.repeatGraded} detail="Novas respostas à mesma questão" />
-              <QuestionMetric label="Lotes externos" correct={questionPerformance.externalCorrect} total={questionPerformance.externalAnswered} detail={`${questionPerformance.externalBatches} lote(s) registrados`} />
-            </div>
+            {hasQuestionActivity ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <QuestionMetric label="Questões novas" correct={questionPerformance.firstAttemptCorrect} total={questionPerformance.firstAttemptGraded} detail="Respondidas pela primeira vez" />
+                <QuestionMetric label="Questões refeitas" correct={questionPerformance.repeatCorrect} total={questionPerformance.repeatGraded} detail="Respondidas mais de uma vez" />
+                <QuestionMetric label="Outras plataformas" correct={questionPerformance.externalCorrect} total={questionPerformance.externalAnswered} detail={`${questionPerformance.externalBatches} registro(s) fora do app`} />
+              </div>
+            ) : (
+              <p className="mt-4 rounded-xl border border-dashed border-line bg-paper/60 p-4 text-sm text-muted">
+                Responda questões em Questões ou registre respostas de outra plataforma para ver seu desempenho aqui.
+              </p>
+            )}
             {externalBatches.length > 0 && (
               <div className="mt-5 border-t border-line pt-4">
-                <h4 className="text-sm font-bold text-ink">Lotes externos recentes (até 20)</h4>
+                <h4 className="text-sm font-bold text-ink">Respostas de outras plataformas (até 20)</h4>
                 <ul className="mt-2 grid gap-2">
                   {externalBatches.map((batch) => (
                     <li key={batch.id} className="flex flex-wrap justify-between gap-2 rounded-xl border border-line bg-paper/50 px-3 py-2 text-xs text-ink">
@@ -591,7 +631,7 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
       </section>
 
       {/* 2. XP level and recent activity */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,.8fr)]">
+      <div className="grid gap-6">
         {showGamification && (
           <section className="glass-card rounded-2xl p-5 lg:p-6 shadow-xs flex flex-col justify-between">
           <div>
@@ -636,66 +676,23 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
           </section>
         )}
 
-        <section className={`glass-card rounded-2xl p-5 lg:p-6 shadow-xs flex flex-col justify-between ${showGamification ? "" : "lg:col-span-2"}`}>
-          <div>
-            <div className="border-b border-line pb-3 mb-4">
-              <Eyebrow>Histórico Local</Eyebrow>
-              <h3 className="font-heading text-lg font-bold text-ink">Atividade Recente</h3>
-            </div>
-
-            {summary.recentSessions.length > 0 ? (
-              <div className="grid gap-3">
-                <p className="text-xs leading-relaxed text-muted">
-                  O núcleo retornou {summary.recentSessions.length} registros recentes para este espaço.
-                </p>
-                <div className="rounded-xl border border-line bg-paper/60 p-3">
-                  <p className="truncate text-xs font-bold text-ink">{summary.recentSessions[0].taskTitle}</p>
-                  <p className="mt-1 text-[11px] text-muted">
-                    {summary.recentSessions[0].subjectName || "Geral"} · {formatHistoryDate(summary.recentSessions[0].endedAt)}
-                  </p>
-                  <p className="mt-2 font-mono text-[11px] font-semibold text-blue-600">
-                    {formatDuration(summary.recentSessions[0].effectiveSeconds)} de estudo efetivo
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs leading-relaxed text-muted">
-                Ainda não há sessões concluídas para formar um histórico recente.
-              </p>
-            )}
-          </div>
-        </section>
       </div>
 
       {/* 3. Metrics Row - 4 Tactile Stats Cards */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5 lg:gap-4">
-        {showGamification && (
-          <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Total de Pontos XP</p>
-          <div className="mt-1 flex items-center justify-between">
-            <span className="font-heading text-xl font-extrabold text-orange-500 tabular-nums">
-              {summary.totalXp} XP
-            </span>
-            <span className="rounded-md bg-orange-500/10 px-2 py-0.5 text-xs font-bold text-orange-600 dark:text-orange-400 tabular-nums">
-              Nível {levelInfo.level}
-            </span>
-          </div>
-          <p className="mt-2 text-[11px] text-muted">Pontos acumulados no espaço</p>
-          </div>
-        )}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:gap-4">
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Sessões Concluídas</p>
+          <p className="text-xs font-semibold text-muted">Sessões finalizadas</p>
           <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">
             {summary.completedSessions}
           </p>
           <p className="mt-2 text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
-            Todas gravadas no SQLite
+            Salvas neste espaço
           </p>
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Tempo Efetivo Total</p>
+          <p className="text-xs font-semibold text-muted">Tempo estudado</p>
           <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums font-mono">
             {formatDuration(summary.effectiveSeconds)}
           </p>
@@ -703,20 +700,12 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Registros Recentes</p>
-          <p className="mt-1 font-heading text-xl font-extrabold text-blue-600 tabular-nums">
-            {summary.recentSessions.length}
-          </p>
-          <p className="mt-2 text-[11px] text-muted font-medium">Sessões retornadas pelo núcleo</p>
-        </div>
-
-        <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Sequência planejada</p>
+          <p className="text-xs font-semibold text-muted">Sequência de estudo</p>
           <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">
             {summary.streak.currentPlannedDays} {summary.streak.currentPlannedDays === 1 ? "dia" : "dias"}
           </p>
           <p className="mt-2 text-[11px] leading-relaxed text-muted">
-            Recorde: {summary.streak.longestPlannedDays}. Conta tarefas concluídas ou parciais; dias sem tarefas são descanso.
+            Recorde: {summary.streak.longestPlannedDays} {summary.streak.longestPlannedDays === 1 ? "dia" : "dias"}. Conta tarefas concluídas ou parciais; dias sem tarefa não interrompem.
           </p>
         </div>
       </div>
@@ -726,7 +715,7 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
         <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
           <div>
             <Eyebrow>Atividade Registrada</Eyebrow>
-            <h3 className="font-heading text-lg font-bold text-ink">Tempo por Disciplina</h3>
+            <h3 className="font-heading text-lg font-bold text-ink">Tempo por matéria</h3>
           </div>
           <span className="text-xs font-semibold text-muted">Somente histórico recente</span>
         </div>
@@ -760,12 +749,12 @@ export function ProgressView({ refreshKey, showGamification, timezone, onOpenTod
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
           <div>
             <Eyebrow>Histórico de Sessões</Eyebrow>
-            <h3 className="font-heading text-lg font-bold text-ink">Registro de Estudos Concluídos</h3>
+            <h3 className="font-heading text-lg font-bold text-ink">Histórico de estudos</h3>
           </div>
 
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-muted">
-              {summary.recentSessions.length} sessões registradas
+              {summary.recentSessions.length} {summary.recentSessions.length === 1 ? "sessão registrada" : "sessões registradas"}
             </span>
           </div>
         </div>

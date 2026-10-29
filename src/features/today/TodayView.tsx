@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import {
+  createPreparation,
   acceptStudyCycleAction,
   finishStudySession,
   getDesktopErrorMessage,
   getMaterials,
-  getStudyPlanning,
   openMaterial,
   pauseStudySession,
   rescheduleStudyTask,
@@ -20,11 +20,9 @@ import type {
   StudyPlan,
   StudySessionSummary,
   StudyCycleSuggestion,
-  StudyPlanningSummary,
   StudyTaskSummary,
   StudyTaskStatus,
 } from "../../shared/desktop/contracts";
-import { GettingStartedChecklist } from "./GettingStartedChecklist";
 import {
   notifyPomodoroPhaseCompleted,
   preparePomodoroNotifications,
@@ -51,7 +49,7 @@ type TodayViewProps = {
   dailyPlan: DailyPlan | null;
   isLoading: boolean;
   error: string | null;
-  onOpenPlan: () => void;
+  onOpenPlan: (step?: "preparation" | "subject" | "task") => void;
   onDataChanged: () => void;
 };
 
@@ -97,6 +95,7 @@ export function TodayView({
     () => pomodoroSettings.focusMinutes * 60,
   );
   const [pomodoroRunning, setPomodoroRunning] = useState(false);
+  const [pomodoroLinkedToSession, setPomodoroLinkedToSession] = useState(false);
   const [pomodoroCompletedFocusCount, setPomodoroCompletedFocusCount] = useState(0);
   const [isPomodoroTransitioning, setIsPomodoroTransitioning] = useState(false);
   const [pomodoroMessage, setPomodoroMessage] = useState<string | null>(null);
@@ -104,43 +103,17 @@ export function TodayView({
   const [contextMaterials, setContextMaterials] = useState<MaterialSummary[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string | null>(null);
-  const [studyPlanning, setStudyPlanning] = useState<StudyPlanningSummary | null>(null);
-  const [isStudyPlanningLoading, setIsStudyPlanningLoading] = useState(false);
-  const [isStudyPlanningUnavailable, setIsStudyPlanningUnavailable] = useState(false);
-  const [isChecklistDismissed, setIsChecklistDismissed] = useState(false);
 
   const primaryPreparation = plan?.preparations.find((prep) => prep.isPrimary);
+  const openTaskPlanner = () => {
+    onOpenPlan("task");
+  };
   const activeSession = dailyPlan?.activeSession ?? null;
   const cycleSuggestion = dailyPlan?.cycleSuggestion ?? null;
 
   useEffect(() => {
-    if (!primaryPreparation) {
-      setStudyPlanning(null);
-      setIsStudyPlanningUnavailable(false);
-      setIsStudyPlanningLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setIsStudyPlanningLoading(true);
-    setIsStudyPlanningUnavailable(false);
-    void getStudyPlanning({ preparationId: primaryPreparation.id })
-      .then((planning) => {
-        if (!cancelled) setStudyPlanning(planning);
-      })
-      .catch(() => {
-        // O guia é orientativo: uma falha na leitura do ciclo não deve acusar
-        // configuração ausente nem interromper a tela Hoje.
-        if (!cancelled) setIsStudyPlanningUnavailable(true);
-      })
-      .finally(() => {
-        if (!cancelled) setIsStudyPlanningLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [primaryPreparation?.id]);
+    setPomodoroLinkedToSession(false);
+  }, [activeSession?.id]);
 
   useEffect(() => {
     setReviewOn("");
@@ -225,18 +198,26 @@ export function TodayView({
   }, [pomodoroRunning]);
 
   useEffect(() => {
-    if (!pomodoroRunning || !activeSession) return;
-    if (pomodoroPhase === "focus" && activeSession.status !== "active") {
-      setPomodoroRunning(false);
+    if (!pomodoroLinkedToSession || isPomodoroTransitioning) return;
+    if (!activeSession) {
+      setPomodoroLinkedToSession(false);
+      return;
     }
-  }, [activeSession, pomodoroPhase, pomodoroRunning]);
+    const expectedStatus = pomodoroPhase === "focus" ? "active" : "paused";
+    if (activeSession.status !== expectedStatus) setPomodoroRunning(false);
+  }, [
+    activeSession?.id,
+    activeSession?.status,
+    isPomodoroTransitioning,
+    pomodoroLinkedToSession,
+    pomodoroPhase,
+  ]);
 
   useEffect(() => {
     if (
       !pomodoroRunning ||
       pomodoroSecondsLeft > 0 ||
-      isPomodoroTransitioning ||
-      !activeSession
+      isPomodoroTransitioning
     ) {
       return;
     }
@@ -244,27 +225,28 @@ export function TodayView({
     setIsPomodoroTransitioning(true);
     const transitionPhase = async () => {
       if (pomodoroPhase === "focus") {
-        if (activeSession.status !== "active") {
+        if (pomodoroLinkedToSession && activeSession?.status !== "active") {
           setPomodoroRunning(false);
           setPomodoroSecondsLeft(1);
-          setPomodoroMessage("Inicie uma sessão ativa para continuar o foco.");
+          setPomodoroMessage("Retome a sessão para continuar o foco sincronizado.");
           setIsPomodoroTransitioning(false);
           return;
         }
-
-        try {
-          await pauseStudySession({
-            sessionId: activeSession.id,
-            effectiveSeconds: getElapsedSeconds(activeSession, Date.now()),
-          });
-        } catch (operationError: unknown) {
-          setPomodoroRunning(false);
-          setPomodoroSecondsLeft(1);
-          setActionError(getDesktopErrorMessage(operationError));
-          setIsPomodoroTransitioning(false);
-          return;
+        if (pomodoroLinkedToSession && activeSession?.status === "active") {
+          try {
+            await pauseStudySession({
+              sessionId: activeSession.id,
+              effectiveSeconds: getElapsedSeconds(activeSession, Date.now()),
+            });
+            onDataChanged();
+          } catch (operationError: unknown) {
+            setPomodoroRunning(false);
+            setPomodoroSecondsLeft(1);
+            setActionError(getDesktopErrorMessage(operationError));
+            setIsPomodoroTransitioning(false);
+            return;
+          }
         }
-
         const completedFocusCount = pomodoroCompletedFocusCount + 1;
         const nextPhase: PomodoroPhase =
           completedFocusCount % 4 === 0 ? "long_break" : "short_break";
@@ -273,43 +255,42 @@ export function TodayView({
         setPomodoroSecondsLeft(getPomodoroPhaseSeconds(nextPhase, pomodoroSettings));
         setPomodoroMessage(
           nextPhase === "long_break"
-            ? "Foco concluído. A sessão foi pausada e começou o intervalo longo."
-            : "Foco concluído. A sessão foi pausada e começou o intervalo curto.",
+            ? "Foco concluído. Começou o intervalo longo."
+            : "Foco concluído. Começou o intervalo curto.",
         );
         notifyPomodoroPhaseCompleted(
           "Foco concluído",
           nextPhase === "long_break"
-            ? "Sessão pausada. Hora do intervalo longo."
-            : "Sessão pausada. Hora do intervalo curto.",
+            ? "Hora do intervalo longo."
+            : "Hora do intervalo curto.",
         );
-        onDataChanged();
       } else {
-        if (activeSession.status !== "paused") {
+        if (pomodoroLinkedToSession && activeSession?.status !== "paused") {
           setPomodoroRunning(false);
           setPomodoroSecondsLeft(1);
-          setPomodoroMessage("Pause a sessão antes de iniciar um intervalo.");
+          setPomodoroMessage("Pause a sessão para continuar o intervalo sincronizado.");
           setIsPomodoroTransitioning(false);
           return;
         }
-
-        try {
-          await resumeStudySession({ sessionId: activeSession.id });
-        } catch (operationError: unknown) {
-          setPomodoroRunning(false);
-          setPomodoroSecondsLeft(1);
-          setActionError(getDesktopErrorMessage(operationError));
-          setIsPomodoroTransitioning(false);
-          return;
+        if (pomodoroLinkedToSession && activeSession?.status === "paused") {
+          try {
+            await resumeStudySession({ sessionId: activeSession.id });
+            onDataChanged();
+          } catch (operationError: unknown) {
+            setPomodoroRunning(false);
+            setPomodoroSecondsLeft(1);
+            setActionError(getDesktopErrorMessage(operationError));
+            setIsPomodoroTransitioning(false);
+            return;
+          }
         }
-
         setPomodoroPhase("focus");
         setPomodoroSecondsLeft(pomodoroSettings.focusMinutes * 60);
-        setPomodoroMessage("Intervalo concluído. O próximo foco começou.");
+        setPomodoroMessage("Intervalo concluído. Começou um novo foco.");
         notifyPomodoroPhaseCompleted(
           "Intervalo concluído",
           "O próximo bloco de foco começou.",
         );
-        onDataChanged();
       }
 
       setIsPomodoroTransitioning(false);
@@ -321,6 +302,7 @@ export function TodayView({
     isPomodoroTransitioning,
     onDataChanged,
     pomodoroCompletedFocusCount,
+    pomodoroLinkedToSession,
     pomodoroPhase,
     pomodoroRunning,
     pomodoroSecondsLeft,
@@ -344,6 +326,7 @@ export function TodayView({
     setPendingTaskId(task.id);
     try {
       await startStudySession({ taskId: task.id });
+      setActionMessage(`Sessão iniciada: ${task.title}. O cronômetro está contando em Hoje.`);
       onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
@@ -364,7 +347,7 @@ export function TodayView({
         cycleStep: cycleSuggestion.cycleStep,
         scheduledFor: dailyPlan.date,
       });
-      setActionMessage(`Ação adicionada ao plano: ${result.task.title}.`);
+      setActionMessage(`Estudo adicionado a Hoje: ${result.task.title}.`);
       onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
@@ -375,7 +358,7 @@ export function TodayView({
 
   const handlePause = async () => {
     if (!activeSession || activeSession.status !== "active") return;
-    setPomodoroRunning(false);
+    if (pomodoroLinkedToSession) setPomodoroRunning(false);
     setActionError(null);
     setActionMessage(null);
     setPendingTaskId(activeSession.taskId);
@@ -409,7 +392,7 @@ export function TodayView({
           ? "Sessão retomada. O trecho desde o último checkpoint foi descartado para revisão manual."
           : "Sessão retomada.",
       );
-      if (pomodoroPhase === "focus") {
+      if (pomodoroLinkedToSession && pomodoroPhase === "focus") {
         setPomodoroRunning(true);
       }
       onDataChanged();
@@ -456,7 +439,7 @@ export function TodayView({
       }
       effectiveSeconds = minutes * 60;
     }
-    setPomodoroRunning(false);
+    if (pomodoroLinkedToSession) setPomodoroRunning(false);
     setActionError(null);
     setActionMessage(null);
     setPendingTaskId(activeSession.taskId);
@@ -480,10 +463,12 @@ export function TodayView({
           : finishMessage,
       );
       setReviewOn("");
-      setPomodoroRunning(false);
-      setPomodoroPhase("focus");
-      setPomodoroSecondsLeft(pomodoroSettings.focusMinutes * 60);
-      setPomodoroCompletedFocusCount(0);
+      if (pomodoroLinkedToSession) {
+        setPomodoroRunning(false);
+        setPomodoroPhase("focus");
+        setPomodoroSecondsLeft(pomodoroSettings.focusMinutes * 60);
+        setPomodoroCompletedFocusCount(0);
+      }
       onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
@@ -499,7 +484,7 @@ export function TodayView({
     setPendingTaskId(task.id);
     try {
       await skipStudyTask({ taskId: task.id });
-      setActionMessage("Tarefa pulada.");
+      setActionMessage("Estudo pulado.");
       onDataChanged();
     } catch (operationError: unknown) {
       setActionError(getDesktopErrorMessage(operationError));
@@ -514,7 +499,7 @@ export function TodayView({
     setPendingTaskId(task.id);
     try {
       await rescheduleStudyTask({ taskId: task.id, scheduledFor });
-      setActionMessage("Tarefa reagendada.");
+      setActionMessage("Estudo reagendado.");
       onDataChanged();
       return true;
     } catch (operationError: unknown) {
@@ -526,13 +511,19 @@ export function TodayView({
   };
 
   const handleStartPomodoro = () => {
-    const requiredStatus = pomodoroPhase === "focus" ? "active" : "paused";
-    if (!activeSession || activeSession.status !== requiredStatus) {
-      setActionError(
-        pomodoroPhase === "focus"
-          ? "Inicie uma sessão de estudo antes de iniciar o foco."
-          : "O intervalo só começa depois que a sessão é pausada.",
-      );
+    if (pomodoroLinkedToSession && activeSession) {
+      const requiredStatus = pomodoroPhase === "focus" ? "active" : "paused";
+      if (activeSession.status !== requiredStatus) {
+        setPomodoroMessage(
+          pomodoroPhase === "focus"
+            ? "Inicie ou retome a sessão para sincronizar o foco."
+            : "Pause a sessão para sincronizar o intervalo.",
+        );
+        return;
+      }
+    }
+    if (pomodoroLinkedToSession && !activeSession) {
+      setPomodoroMessage("Sem sessão ativa; desative a sincronização para usar livremente.");
       return;
     }
     if (pomodoroSecondsLeft === 0) {
@@ -545,18 +536,14 @@ export function TodayView({
     );
   };
 
-  const handleResumePomodoro = async () => {
-    if (pomodoroPhase === "short_break" || pomodoroPhase === "long_break") {
-      handleStartPomodoro();
-      return;
-    }
-    await handleResume();
+  const handleResumePomodoro = () => {
+    handleStartPomodoro();
   };
 
-  const handlePausePomodoro = async () => {
+  const handlePausePomodoro = () => {
     if (!pomodoroRunning) return;
-    if (pomodoroPhase === "focus" && activeSession?.status === "active") {
-      await handlePause();
+    if (pomodoroLinkedToSession && pomodoroPhase === "focus" && activeSession?.status === "active") {
+      void handlePause();
       return;
     }
     setPomodoroRunning(false);
@@ -564,7 +551,7 @@ export function TodayView({
   };
 
   const handleResetPomodoro = async () => {
-    if (pomodoroRunning && pomodoroPhase === "focus" && activeSession?.status === "active") {
+    if (pomodoroLinkedToSession && pomodoroRunning && pomodoroPhase === "focus" && activeSession?.status === "active") {
       await handlePause();
     }
     setPomodoroRunning(false);
@@ -586,12 +573,6 @@ export function TodayView({
   };
 
   const isBusy = isLoading || pendingTaskId !== null || isAcceptingCycleAction;
-  const pomodoroCanRun = Boolean(
-    activeSession &&
-      (pomodoroPhase === "focus"
-        ? activeSession.status === "active"
-        : activeSession.status === "paused"),
-  );
   const pomodoroPhaseLabel = getPomodoroPhaseLabel(pomodoroPhase);
 
   return (
@@ -658,12 +639,12 @@ export function TodayView({
                 ? "Estudo em Andamento"
                 : activeSession?.status === "interrupted"
                 ? "Tempo Incerto para Revisar"
-                : "Próxima Ação do Seu Ciclo"}
+                : "Próxima ação"}
             </span>
 
             {primaryPreparation && (
               <span className="text-xs font-medium text-slate-300/80">
-                • {primaryPreparation.name}
+                Preparação: {primaryPreparation.name}
               </span>
             )}
           </div>
@@ -671,10 +652,14 @@ export function TodayView({
           {/* Main Title */}
           <div>
             <h2 className="font-heading text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
-              {activeTask?.title || (cycleSuggestion ? `Próxima ação: ${cycleSuggestion.subjectName}` : "Plano de Estudos de Hoje")}
+              {activeTask?.title || (cycleSuggestion ? `Próxima ação: ${cycleSuggestion.subjectName}` : "Seu estudo de hoje")}
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
-              {activeTask?.objective || "Selecione uma matéria da sua fila de hoje para iniciar a sessão de estudos com o cronômetro local."}
+              {activeTask
+                ? activeTask.objective || "Seu próximo estudo está pronto. Comece quando quiser."
+                : cycleSuggestion
+                  ? "Este é o próximo estudo sugerido pelo ciclo. Adicione-o a Hoje quando quiser."
+                  : "Agende o próximo estudo. Tema e duração bastam; edital, pesos e ciclo podem esperar."}
             </p>
           </div>
 
@@ -705,22 +690,23 @@ export function TodayView({
                   ⏸ Pausar
                 </button>
               </>
-            ) : (
-              <button
-                className={buttonPrimaryClass}
-                type="button"
-                onClick={() => activeTask && handleStart(activeTask)}
-                disabled={isBusy || !activeTask}
-              >
-                {activeTask
-                  ? `▶ Iniciar Sessão (${activeTask.plannedMinutes} min)`
-                  : "Nenhuma tarefa para iniciar"}
-              </button>
+            ) : activeTask ? (
+                <button className={buttonPrimaryClass} type="button" onClick={() => handleStart(activeTask)} disabled={isBusy}>
+                  ▶ Começar estudo · {activeTask.plannedMinutes} min
+                </button>
+              ) : cycleSuggestion ? (
+                <button className={buttonPrimaryClass} type="button" onClick={() => void handleAcceptCycleAction()} disabled={isBusy}>
+                  {isBusy ? "Adicionando estudo..." : "Adicionar estudo de hoje"}
+                </button>
+              ) : (
+                <button className={buttonPrimaryClass} type="button" onClick={openTaskPlanner} disabled={isBusy}>
+                  Agendar estudo
+                </button>
             )}
 
             {activeSession && activeSession.status !== "interrupted" && (
               <button className={buttonQuietClass} type="button" onClick={() => handleFinish("partial")} disabled={isBusy}>
-                Encerrar Parcial
+                Encerrar sem concluir
               </button>
             )}
             {activeSession && activeTask && (activeTask.materialId || activeTask.subjectId) && (
@@ -729,6 +715,12 @@ export function TodayView({
               </button>
             )}
           </div>
+
+          {activeSession && activeSession.status !== "interrupted" && (
+            <p className="max-w-2xl text-[11px] leading-relaxed text-slate-300">
+              Ao encerrar sem concluir, o tempo estudado fica salvo e o estudo continua marcado como pendente.
+            </p>
+          )}
 
           {activeSession?.status === "interrupted" && (
             <section className="grid max-w-2xl gap-3 rounded-xl border border-red-300/35 bg-red-950/20 p-3" id="interrupted-session-review" tabIndex={-1} aria-labelledby="interrupted-session-title">
@@ -763,9 +755,12 @@ export function TodayView({
           )}
 
           {activeSession && (
+            <details className="max-w-2xl rounded-xl border border-white/15 bg-white/5 p-3">
+            <summary className="cursor-pointer text-xs font-semibold text-slate-100">Anotar resumo ou agendar revisão <span className="font-normal text-slate-300">(opcional)</span></summary>
+            <div className="mt-3 grid gap-3">
             <div className="max-w-md rounded-xl border border-white/15 bg-white/5 p-3">
               <label className="grid gap-1.5 text-xs font-semibold text-slate-100">
-                Agendar revisão ao concluir a sessão <span className="font-normal text-slate-300">(opcional)</span>
+                Agendar revisão ao concluir a sessão
                 <input
                   className={inputClass}
                   type="date"
@@ -780,9 +775,7 @@ export function TodayView({
                   : "Vincule a tarefa a um assunto para poder agendar uma revisão."}
               </p>
             </div>
-          )}
 
-          {activeSession && (
             <section className="grid max-w-2xl gap-3 rounded-xl border border-white/15 bg-white/5 p-3" aria-labelledby="session-reflection-title">
               <div>
                 <h3 id="session-reflection-title" className="text-xs font-bold text-slate-100">Resumo da sessão</h3>
@@ -843,27 +836,17 @@ export function TodayView({
                 </button>
               </div>
             </section>
+            </div>
+            </details>
           )}
         </div>
       </section>
-
-      {plan && !isChecklistDismissed && (
-        <GettingStartedChecklist
-          hasPreparation={plan.preparations.length > 0}
-          hasSubjects={plan.subjects.length > 0}
-          hasCycle={isStudyPlanningUnavailable || (studyPlanning?.cycleSlots.length ?? 0) > 0}
-          isCyclePending={isStudyPlanningLoading}
-          hasTaskToday={tasksToRender.length > 0 || activeSession !== null}
-          onOpenPlan={onOpenPlan}
-          onDismiss={() => setIsChecklistDismissed(true)}
-        />
-      )}
 
       {contextTask && (
         <section id="task-study-context" tabIndex={-1} className="grid gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs" aria-labelledby="task-context-title">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <Eyebrow>Contexto da tarefa</Eyebrow>
+              <Eyebrow>Detalhes do estudo</Eyebrow>
               <h3 id="task-context-title" className="mt-1 font-heading text-lg font-bold text-ink">{contextTask.title}</h3>
               <p className="mt-1 text-xs text-muted">{contextTask.materialName ?? "Sem material vinculado"} · {contextTask.subjectName ?? "Sem assunto vinculado"}</p>
             </div>
@@ -895,10 +878,14 @@ export function TodayView({
 
       {dailyPlan && <ReviewQueue reviews={dailyPlan.reviews} onDataChanged={onDataChanged} timezone={timezone} />}
 
-      {/* 2. Daily plan metrics */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+      {/* Daily metrics stay available without delaying the next study action. */}
+      {(tasksToRender.length > 0 || activeSession) && <details className="rounded-2xl border border-line bg-card px-4 py-3 shadow-xs">
+      <summary className="cursor-pointer text-xs font-semibold text-muted">
+        Resumo do dia · {completedTaskCount} de {tasksToRender.length} estudos concluídos · {plannedMinutes} min planejados
+      </summary>
+      <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Tarefas do Dia</p>
+          <p className="text-xs font-semibold text-muted">Estudos de hoje</p>
           <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">{tasksToRender.length}</p>
           <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-paper-deep">
             <div
@@ -910,7 +897,7 @@ export function TodayView({
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Tarefas Concluídas</p>
+          <p className="text-xs font-semibold text-muted">Estudos concluídos</p>
           <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">{completedTaskCount}</p>
           <p className="mt-2 text-[11px] text-muted font-semibold">Atualizado pelo plano local</p>
         </div>
@@ -929,35 +916,45 @@ export function TodayView({
           <p className="mt-2 text-[11px] text-muted">Tempo efetivo em andamento</p>
         </div>
       </div>
+      </details>}
 
       {/* 3. Main Dashboard Body - Tasks & Utility Panel */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(300px,.8fr)]">
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(300px,.8fr)]">
         {/* Task List Container */}
         <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs">
           <div className="flex items-center justify-between border-b border-line pb-4">
             <div>
-              <Eyebrow>Plano de Estudos do Dia</Eyebrow>
-              <h3 className="mt-1 font-heading text-lg font-bold text-ink">Fila de Matérias Agendadas</h3>
+              <Eyebrow>Seu plano do dia</Eyebrow>
+              <h3 className="mt-1 font-heading text-lg font-bold text-ink">Estudos de hoje</h3>
             </div>
+            {tasksToRender.length > 0 && (
             <button
               type="button"
-              onClick={onOpenPlan}
+              onClick={openTaskPlanner}
               className={`${buttonSecondaryClass} px-3 py-1.5 text-xs`}
             >
-              + Adicionar Tarefa
+              + Adicionar estudo
             </button>
+            )}
           </div>
 
           {actionError && <p className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600">{actionError}</p>}
           {actionMessage && <p className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 font-medium">{actionMessage}</p>}
 
           <div className="mt-4 grid gap-3">
-            {cycleSuggestion && (
-              <CycleSuggestionCard
+          {cycleSuggestion && activeTask && (
+            <details className="rounded-xl border border-line bg-paper px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-muted">
+                Ver alternativa: {cycleSuggestion.subjectName} · {cycleSuggestion.plannedMinutes} min
+              </summary>
+              <div className="mt-3">
+                <CycleSuggestionCard
                 suggestion={cycleSuggestion}
                 isBusy={isBusy}
                 onAccept={() => void handleAcceptCycleAction()}
-              />
+                />
+              </div>
+            </details>
             )}
             {tasksToRender.length > 0 ? (
               tasksToRender.map((task, index) => (
@@ -965,6 +962,7 @@ export function TodayView({
                   key={task.id}
                   task={task}
                   index={index}
+                  isNextAction={!activeSession && task.id === activeTask?.id}
                   isActive={activeSession?.taskId === task.id}
                   isBusy={isBusy}
                   onStart={() => handleStart(task)}
@@ -974,19 +972,7 @@ export function TodayView({
                 />
               ))
             ) : (
-              <div className="rounded-xl border border-dashed border-line bg-paper p-8 text-center">
-                <p className="text-sm font-semibold text-ink">Nenhuma tarefa planejada para hoje.</p>
-                <p className="mt-1 text-xs text-muted">
-                  Crie uma tarefa no Plano para definir sua próxima ação de estudo.
-                </p>
-                <button
-                  type="button"
-                  onClick={onOpenPlan}
-                  className={`${buttonPrimaryClass} mt-4 text-xs`}
-                >
-                  Abrir Plano
-                </button>
-              </div>
+              <p className="py-4 text-center text-sm text-muted">Nenhum estudo agendado para hoje.</p>
             )}
           </div>
         </section>
@@ -994,25 +980,17 @@ export function TodayView({
         {/* Right Utility Cards */}
         <div className="grid gap-4 content-start">
           {/* Local Storage & System Info */}
-          <section className="rounded-2xl border border-line bg-card p-5 shadow-xs">
-            <Eyebrow>Status do Sistema</Eyebrow>
-            <h4 className="mt-1 font-heading text-base font-bold text-ink">Espaço 100% Offline</h4>
-
-            <div className="mt-4 grid gap-2.5 text-xs text-muted">
+          <details className="rounded-2xl border border-line bg-card px-4 py-3 shadow-xs">
+            <summary className="cursor-pointer text-xs font-semibold text-muted">Sobre este espaço e seus dados</summary>
+            <div className="mt-3 grid gap-2.5 text-xs text-muted">
+              <div className="font-semibold text-ink">Seus dados ficam neste computador.</div>
               <div className="flex items-center justify-between border-b border-line pb-2">
                 <span>Data do Plano:</span>
                 <span className="font-semibold text-ink">{formatToday(timezone)}</span>
               </div>
-              <div className="flex items-center justify-between border-b border-line pb-2">
-                <span>Modo de Armazenamento:</span>
-                <span className="font-bold text-emerald-600">SQLite Local</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Privacidade de Dados:</span>
-                <span className="font-semibold text-ink">Sem envio à nuvem</span>
-              </div>
+              <span>O app funciona sem internet; seus dados ficam neste computador.</span>
             </div>
-          </section>
+          </details>
 
           <section className="rounded-2xl border border-line bg-card p-5 shadow-xs" aria-labelledby="pomodoro-title">
             <div className="flex items-start justify-between gap-3">
@@ -1031,7 +1009,40 @@ export function TodayView({
               {formatPomodoroTime(pomodoroSecondsLeft)}
             </p>
 
-            <div className="mt-4 grid gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+            {activeSession ? (
+              <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-xl border border-line bg-paper px-3 py-2.5 text-xs text-ink">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-blue-600"
+                  checked={pomodoroLinkedToSession}
+                  disabled={activeSession.status === "interrupted" || isPomodoroTransitioning}
+                  onChange={(event) => {
+                    setPomodoroLinkedToSession(event.target.checked);
+                    setPomodoroMessage(
+                      event.target.checked
+                        ? "Pomodoro sincronizado com a sessão de estudo."
+                        : "Pomodoro livre; a sessão segue seu próprio cronômetro.",
+                    );
+                  }}
+                />
+                <span>
+                  <span className="block font-semibold">Sincronizar com a sessão de estudo</span>
+                  <span className="mt-0.5 block text-muted">
+                    {activeSession.status === "interrupted"
+                      ? "Retome a sessão para poder sincronizar."
+                      : "Ligado: foco e pausas também pausam e retomam a sessão."}
+                  </span>
+                </span>
+              </label>
+            ) : (
+              <p className="mt-3 rounded-xl border border-line bg-paper px-3 py-2.5 text-xs text-muted">
+                Modo livre: o Pomodoro funciona sem iniciar uma sessão de estudo.
+              </p>
+            )}
+
+            <details className="mt-3 rounded-xl border border-line bg-paper px-3 py-2">
+            <summary className="cursor-pointer text-xs font-semibold text-muted">Ajustar tempos de foco e pausa</summary>
+            <div className="mt-3 grid gap-2 sm:grid-cols-3">
               <label className={fieldClass}>
                 Foco
                 <select
@@ -1077,6 +1088,7 @@ export function TodayView({
                 </select>
               </label>
             </div>
+            </details>
 
             <div className="mt-4 flex flex-wrap gap-2">
               {!pomodoroRunning ? (
@@ -1084,7 +1096,7 @@ export function TodayView({
                   type="button"
                   className={`${buttonPrimaryClass} min-h-9 px-3 text-xs`}
                   onClick={handleStartPomodoro}
-                  disabled={!pomodoroCanRun || isPomodoroTransitioning}
+                  disabled={isPomodoroTransitioning}
                 >
                   {pomodoroPhase === "focus" ? "Iniciar Foco" : "Iniciar Intervalo"}
                 </button>
@@ -1109,8 +1121,7 @@ export function TodayView({
             </div>
 
             <p className="mt-3 text-[11px] leading-relaxed text-muted">
-              {pomodoroMessage ||
-                "O intervalo pausa a sessão automaticamente e não entra no tempo estudado."}
+              {pomodoroMessage || "Temporizador independente das sessões de estudo."}
             </p>
           </section>
         </div>
@@ -1122,6 +1133,7 @@ export function TodayView({
 function TaskCard({
   task,
   index,
+  isNextAction,
   isActive,
   isBusy,
   onStart,
@@ -1131,6 +1143,7 @@ function TaskCard({
 }: {
   task: StudyTaskSummary;
   index: number;
+  isNextAction: boolean;
   isActive: boolean;
   isBusy: boolean;
   onStart: () => void;
@@ -1188,63 +1201,46 @@ function TaskCard({
             <span className="rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-bold text-emerald-600 dark:text-emerald-400">
               Concluída
             </span>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={onStart}
-                disabled={isBusy}
-                className={`${buttonPrimaryClass} px-3 py-1.5 text-xs`}
-              >
-                ▶ Iniciar
-              </button>
-              <button
-                type="button"
-                onClick={onSkip}
-                disabled={isBusy}
-                className={`${buttonQuietClass} px-2.5 py-1.5 text-xs`}
-              >
-                Pular
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsEditingDate(!isEditingDate)}
-                disabled={isBusy}
-                className={`${buttonQuietClass} px-2.5 py-1.5 text-xs`}
-              >
-                Reagendar
-              </button>
-            </div>
-          )}
+          ) : null}
         </div>
       </div>
 
-      {(task.materialId || task.subjectId) && (
-        <button type="button" className={`${buttonQuietClass} self-start px-2.5 py-1.5 text-xs`} onClick={onOpenContext}>
-          Material e notas
-        </button>
-      )}
-
-      {isEditingDate && (
-        <div className="flex items-center gap-2 pt-2.5 border-t border-line">
-          <input
-            type="date"
-            value={newDate}
-            onChange={(e) => setNewDate(e.target.value)}
-            className={`${inputClass} text-xs py-1 px-2.5 w-auto`}
-          />
-          <button
-            type="button"
-            onClick={async () => {
-              if (await onReschedule(newDate)) {
-                setIsEditingDate(false);
-              }
-            }}
-            className={`${buttonSecondaryClass} text-xs px-3 py-1.5`}
-          >
-            Salvar
+      {!isCompleted && !isActive && <details className="self-start">
+        <summary className="cursor-pointer list-none text-xs font-semibold text-muted">Mais opções</summary>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => setIsEditingDate((editing) => !editing)} disabled={isBusy}
+            className={`${buttonQuietClass} px-2.5 py-1.5 text-xs`}>
+            {isEditingDate ? "Cancelar reagendamento" : "Reagendar"}
           </button>
+          <button type="button" onClick={onSkip} disabled={isBusy} className={`${buttonQuietClass} px-2.5 py-1.5 text-xs`}>
+            Pular tarefa
+          </button>
+          <button type="button" onClick={onStart} disabled={isBusy} className={`${buttonQuietClass} px-2.5 py-1.5 text-xs`}>
+            {isNextAction ? "Começar este estudo" : "Começar estudo"}
+          </button>
+          {(task.materialId || task.subjectId) && (
+            <button type="button" className={`${buttonQuietClass} px-2.5 py-1.5 text-xs`} onClick={onOpenContext}>
+              Abrir material e notas
+            </button>
+          )}
         </div>
+        {isEditingDate && (
+          <div className="mt-2 flex items-center gap-2 border-t border-line pt-2.5">
+            <label className="grid gap-1 text-xs font-semibold text-muted">
+              Nova data
+              <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} className={`${inputClass} w-auto px-2.5 py-1 text-xs`} />
+            </label>
+            <button type="button" onClick={async () => { if (await onReschedule(newDate)) setIsEditingDate(false); }}
+              className={`${buttonSecondaryClass} mt-4 px-3 py-1.5 text-xs`}>
+              Salvar data
+            </button>
+          </div>
+        )}
+      </details>}
+      {(isCompleted || isActive) && (task.materialId || task.subjectId) && (
+        <button type="button" className={`${buttonQuietClass} self-start px-2.5 py-1.5 text-xs`} onClick={onOpenContext}>
+          Abrir material e notas
+        </button>
       )}
     </div>
   );
@@ -1263,9 +1259,9 @@ function CycleSuggestionCard({
     <div className="rounded-2xl border border-blue-500/30 bg-blue-500/5 p-4 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Próximo bloco do ciclo</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Próximo estudo sugerido</p>
           <h4 className="mt-1 font-heading text-base font-bold text-ink">{suggestion.subjectName}</h4>
-          <p className="mt-1 text-xs text-muted">{suggestion.plannedMinutes} minutos · posição {suggestion.cyclePosition + 1}</p>
+          <p className="mt-1 text-xs text-muted">{suggestion.plannedMinutes} minutos</p>
         </div>
         <button
           type="button"
@@ -1273,11 +1269,11 @@ function CycleSuggestionCard({
           onClick={onAccept}
           disabled={isBusy}
         >
-          {isBusy ? "Adicionando..." : "Adicionar ao plano de hoje"}
+          {isBusy ? "Adicionando..." : "Adicionar estudo de hoje"}
         </button>
       </div>
       <p className="mt-3 text-[11px] leading-relaxed text-muted">
-        O aceite cria uma tarefa local e avança o ciclo uma única vez. Você ainda poderá reagendar ou pular a tarefa.
+        Adicione este estudo à lista de hoje quando quiser fazê-lo.
       </p>
     </div>
   );

@@ -42,6 +42,84 @@ impl MaterialStore for LocalWorkspaceStore {
         load_materials(&connection)
     }
 
+    fn delete_material(&self, material_id: &str) -> Result<u64, WorkspaceError> {
+        let workspace = self
+            .active_workspace()?
+            .ok_or(WorkspaceError::NoActiveWorkspace)?;
+        let mut connection = self.active_database()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| map_database_error("iniciar remoção do material", error))?;
+        let (content_hash, source_url): (String, Option<String>) = transaction
+            .query_row(
+                "SELECT content_hash, source_url FROM materials WHERE id = ?1",
+                params![material_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => WorkspaceError::InvalidInput(
+                    "O material escolhido não existe mais.".to_string(),
+                ),
+                other => map_database_error("localizar material para remoção", other),
+            })?;
+        let removed_note_count: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM notes WHERE material_id = ?1 AND subject_id IS NULL",
+                params![material_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| map_database_error("contar notas do material", error))?;
+        transaction
+            .execute(
+                "UPDATE notes SET material_id = NULL, updated_at = CURRENT_TIMESTAMP
+                 WHERE material_id = ?1 AND subject_id IS NOT NULL",
+                params![material_id],
+            )
+            .map_err(|error| map_database_error("preservar notas associadas a assuntos", error))?;
+        transaction
+            .execute(
+                "DELETE FROM notes WHERE material_id = ?1 AND subject_id IS NULL",
+                params![material_id],
+            )
+            .map_err(|error| map_database_error("remover notas exclusivas do material", error))?;
+        let deleted = transaction
+            .execute(
+                "DELETE FROM materials WHERE id = ?1",
+                params![material_id],
+            )
+            .map_err(|error| map_database_error("remover material da biblioteca", error))?;
+        if deleted == 0 {
+            return Err(WorkspaceError::InvalidInput(
+                "O material escolhido não existe mais.".to_string(),
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(|error| map_database_error("confirmar remoção do material", error))?;
+
+        if source_url.is_none() {
+            let connection = self.active_database()?;
+            let remaining_references: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM materials WHERE content_hash = ?1 AND source_url IS NULL",
+                    params![content_hash.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|error| map_database_error("verificar cópias restantes do material", error))?;
+            if remaining_references == 0 {
+                let blob_path = workspace.path.join("blobs").join(content_hash);
+                if let Err(error) = fs::remove_file(blob_path) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        return Err(map_io_error("apagar a cópia do material", error));
+                    }
+                }
+            }
+        }
+
+        u64::try_from(removed_note_count)
+            .map_err(|_| WorkspaceError::Database("a contagem de notas removidas é inválida".to_string()))
+    }
+
     fn import_material(
         &self,
         input: &ImportMaterialInput,

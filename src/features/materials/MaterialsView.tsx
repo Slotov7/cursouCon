@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   getDesktopErrorMessage,
+  deleteMaterial,
   getMaterials,
   importMaterial,
   openMaterial,
@@ -49,6 +50,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
     | "importing"
     | "registering-link"
     | "opening"
+    | "deleting"
     | "tagging"
     | "subjects"
   >("idle");
@@ -149,7 +151,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
       ]);
       setSelectedPath("");
       setIsImportingModalOpen(false);
-      setMessage("Material importado para o espaço local.");
+      setMessage(`Material salvo em Materiais: ${importedMaterial.originalName}.`);
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -181,7 +183,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
       setLinkTitle("");
       setSubjectId("");
       setIsImportingModalOpen(false);
-      setMessage("Link registrado na biblioteca local.");
+      setMessage(`Link salvo em Materiais: ${registeredMaterial.originalName}.`);
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -210,6 +212,41 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
           ? "O link foi aberto no navegador padrão."
           : `${material.originalName} foi aberto no aplicativo padrão do sistema.`,
       );
+    } catch (operationError: unknown) {
+      setError(getDesktopErrorMessage(operationError));
+    } finally {
+      setPendingAction("idle");
+    }
+  };
+
+  const handleDeleteMaterial = async (material: MaterialSummary) => {
+    const confirmed = window.confirm(
+      `Remover “${material.originalName}” da biblioteca?${
+        material.sourceUrl ? "" : " A cópia deste arquivo será apagada do espaço."
+      }\n\nNotas ligadas apenas a este material também serão removidas. Notas associadas a uma disciplina e registros do plano serão preservados, mas perderão o vínculo com ele.`,
+    );
+    if (!confirmed) return;
+
+    setError(null);
+    setMessage(null);
+    setPendingAction("deleting");
+    try {
+      const removedNotes = await deleteMaterial(material.id);
+      setMaterials((currentMaterials) => currentMaterials.filter((item) => item.id !== material.id));
+      setSubjectDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[material.id];
+        return nextDrafts;
+      });
+      setTagDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[material.id];
+        return nextDrafts;
+      });
+      setReaderMaterial((currentMaterial) => currentMaterial?.id === material.id ? null : currentMaterial);
+      setMessage(removedNotes > 0
+        ? `Material removido. ${removedNotes} ${removedNotes === 1 ? "anotação ligada somente a ele também foi removida" : "anotações ligadas somente a ele também foram removidas"}.`
+        : "Material removido da biblioteca.");
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -287,7 +324,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
         <div className="relative z-10 grid gap-4 max-w-3xl">
           <div className="flex flex-wrap items-center gap-3">
             <span className="rounded-full bg-blue-500/20 border border-blue-400/30 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 backdrop-blur-xs">
-              Biblioteca & Caderno
+              Sua biblioteca
             </span>
             <span className="text-xs font-medium text-slate-300/85">
               {materials.length} documentos salvos no espaço
@@ -296,10 +333,10 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
 
           <div>
             <h2 className="font-heading text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
-              Materiais de Estudo & Arquivos
+              Materiais de estudo
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
-              Arquivos locais, links externos, marcador de página persistente e bloco de notas integrado ao ciclo de estudos.
+              PDFs e links ficam salvos aqui. Abra um material para ler e fazer anotações.
             </p>
           </div>
 
@@ -309,7 +346,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
               onClick={() => setIsImportingModalOpen(true)}
               className={buttonPrimaryClass}
             >
-              + Importar Material
+              + Adicionar material
             </button>
           </div>
         </div>
@@ -350,7 +387,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
           <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
             <div>
               <Eyebrow>Biblioteca Local</Eyebrow>
-              <h3 className="font-heading text-lg font-bold text-ink">Importar material local</h3>
+              <h3 className="font-heading text-lg font-bold text-ink">Adicionar à biblioteca</h3>
             </div>
             <button
               type="button"
@@ -363,17 +400,17 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
 
           <div className="grid gap-4">
             <label className={fieldClass} htmlFor="material-kind">
-              Origem do material
-              <select
-                className={selectClass}
-                id="material-kind"
-                value={materialKind}
-                onChange={(event) => setMaterialKind(event.target.value === "link" ? "link" : "file")}
-                disabled={isBusy}
-              >
-                <option value="file">Arquivo copiado para o espaço</option>
-                <option value="link">Link externo</option>
-              </select>
+              Como deseja adicionar?
+              <span className="grid grid-cols-2 gap-2" role="group" aria-label="Tipo de material">
+                <button type="button" aria-pressed={materialKind === "file"} onClick={() => setMaterialKind("file")} disabled={isBusy}
+                  className={`${materialKind === "file" ? buttonPrimaryClass : buttonSecondaryClass} justify-center`}>
+                  Arquivo do computador
+                </button>
+                <button type="button" aria-pressed={materialKind === "link"} onClick={() => setMaterialKind("link")} disabled={isBusy}
+                  className={`${materialKind === "link" ? buttonPrimaryClass : buttonSecondaryClass} justify-center`}>
+                  Link de um site
+                </button>
+              </span>
             </label>
 
             {materialKind === "file" ? (
@@ -431,22 +468,19 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
               </>
             )}
 
-            <label className={fieldClass}>
-              Vincular a uma Disciplina <span className="text-muted font-normal">(opcional)</span>
-              <select
-                className={selectClass}
-                value={subjectId}
-                onChange={(e) => setSubjectId(e.target.value)}
-                disabled={isBusy}
-              >
-                <option value="">Sem disciplina vinculada</option>
-                {(plan?.subjects ?? []).map((subj) => (
-                  <option key={subj.id} value={subj.id}>
-                    {subj.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {(plan?.subjects.length ?? 0) > 0 && (
+              <details className="rounded-xl border border-line bg-paper px-3 py-2">
+                <summary className="cursor-pointer text-xs font-semibold text-muted">Associar a uma disciplina (opcional)</summary>
+                <label className={`${fieldClass} mt-3`}>
+                  Disciplina
+                  <select className={selectClass} value={subjectId} onChange={(e) => setSubjectId(e.target.value)} disabled={isBusy}>
+                    <option value="">Nenhuma</option>
+                    {(plan?.subjects ?? []).map((subj) => <option key={subj.id} value={subj.id}>{subj.name}</option>)}
+                  </select>
+                  <span className="text-[11px] font-normal text-muted">O material continua na Biblioteca e também fica associado a esta disciplina.</span>
+                </label>
+              </details>
+            )}
 
             <div className="flex justify-end gap-2 pt-3 border-t border-line">
               <button
@@ -482,7 +516,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
       )}
 
       {/* 2. Main Content Grid - Library & Notes Panel */}
-      <div className="grid gap-6 xl:grid-cols-[minmax(330px,1fr)_minmax(0,1.2fr)]">
+      <div className="grid gap-6">
         {/* Material library list */}
         <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs flex flex-col">
           <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
@@ -495,8 +529,8 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
             </span>
           </div>
 
-          {/* Search & Subject Filter in Library */}
-          <div className="grid gap-2.5 mb-4">
+          {/* Search controls only help after there is something to find. */}
+          {materials.length > 0 && <div className="grid gap-2.5 mb-4">
             <input
               type="text"
               className={inputClass}
@@ -517,7 +551,7 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
                 </option>
               ))}
             </select>
-          </div>
+          </div>}
 
           {isLoading ? (
             <div className="flex justify-center items-center py-12 text-sm text-muted">
@@ -526,29 +560,23 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
             </div>
           ) : filteredMaterials.length === 0 ? (
             <div className="rounded-xl border border-dashed border-line bg-paper p-8 text-center text-xs text-muted">
-              <p className="font-bold text-ink">Nenhum material encontrado.</p>
+              <p className="font-bold text-ink">{materials.length === 0 ? "Sua biblioteca está vazia." : "Nenhum material encontrado."}</p>
               <p className="mt-1">
                 {materials.length === 0
-                  ? "Importe seu primeiro material de teoria ou resumo para começar."
-                  : "Nenhum material corresponde aos filtros de busca atuais."}
+                  ? "Adicione um PDF ou link. Ele ficará salvo aqui para abrir e fazer anotações."
+                  : "Tente outro termo ou limpe a busca e o filtro de disciplina."}
               </p>
-              <button
+              {materials.length > 0 && <button
                 type="button"
                 onClick={() => {
-                  if (materials.length === 0) {
-                    setIsImportingModalOpen(true);
-                  } else {
-                    setSearchQuery("");
-                    setSubjectFilter("");
-                  }
+                  setSearchQuery("");
+                  setSubjectFilter("");
                 }}
                 className={`${buttonPrimaryClass} mt-4 text-xs`}
-              >
-                {materials.length === 0 ? "+ Importar Primeiro Material" : "Limpar Filtros"}
-              </button>
+              >Limpar Filtros</button>}
             </div>
           ) : (
-            <div className="grid gap-3 max-h-[540px] overflow-y-auto pr-1">
+            <div className="grid max-h-[540px] gap-3 overflow-y-auto pr-1 xl:grid-cols-2">
               {filteredMaterials.map((item) => (
                 <div
                   key={item.id}
@@ -576,6 +604,9 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
                     </div>
                   </div>
 
+                  <details className="rounded-xl border border-line bg-card px-3 py-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-muted">Organizar e outras ações</summary>
+                  <div className="mt-3 grid gap-3">
                   <label className="grid gap-1.5">
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">
                       Disciplinas e assuntos
@@ -651,7 +682,15 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
                     <span className="text-[10px] text-muted">Separe as etiquetas por vírgulas.</span>
                   </label>
 
-                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-line">
+                  <div className="flex items-center justify-end gap-2 border-t border-line pt-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteMaterial(item)}
+                      className={`${buttonQuietClass} mr-auto px-2.5 py-1 text-xs text-danger hover:text-danger`}
+                      disabled={isBusy}
+                    >
+                      Remover material
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleOpenExternal(item)}
@@ -660,16 +699,13 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
                     >
                       ↗ {item.sourceUrl ? "Abrir link" : isPdfMaterial(item) ? "Externo" : "Abrir arquivo"}
                     </button>
-                    {isPdfMaterial(item) ? (
-                      <button
-                        type="button"
-                        onClick={() => handleOpenIntegrated(item)}
-                        className={`${buttonPrimaryClass} text-xs px-3.5 py-1`}
-                      >
-                        ▶ Ler no App
-                      </button>
-                    ) : null}
                   </div>
+                  </div>
+                  </details>
+                  <button type="button" onClick={() => handleOpenIntegrated(item)}
+                    className={`${buttonPrimaryClass} self-start px-3.5 py-1 text-xs`}>
+                    {isPdfMaterial(item) ? "Ler PDF" : item.sourceUrl ? "Abrir link" : "Abrir arquivo"}
+                  </button>
                 </div>
               ))}
             </div>
@@ -677,14 +713,19 @@ export function MaterialsView({ plan, refreshKey }: MaterialsViewProps) {
         </section>
 
         {/* Notes & Summaries Panel */}
-        <section className="rounded-2xl border border-line bg-card p-5 lg:p-6 shadow-xs">
+        <details className="rounded-2xl border border-line bg-card p-5 shadow-xs">
+          <summary className="cursor-pointer list-none text-sm font-semibold text-ink">
+            Anotações e resumos <span className="ml-1 text-xs font-normal text-muted">(opcional, ligados a um material ou disciplina)</span>
+          </summary>
+          <div className="mt-4">
           <NotesPanel
             plan={plan}
             materials={materials}
             refreshKey={refreshKey}
             onNotesChanged={setNotes}
           />
-        </section>
+          </div>
+        </details>
       </div>
     </div>
   );

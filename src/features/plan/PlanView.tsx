@@ -8,6 +8,9 @@ import {
   archiveSubject,
   getStudyPlanning,
   getMaterials,
+  importMaterial,
+  pickMaterialFile,
+  pickPdfFile,
   getDesktopErrorMessage,
   savePreparationExamConfig,
   setPrimaryPreparation,
@@ -42,6 +45,10 @@ type PlanViewProps = {
   error: string | null;
   onRetry: () => void;
   onPlanChanged: () => void;
+  onOpenToday: () => void;
+  entryAction: "preparation" | "subject" | "task" | null;
+  onEntryActionHandled: () => void;
+  taskPreparationIdsToday: string[];
 };
 
 type ActiveModal = "none" | "preparation" | "subject" | "task";
@@ -53,9 +60,30 @@ export function PlanView({
   error,
   onRetry,
   onPlanChanged,
+  onOpenToday,
+  entryAction,
+  onEntryActionHandled,
+  taskPreparationIdsToday,
 }: PlanViewProps) {
   const [selectedPreparationId, setSelectedPreparationId] = useState("");
   const [activeModal, setActiveModal] = useState<ActiveModal>("none");
+
+  useEffect(() => {
+    if (!entryAction) return;
+    setFormError(null);
+    setActiveModal(entryAction);
+    onEntryActionHandled();
+  }, [entryAction, onEntryActionHandled]);
+
+  useEffect(() => {
+    if (activeModal === "none") return;
+    const frame = window.requestAnimationFrame(() => {
+      const form = document.getElementById("plan-action-form");
+      form?.focus({ preventScroll: true });
+      form?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeModal]);
 
   // Preparation form state
   const [preparationName, setPreparationName] = useState("");
@@ -91,6 +119,7 @@ export function PlanView({
   const [studyPlanningError, setStudyPlanningError] = useState<string | null>(null);
   const [materials, setMaterials] = useState<MaterialSummary[]>([]);
   const [materialsError, setMaterialsError] = useState<string | null>(null);
+  const [importingMaterialFor, setImportingMaterialFor] = useState<"reference" | "task" | null>(null);
   const [referenceMaterialId, setReferenceMaterialId] = useState("");
   const [referenceDocumentStatus, setReferenceDocumentStatus] = useState<PreparationSummary["referenceDocumentStatus"]>("reference");
   const [examRulesMarkdown, setExamRulesMarkdown] = useState("");
@@ -108,9 +137,15 @@ export function PlanView({
     currentPlan.preparations.find((prep) => prep.isPrimary) ||
     currentPlan.preparations[0];
   const primaryPreparation = selectedPreparation;
+  const hasTaskToday = Boolean(selectedPreparation && taskPreparationIdsToday.includes(selectedPreparation.id));
   const subjects = currentPlan.subjects.filter(
     (subj) => !selectedPreparation || subj.preparationId === selectedPreparation.id,
   );
+  const effectiveTaskSubjectId = taskSubjectId || (subjects.length === 1 ? subjects[0].id : "");
+  // Keep the quick-start prompt only until this preparation has a task today;
+  // the normal plan controls remain visible after the first study is scheduled.
+  const isStarterPlanComplete = Boolean(hasTaskToday);
+  const hasTaskAdjustments = Boolean(taskSubjectId || taskMaterialId || taskObjective || taskDate !== dateKeyForTimezone(timezone));
   const orderedSubjects = orderSubjectsByHierarchy(subjects);
   const subjectCoverage = currentPlan.subjectCoverage.find(
     (coverage) => coverage.preparationId === selectedPreparation?.id,
@@ -205,7 +240,7 @@ export function PlanView({
         parentId: editingParentId || null,
       });
       setEditingSubjectId(null);
-      setSubjectActionMessage("Assunto e posição na árvore salvos localmente.");
+      setSubjectActionMessage("Assunto e posição atualizados no Plano.");
       onPlanChanged();
     } catch (operationError: unknown) {
       setSubjectActionError(getDesktopErrorMessage(operationError));
@@ -220,7 +255,7 @@ export function PlanView({
     setPendingSubjectId(subject.id);
     try {
       await moveSubject({ subjectId: subject.id, direction });
-      setSubjectActionMessage("Ordem dos assuntos salva localmente.");
+      setSubjectActionMessage("Ordem dos assuntos atualizada no Plano.");
       onPlanChanged();
     } catch (operationError: unknown) {
       setSubjectActionError(getDesktopErrorMessage(operationError));
@@ -232,7 +267,7 @@ export function PlanView({
   const handleArchiveSubject = async (subject: SubjectSummary) => {
     const descendantCount = subjects.filter((item) => isDescendantOf(subjects, item, subject.id)).length;
     if (!window.confirm(
-      `Arquivar ${subject.name}${descendantCount ? ` e ${descendantCount} subassunto(s)` : ""}? Tarefas e histórico permanecem salvos.`,
+      `Excluir ${subject.name}${descendantCount ? ` e ${descendantCount} subassunto(s)` : ""} da lista? Estudos e histórico já registrados serão preservados.`,
     )) return;
     setSubjectActionError(null);
     setSubjectActionMessage(null);
@@ -240,7 +275,7 @@ export function PlanView({
     try {
       await archiveSubject({ subjectId: subject.id });
       setEditingSubjectId(null);
-      setSubjectActionMessage("Assunto arquivado. O histórico e as tarefas foram preservados.");
+      setSubjectActionMessage("Disciplina removida da lista. Os estudos e o histórico foram preservados.");
       onPlanChanged();
     } catch (operationError: unknown) {
       setSubjectActionError(getDesktopErrorMessage(operationError));
@@ -288,6 +323,7 @@ export function PlanView({
       setBoard("");
       setExamDate("");
       setActiveModal("none");
+      setSubjectActionMessage("Concurso salvo em Plano.");
       onPlanChanged();
     } catch (err: unknown) {
       setFormError(getDesktopErrorMessage(err));
@@ -317,6 +353,7 @@ export function PlanView({
       setSubjectName("");
       setSubjectParentId("");
       setActiveModal("none");
+      setSubjectActionMessage(`Disciplina salva em Plano: ${subjectName.trim()}.`);
       onPlanChanged();
     } catch (err: unknown) {
       setFormError(getDesktopErrorMessage(err));
@@ -331,16 +368,23 @@ export function PlanView({
       setFormError("Informe o título da tarefa.");
       return;
     }
-    if (!selectedPreparation) {
-      setFormError("Crie uma preparação primeiro.");
-      return;
-    }
     setFormError(null);
     setIsSubmitting(true);
     try {
+      let targetPreparation = selectedPreparation;
+      if (!targetPreparation) {
+        targetPreparation = await createPreparation({
+          name: "Meus estudos",
+          organization: null,
+          role: null,
+          board: null,
+          examDate: null,
+          makePrimary: true,
+        });
+      }
       await createStudyTask({
-        preparationId: selectedPreparation.id,
-        subjectId: taskSubjectId || null,
+        preparationId: targetPreparation.id,
+        subjectId: effectiveTaskSubjectId || null,
         materialId: taskMaterialId || null,
         title: taskTitle,
         objective: taskObjective || null,
@@ -351,6 +395,9 @@ export function PlanView({
       setTaskObjective("");
       setTaskMaterialId("");
       setActiveModal("none");
+      setSubjectActionMessage(selectedPreparation
+        ? "Estudo adicionado a Hoje. Você já pode começar por lá."
+        : "Estudo adicionado a Hoje em Meus estudos. Você já pode começar por lá.");
       onPlanChanged();
     } catch (err: unknown) {
       setFormError(getDesktopErrorMessage(err));
@@ -392,13 +439,43 @@ export function PlanView({
         examRulesMarkdown: examRulesMarkdown.trim() || null,
         subjectExamWeights,
       });
-      setExamConfigMessage("Documento, classificação, regras e pesos salvos localmente.");
+      setExamConfigMessage("Documento, classificação, regras e pesos salvos no Plano.");
       onPlanChanged();
     } catch (configError: unknown) {
       setExamConfigError(getDesktopErrorMessage(configError));
     } finally {
       setIsSavingExamConfig(false);
     }
+  };
+
+  const importMaterialHere = async (target: "reference" | "task") => {
+    if (importingMaterialFor) return;
+    setImportingMaterialFor(target);
+    setMaterialsError(null);
+    try {
+      const sourcePath = target === "reference" ? await pickPdfFile() : await pickMaterialFile();
+      if (!sourcePath) return;
+      const imported = await importMaterial({
+        sourcePath,
+        subjectId: target === "task" ? effectiveTaskSubjectId || null : null,
+      });
+      if (target === "reference" && imported.mimeType !== "application/pdf") {
+        throw new Error("Selecione um edital em PDF.");
+      }
+      setMaterials((current) => [imported, ...current.filter((item) => item.id !== imported.id)]);
+      if (target === "reference") {
+        setReferenceMaterialId(imported.id);
+        setReferenceDocumentStatus("reference");
+        setExamConfigMessage("PDF importado e selecionado. Salve a configuração abaixo para vinculá-lo à preparação.");
+        setExamConfigError(null);
+      } else {
+        setTaskMaterialId(imported.id);
+        setFormError(null);
+      }
+    } catch (cause: unknown) {
+      if (target === "reference") setExamConfigError(getDesktopErrorMessage(cause));
+      else setFormError(getDesktopErrorMessage(cause));
+    } finally { setImportingMaterialFor(null); }
   };
 
   if (isLoading && !plan) {
@@ -436,6 +513,9 @@ export function PlanView({
       {subjectActionMessage && (
         <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-300" role="status">
           {subjectActionMessage}
+          {subjectActionMessage.startsWith("Estudo adicionado a Hoje") && (
+            <button type="button" className="ml-2 font-bold underline" onClick={onOpenToday}>Ir para Hoje</button>
+          )}
         </p>
       )}
       {primaryError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">{primaryError}</p>}
@@ -446,7 +526,7 @@ export function PlanView({
         <div className="relative z-10 grid gap-4 max-w-3xl">
           <div className="flex flex-wrap items-center gap-3">
             <span className="rounded-full bg-blue-500/20 border border-blue-400/30 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 backdrop-blur-xs">
-              Edital Verticalizado & Ciclo
+              Plano de estudo
             </span>
             {currentPlan.preparations.length > 1 ? (
               <select
@@ -456,13 +536,13 @@ export function PlanView({
               >
                 {currentPlan.preparations.map((p) => (
                   <option key={p.id} value={p.id} className="text-slate-900 bg-white">
-                    Foco: {p.name} {p.role ? `(${p.role})` : ""} {p.isPrimary ? "★" : ""}
+                    Preparação: {p.name} {p.role ? `· Cargo: ${p.role}` : ""} {p.isPrimary ? "★" : ""}
                   </option>
                 ))}
               </select>
             ) : primaryPreparation ? (
               <span className="text-xs font-medium text-slate-300/85">
-                Foco: {primaryPreparation.name} {primaryPreparation.role ? `(${primaryPreparation.role})` : ""}
+                Preparação: {primaryPreparation.name} {primaryPreparation.role ? `· Cargo: ${primaryPreparation.role}` : ""}
               </span>
             ) : null}
             {selectedPreparation?.board && (
@@ -474,15 +554,17 @@ export function PlanView({
 
           <div>
             <h2 className="font-heading text-2xl lg:text-3xl font-bold leading-tight tracking-tight text-white">
-              Plano de Estudos & Grade Curricular
+              Seu plano de estudo
             </h2>
             <p className="mt-2 text-sm leading-relaxed text-slate-200/85 max-w-2xl text-pretty">
-              Organize cada disciplina do seu edital, marque tópicos estudados e defina o ritmo ideal para a prova.
+              {isStarterPlanComplete
+                ? "Organize suas disciplinas e agende os próximos estudos. Ajustes do ciclo e do edital são opcionais."
+                : "Agende o próximo estudo. Tema e duração bastam; edital, pesos e ciclo podem esperar."}
             </p>
           </div>
 
           {/* Action Bar */}
-          <div className="flex flex-wrap items-center gap-3 pt-2">
+          {selectedPreparation && <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               type="button"
               onClick={() => {
@@ -494,7 +576,7 @@ export function PlanView({
             >
               + Nova Disciplina
             </button>
-            <button
+            {isStarterPlanComplete && <button
               type="button"
               onClick={() => {
                 setFormError(null);
@@ -502,66 +584,65 @@ export function PlanView({
               }}
               className={buttonSecondaryClass}
             >
-              + Agendar Tarefa
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setFormError(null);
-                setActiveModal("preparation");
-              }}
-              className={buttonOutlineLightClass}
-            >
-              + Novo Concurso
-            </button>
-            {selectedPreparation && !selectedPreparation.isPrimary && (
-              <button type="button" className={buttonOutlineLightClass} onClick={() => void handleSetPrimary()} disabled={isSettingPrimary}>
-                {isSettingPrimary ? "Alternando..." : "Tornar preparação principal"}
-              </button>
-            )}
-          </div>
+              + Agendar estudo
+            </button>}
+            <details className="relative">
+              <summary className={`${buttonOutlineLightClass} cursor-pointer list-none`}>Gerenciar preparações</summary>
+              <div className="absolute left-0 top-full z-20 mt-2 grid min-w-56 gap-1 rounded-xl border border-line bg-card p-2 text-ink shadow-xl">
+                <button type="button" onClick={() => {
+                  setFormError(null);
+                  setMakePrimary(!selectedPreparation);
+                  setActiveModal("preparation");
+                }} className="rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-paper">+ Adicionar outro concurso</button>
+                {selectedPreparation && !selectedPreparation.isPrimary && (
+                  <button type="button" onClick={() => void handleSetPrimary()} disabled={isSettingPrimary}
+                    className="rounded-lg px-3 py-2 text-left text-xs font-semibold hover:bg-paper disabled:opacity-50">
+                    {isSettingPrimary ? "Alternando..." : "Tornar esta preparação principal"}
+                  </button>
+                )}
+              </div>
+            </details>
+          </div>}
         </div>
       </section>
 
-      <section className="rounded-2xl border border-blue-500/25 bg-card p-5 shadow-xs lg:p-6" aria-labelledby="plan-start-title">
+      {!isStarterPlanComplete && <section className="rounded-2xl border border-blue-500/25 bg-card p-5 shadow-xs lg:p-6" aria-labelledby="plan-start-title">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <Eyebrow>Comece por aqui</Eyebrow>
-            <h3 id="plan-start-title" className="mt-1 font-heading text-lg font-bold text-ink">Monte seu primeiro dia em 4 passos</h3>
-            <p className="mt-1 text-xs leading-relaxed text-muted">Siga a ordem abaixo. Você não precisa preencher o edital inteiro para começar.</p>
+            <h3 id="plan-start-title" className="mt-1 font-heading text-lg font-bold text-ink">Agende seu próximo estudo</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted">Informe o tema e a duração. Você pode escolher disciplina, material e roteiro depois.</p>
           </div>
-          <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-bold text-blue-700 dark:text-blue-300">
-            {[currentPlan.preparations.length > 0, subjects.length > 0, Boolean(studyPlanning?.cycleSlots.length), Boolean(selectedPreparation)].filter(Boolean).length} / 4
-          </span>
         </div>
-        <div className="mt-4 grid gap-2 md:grid-cols-4">
-          <button type="button" className="rounded-xl border border-line bg-paper p-3 text-left hover:border-blue-500/50" onClick={() => setActiveModal("preparation")}>
-            <span className="text-xs font-bold text-blue-600">1 · Concurso</span>
-            <strong className="mt-1 block text-sm text-ink">{currentPlan.preparations.length ? "Preparação criada ✓" : "Criar concurso"}</strong>
-            <span className="mt-1 block text-[11px] text-muted">Órgão, cargo, banca e data</span>
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-4">
+          <button type="button" className={`${buttonPrimaryClass} text-xs`} onClick={() => {
+            setFormError(null);
+            setActiveModal("task");
+          }}>
+            Agendar estudo
           </button>
-          <button type="button" className="rounded-xl border border-line bg-paper p-3 text-left hover:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => { setFormError(null); setSubjectParentId(""); setActiveModal("subject"); }} disabled={!selectedPreparation}>
-            <span className="text-xs font-bold text-blue-600">2 · Edital</span>
-            <strong className="mt-1 block text-sm text-ink">{subjects.length ? "Assuntos adicionados ✓" : "Adicionar disciplinas"}</strong>
-            <span className="mt-1 block text-[11px] text-muted">Comece com uma disciplina e seus tópicos</span>
-          </button>
-          <button type="button" className="rounded-xl border border-line bg-paper p-3 text-left hover:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => document.getElementById("study-cycle-panel")?.scrollIntoView({ behavior: "smooth", block: "center" })} disabled={!subjects.length}>
-            <span className="text-xs font-bold text-blue-600">3 · Ciclo</span>
-            <strong className="mt-1 block text-sm text-ink">{studyPlanning?.cycleSlots.length ? "Ciclo configurado ✓" : "Configurar ciclo"}</strong>
-            <span className="mt-1 block text-[11px] text-muted">Disponibilidade e ordem das matérias</span>
-          </button>
-          <button type="button" className="rounded-xl border border-line bg-paper p-3 text-left hover:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => { setFormError(null); setActiveModal("task"); }} disabled={!selectedPreparation || !subjects.length}>
-            <span className="text-xs font-bold text-blue-600">4 · Hoje</span>
-            <strong className="mt-1 block text-sm text-ink">Agendar primeira tarefa</strong>
-            <span className="mt-1 block text-[11px] text-muted">Transforme o plano em uma ação concreta</span>
-          </button>
+          {!selectedPreparation && <button type="button" className={`${buttonSecondaryClass} text-xs`} onClick={() => {
+            setFormError(null);
+            setMakePrimary(true);
+            setActiveModal("preparation");
+          }}>Adicionar concurso (opcional)</button>}
+          {selectedPreparation && subjects.length === 0 && <button type="button" className={`${buttonSecondaryClass} text-xs`} onClick={() => {
+            setFormError(null);
+            setSubjectParentId("");
+            setActiveModal("subject");
+          }}>Adicionar disciplina (opcional)</button>}
         </div>
-      </section>
+      </section>}
 
-      {/* 2. Edital Metrics Bar */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:gap-4">
+      {/* Informações de acompanhamento ficam disponíveis sem disputar foco com as ações. */}
+      <details className="rounded-2xl border border-line bg-card shadow-xs">
+        <summary className="cursor-pointer list-none p-4 font-semibold text-ink marker:hidden">
+          <span className="block text-sm">Resumo do plano</span>
+          <span className="mt-1 block text-xs font-normal text-muted">Progresso, data da prova e disciplinas cadastradas</span>
+        </summary>
+        <div className="grid grid-cols-1 gap-3 border-t border-line p-4 sm:grid-cols-3 lg:gap-4">
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Cobertura do Edital</p>
+          <p className="text-xs font-semibold text-muted">Assuntos marcados como concluídos</p>
           <p className="mt-1 font-heading text-xl font-extrabold text-ink">
             {totalSubjects > 0 ? `${completedSubjects} / ${totalSubjects}` : "Sem itens"}
           </p>
@@ -583,7 +664,7 @@ export function PlanView({
               : "Cadastre disciplinas e assuntos para iniciar a cobertura."}
           </p>
           <p className="mt-1 text-[10px] leading-relaxed text-muted">
-            Concluído = teoria marcada; denominador = todos os itens ativos cadastrados. Não mede domínio.
+            Acompanhe o que já estudou; este número não mede seu domínio do conteúdo.
           </p>
         </div>
 
@@ -594,29 +675,33 @@ export function PlanView({
         </div>
 
         <div className="glass-card rounded-2xl p-4 shadow-xs hover:border-blue-500/40 hover:-translate-y-0.5 transition-all duration-150 ease-out cursor-default">
-          <p className="text-xs font-semibold text-muted">Disciplinas do Ciclo</p>
+          <p className="text-xs font-semibold text-muted">Disciplinas cadastradas</p>
           <p className="mt-1 font-heading text-xl font-extrabold text-ink tabular-nums">
             {subjects.length} Disciplinas
           </p>
-          <p className="mt-2 text-[11px] text-muted">Todas ativas no ciclo local</p>
+          <p className="mt-2 text-[11px] text-muted">Neste concurso</p>
         </div>
-      </div>
+        </div>
+      </details>
 
       {selectedPreparation && (
-        <StudyCyclePanel
-          preparationId={selectedPreparation.id}
-          subjects={subjects}
-          planning={studyPlanning}
-          isLoading={isLoading}
-          error={studyPlanningError}
-          onChanged={(nextPlanning) => {
-            setStudyPlanning(nextPlanning);
-            onPlanChanged();
-          }}
-        />
-      )}
-
-      {selectedPreparation && (
+        <details className="rounded-2xl border border-line bg-card shadow-xs">
+          <summary className="cursor-pointer list-none p-5 font-semibold text-ink marker:hidden">
+            <span className="block text-sm">Configurações avançadas do plano</span>
+            <span className="mt-1 block text-xs font-normal text-muted">Ciclo, edital, dias disponíveis e pesos. Você pode estudar sem preencher isso agora.</span>
+          </summary>
+          <div className="grid gap-4 border-t border-line p-4 lg:p-5">
+            <StudyCyclePanel
+              preparationId={selectedPreparation.id}
+              subjects={subjects}
+              planning={studyPlanning}
+              isLoading={isLoading}
+              error={studyPlanningError}
+              onChanged={(nextPlanning) => {
+                setStudyPlanning(nextPlanning);
+                onPlanChanged();
+              }}
+            />
         <section className="glass-card rounded-2xl p-5 shadow-xs" aria-labelledby="exam-config-title">
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
             <div>
@@ -683,9 +768,17 @@ export function PlanView({
                   ))}
                 </select>
                 <span className="text-[11px] font-normal text-muted">
-                  Importe o PDF ou registre o link na área Materiais antes de selecionar aqui.
+                  O documento escolhido aparecerá também em Materiais. A vigência é confirmada por você.
                 </span>
               </label>
+              <button
+                type="button"
+                className={`${buttonSecondaryClass} justify-self-start`}
+                onClick={() => void importMaterialHere("reference")}
+                disabled={Boolean(importingMaterialFor) || isSavingExamConfig}
+              >
+                {importingMaterialFor === "reference" ? "Importando PDF..." : "Escolher edital em PDF do computador"}
+              </button>
 
               <label className={fieldClass}>
                 Situação do documento
@@ -759,18 +852,20 @@ export function PlanView({
             </div>
           </form>
         </section>
+          </div>
+        </details>
       )}
 
       {/* 3. Modal / Drawer Forms for adding content */}
       {activeModal !== "none" && (
-        <div className="glass-card rounded-2xl p-6 shadow-xl ring-1 ring-black/5 dark:ring-white/10 animate-fade-in">
+        <div id="plan-action-form" tabIndex={-1} className="glass-card rounded-2xl p-6 shadow-xl ring-1 ring-black/5 dark:ring-white/10 animate-fade-in">
           <div className="flex items-center justify-between border-b border-line pb-3 mb-4">
             <h3 className="font-heading text-lg font-bold text-ink">
               {activeModal === "preparation"
-                ? "Cadastrar Novo Concurso / Preparação"
+                ? "Adicionar concurso"
                 : activeModal === "subject"
-                ? "Adicionar Disciplina ou Assunto ao Edital"
-                : "Agendar Tarefa de Estudo"}
+                ? "Adicionar disciplina ou assunto"
+                : "Agendar estudo"}
             </h3>
             <button
               type="button"
@@ -790,7 +885,7 @@ export function PlanView({
           {activeModal === "preparation" && (
             <form onSubmit={handlePreparationSubmit} className="grid gap-4 sm:grid-cols-2">
               <label className={`${fieldClass} sm:col-span-2`}>
-                Nome da Preparação / Concurso
+                Nome do concurso
                 <input
                   className={inputClass}
                   type="text"
@@ -800,6 +895,9 @@ export function PlanView({
                   disabled={isSubmitting}
                 />
               </label>
+              <details className="sm:col-span-2 rounded-xl border border-line bg-paper p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-ink">Detalhes opcionais do concurso</summary>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
               <label className={fieldClass}>
                 Órgão <span className="text-muted font-normal">(opcional)</span>
                 <input
@@ -856,6 +954,8 @@ export function PlanView({
                   Tornar esta a preparação principal do espaço
                 </label>
               </div>
+                </div>
+              </details>
 
               <div className="flex justify-end gap-2 sm:col-span-2 pt-3 border-t border-line">
                 <button
@@ -887,15 +987,20 @@ export function PlanView({
                 />
               </label>
 
-              <label className={fieldClass}>
-                Assunto pai
-                <select className={selectClass} value={subjectParentId} onChange={(event) => setSubjectParentId(event.target.value)} disabled={isSubmitting}>
-                  <option value="">Nenhum · disciplina principal</option>
-                  {orderedSubjects.map(({ subject, depth }) => (
-                    <option key={subject.id} value={subject.id}>{"— ".repeat(depth)}{subject.name}</option>
-                  ))}
-                </select>
-              </label>
+              {orderedSubjects.length > 0 && (
+                <details className="rounded-xl border border-line bg-paper p-3">
+                  <summary className="cursor-pointer text-sm font-semibold text-ink">Adicionar como assunto de uma disciplina (opcional)</summary>
+                  <label className={`${fieldClass} mt-3`}>
+                    Disciplina ou assunto principal
+                    <select className={selectClass} value={subjectParentId} onChange={(event) => setSubjectParentId(event.target.value)} disabled={isSubmitting}>
+                      <option value="">Nenhum · nova disciplina</option>
+                      {orderedSubjects.map(({ subject, depth }) => (
+                        <option key={subject.id} value={subject.id}>{"— ".repeat(depth)}{subject.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                </details>
+              )}
 
               <div className="flex justify-end gap-2 pt-3 border-t border-line">
                 <button
@@ -916,7 +1021,7 @@ export function PlanView({
           {activeModal === "task" && (
             <form onSubmit={handleTaskSubmit} className="grid gap-4 sm:grid-cols-2">
               <label className={`${fieldClass} sm:col-span-2`}>
-                Título da Tarefa
+                O que você vai estudar?
                 <input
                   className={inputClass}
                   type="text"
@@ -928,22 +1033,43 @@ export function PlanView({
               </label>
 
               <label className={fieldClass}>
-                Disciplina Vinculada
+                Tempo de estudo (minutos)
+                <input
+                  className={inputClass}
+                  type="number"
+                  min="5"
+                  max="480"
+                  value={taskMinutes}
+                  onChange={(e) => setTaskMinutes(e.target.value)}
+                  disabled={isSubmitting}
+                />
+              </label>
+
+              <p className="sm:col-span-2 text-xs text-muted">
+                {!selectedPreparation
+                  ? "Ao salvar, o app cria Meus estudos para organizar esta sessão. Ela aparecerá em Hoje."
+                  : taskDate === dateKeyForTimezone(timezone)
+                  ? "Ao salvar, este estudo aparece em Hoje. A data, o material e o roteiro podem ser ajustados se precisar."
+                  : `Este estudo será agendado para ${taskDate.split("-").reverse().join("/")}. A data, o material e o roteiro podem ser ajustados se precisar.`}
+              </p>
+
+              <details className="sm:col-span-2 rounded-xl border border-line bg-paper p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-ink">Opções opcionais: disciplina, data, material e roteiro{hasTaskAdjustments ? " · ajustes preenchidos" : ""}</summary>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <label className={fieldClass}>
+                Disciplina
                 <select
                   className={selectClass}
-                  value={taskSubjectId}
+                  value={effectiveTaskSubjectId}
                   onChange={(e) => setTaskSubjectId(e.target.value)}
                   disabled={isSubmitting}
                 >
-                  <option value="">Selecione uma disciplina</option>
+                  {subjects.length !== 1 && <option value="">Nenhuma · deixar como Geral</option>}
                   {subjects.map((subj) => (
-                    <option key={subj.id} value={subj.id}>
-                      {subj.name}
-                    </option>
+                    <option key={subj.id} value={subj.id}>{subj.name}</option>
                   ))}
                 </select>
               </label>
-
               <label className={fieldClass}>
                 Material da tarefa <span className="text-muted font-normal">(opcional)</span>
                 <select className={selectClass} value={taskMaterialId} onChange={(event) => setTaskMaterialId(event.target.value)} disabled={isSubmitting || Boolean(materialsError)}>
@@ -955,22 +1081,17 @@ export function PlanView({
                   ))}
                 </select>
                 <span className="text-[11px] font-normal text-muted">
-                  {materialsError ? `Materiais indisponíveis: ${materialsError}` : "Importe o arquivo na biblioteca antes de selecionar."}
+                  {materialsError ? `Materiais indisponíveis: ${materialsError}` : "O material continua na Biblioteca e também fica associado a este estudo."}
                 </span>
               </label>
-
-              <label className={fieldClass}>
-                Duração Planejada (Minutos)
-                <input
-                  className={inputClass}
-                  type="number"
-                  min="5"
-                  max="480"
-                  value={taskMinutes}
-                  onChange={(e) => setTaskMinutes(e.target.value)}
-                  disabled={isSubmitting}
-                />
-              </label>
+              <button
+                type="button"
+                className={`${buttonSecondaryClass} justify-self-start`}
+                onClick={() => void importMaterialHere("task")}
+                disabled={Boolean(importingMaterialFor) || isSubmitting}
+              >
+                {importingMaterialFor === "task" ? "Importando arquivo..." : "Escolher arquivo para esta tarefa"}
+              </button>
 
               <label className={fieldClass}>
                 Data do Estudo
@@ -993,6 +1114,8 @@ export function PlanView({
                   disabled={isSubmitting}
                 />
               </label>
+                </div>
+              </details>
 
               <div className="flex justify-end gap-2 sm:col-span-2 pt-3 border-t border-line">
                 <button
@@ -1004,7 +1127,7 @@ export function PlanView({
                   Cancelar
                 </button>
                 <button type="submit" className={buttonPrimaryClass} disabled={isSubmitting}>
-                  {isSubmitting ? "Agendando..." : "Agendar Tarefa"}
+                  {isSubmitting ? "Agendando..." : "Agendar estudo"}
                 </button>
               </div>
             </form>
@@ -1016,45 +1139,28 @@ export function PlanView({
       <section className="grid gap-5" aria-labelledby="edital-grid-title">
         <div className="flex items-center justify-between border-b border-line pb-3">
           <div>
-            <Eyebrow>Árvore do edital</Eyebrow>
+            <Eyebrow>Seu conteúdo</Eyebrow>
             <h3 id="edital-grid-title" className="mt-1 font-heading text-xl font-bold text-ink">
-              Conteúdo Programático do Edital
+              Disciplinas e assuntos
             </h3>
           </div>
           <span className="text-xs font-medium text-muted">
-            {subjects.length} disciplina(s) e assunto(s) ativos
+            {subjects.length} {subjects.length === 1 ? "disciplina ou assunto ativo" : "disciplinas e assuntos ativos"}
           </span>
         </div>
 
         {currentPlan.preparations.length === 0 ? (
           <div className="glass-card rounded-2xl p-8 text-center">
             <h4 className="font-heading text-base font-bold text-ink">Nenhum concurso ou preparação cadastrado</h4>
-            <p className="mt-1 text-sm text-muted">Cadastre o seu concurso primeiro para organizar as disciplinas e o ciclo de estudos.</p>
-            <button
-              type="button"
-              onClick={() => setActiveModal("preparation")}
-              className={`${buttonPrimaryClass} mt-4 text-xs`}
-            >
-              + Cadastrar Meu Concurso
-            </button>
+            <p className="mt-1 text-sm text-muted">Siga o primeiro passo acima para adicionar seu concurso. Depois, você poderá incluir as disciplinas.</p>
           </div>
         ) : subjects.length === 0 ? (
           <div className="glass-card rounded-2xl p-8 text-center">
-            <p className="text-sm text-muted">Nenhuma disciplina cadastrada para {selectedPreparation?.name} ainda.</p>
-            <button
-              type="button"
-              onClick={() => {
-                setSubjectParentId("");
-                setActiveModal("subject");
-              }}
-              className={`${buttonPrimaryClass} mt-4 text-xs`}
-            >
-              + Adicionar Primeira Disciplina
-            </button>
+            <p className="text-sm text-muted">Siga o segundo passo acima para adicionar a primeira disciplina.</p>
           </div>
         ) : (
           <div className="grid gap-3">
-            {orderedSubjects.map(({ subject: subj, depth }, idx) => (
+            {orderedSubjects.map(({ subject: subj, depth }) => (
               <div
                 key={subj.id}
                 className="flex flex-col justify-between rounded-2xl border border-line bg-card p-5 shadow-xs transition-all hover:border-blue-500/40"
@@ -1064,9 +1170,6 @@ export function PlanView({
                   {/* Header info */}
                   <div className="flex items-start justify-between gap-3 border-b border-line pb-3">
                     <div>
-                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-muted">
-                         Item {idx + 1} {depth > 0 ? `· nível ${depth + 1}` : ""}
-                       </span>
                        <h4 className="font-heading text-lg font-bold text-ink mt-0.5">{subj.name}</h4>
                        {subj.parentId && (
                          <p className="mt-1 text-[11px] text-muted">
@@ -1079,11 +1182,12 @@ export function PlanView({
                       <span className="font-heading text-base font-extrabold text-blue-600">
                         {subj.parentId ? "Subassunto" : "Disciplina"}
                       </span>
-                      <span className="text-[10px] text-muted">registrada</span>
                     </div>
                   </div>
 
-                  <div className="mt-4 rounded-xl border border-dashed border-line bg-paper/60 p-4">
+                  <details className="mt-4 rounded-xl border border-line bg-paper/60 px-4 py-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-muted">Editar disciplina e progresso</summary>
+                  <div className="mt-3 rounded-xl border border-dashed border-line bg-paper p-4">
                     <label className={fieldClass}>
                       Estado do estudo
                       <select
@@ -1134,10 +1238,8 @@ export function PlanView({
                       </div>
                     </div>
                   )}
-                </div>
 
-                {/* Card Footer Actions */}
-                <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+                <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3">
                   <button type="button" className={buttonQuietClass} onClick={() => {
                     setEditingSubjectId(subj.id);
                     setEditingSubjectName(subj.name);
@@ -1153,18 +1255,20 @@ export function PlanView({
                     setSubjectParentId(subj.id);
                     setActiveModal("subject");
                   }} disabled={pendingSubjectId !== null}>+ Subassunto</button>
-                  <button type="button" className={buttonQuietClass} onClick={() => void handleArchiveSubject(subj)} disabled={pendingSubjectId !== null}>Arquivar</button>
-                  <button
-                    type="button"
-                    onClick={() => {
+                </div>
+                  </details>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button type="button" onClick={() => {
                       setTaskSubjectId(subj.id);
                       setTaskTitle(`Estudo focado de ${subj.name}`);
                       setActiveModal("task");
-                    }}
-                    className={`${buttonSecondaryClass} ml-auto px-3 py-1 text-xs`}
-                  >
-                    + Estudar assunto
-                  </button>
+                    }} className={`${buttonPrimaryClass} px-3 py-1.5 text-xs`}>
+                      Agendar para esta disciplina
+                    </button>
+                    <button type="button" className={`${buttonQuietClass} text-danger hover:bg-danger-soft`} onClick={() => void handleArchiveSubject(subj)} disabled={pendingSubjectId !== null}>
+                      {subj.parentId ? "Excluir assunto" : "Excluir disciplina"}
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}

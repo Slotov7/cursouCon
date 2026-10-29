@@ -7,7 +7,7 @@ import {
   getStudyPlan,
   importMaterial,
   openMaterial,
-  pickMaterialFile,
+  pickPdfFile,
   refreshOnlineContests,
   saveOnlineContestNotice,
   saveManualContest,
@@ -272,7 +272,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
         return updated.sort(compareContests);
       });
       setIsFormOpen(false);
-      setMessage(editingId ? "Concurso atualizado localmente." : "Concurso salvo localmente.");
+      setMessage(editingId ? "Concurso atualizado em Explorar." : "Concurso salvo em Explorar.");
     } catch (operationError: unknown) {
       setFormError(getDesktopErrorMessage(operationError));
     } finally {
@@ -364,7 +364,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
       if (savedOpportunity && conversion?.opportunityId === opportunity.id) {
         setConversion((previous) => previous ? { ...previous, noticeMaterialId: savedOpportunity.noticeMaterialId } : previous);
       }
-      setMessage(`Edital de ${opportunity.name} guardado localmente.`);
+      setMessage(`PDF do edital de ${opportunity.name} salvo em Materiais neste computador.`);
     } catch (operationError: unknown) {
       setNoticeError(getDesktopErrorMessage(operationError));
     } finally {
@@ -444,7 +444,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
       setDuplicatePreparation(null);
       setDuplicateAcknowledged(false);
       setMessage(conversion.noticeMaterialId
-        ? `Preparação ${created.name} criada com o edital offline como referência.`
+        ? `Preparação ${created.name} criada. O PDF salvo em Materiais foi associado como referência.`
         : `Preparação ${created.name} criada. Revise o edital antes de marcá-lo como vigente.`);
     } catch (operationError: unknown) {
       setConversionError(getDesktopErrorMessage(operationError));
@@ -458,15 +458,15 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
     setNoticeError(null);
     setMessage(null);
     try {
-      const sourcePath = await pickMaterialFile();
+      const sourcePath = await pickPdfFile();
       if (!sourcePath) return;
       if (!/\.pdf$/i.test(sourcePath)) {
-        throw new Error("Escolha um edital em PDF para guardar uma cópia offline.");
+        throw new Error("Escolha um PDF para salvar uma cópia em Materiais.");
       }
       const material = await importMaterial({ sourcePath, subjectId: null });
       const updated = await setManualContestNotice({ contestId: contest.id, materialId: material.id });
       setContests((previous) => previous.map((item) => item.id === updated.id ? updated : item));
-      setMessage(`Edital de ${contest.name} guardado localmente. A cópia original pode ser removida.`);
+      setMessage(`PDF do edital de ${contest.name} salvo em Materiais neste computador. A cópia original pode ser removida.`);
     } catch (operationError: unknown) {
       setNoticeError(getDesktopErrorMessage(operationError));
     } finally {
@@ -501,6 +501,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
 
   const openRegistrations = contests.filter((contest) => contest.status === "registration_open").length;
   const favoriteCount = contests.filter((contest) => contest.isFavorite).length;
+  const activeOnlineFilterCount = Object.values(onlineFilters).filter(Boolean).length;
   const upcomingAlerts = [
     ...buildUpcomingAlerts(contests, timezone),
     ...buildUpcomingOnlineAlerts(onlineSnapshot?.opportunities ?? [], timezone),
@@ -518,7 +519,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
               Acompanhamento local
             </span>
             <span className="text-xs font-medium text-slate-300/85">
-               Cadastro manual + fonte online com cache local
+               Cadastro manual e busca online
             </span>
           </div>
           <div>
@@ -526,7 +527,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
               Concursos e oportunidades
             </h2>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-200/85">
-               Registre oportunidades manualmente ou consulte a fonte aprovada. O cache permanece local e a origem de cada item fica visível.
+              Salve concursos para acompanhar prazos ou busque oportunidades recentes.
             </p>
           </div>
           <button type="button" onClick={openNewContestForm} className={buttonPrimaryClass}>
@@ -545,17 +546,17 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
       )}
       <section className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-blue-500/25 bg-blue-500/5 p-4" aria-labelledby="online-source-title">
         <div className="min-w-0">
-          <Eyebrow>Fonte integrada · Ache Concursos</Eyebrow>
-          <h3 id="online-source-title" className="mt-1 font-heading text-base font-bold text-ink">Atualização sob demanda</h3>
+          <Eyebrow>Busca online</Eyebrow>
+          <h3 id="online-source-title" className="mt-1 font-heading text-base font-bold text-ink">Concursos encontrados online</h3>
           <p className="mt-1 text-xs leading-relaxed text-muted">
             {onlineSnapshot?.source.lastSuccessfulAt
-              ? `Última consulta: ${formatDateTime(onlineSnapshot.source.lastSuccessfulAt)}. Campos ausentes continuam identificados.`
-              : "Nenhuma consulta foi executada neste espaço ainda."}
+              ? `Última busca: ${formatDateTime(onlineSnapshot.source.lastSuccessfulAt)}.`
+              : "Ainda não há resultados. Faça uma busca para conferir oportunidades recentes."}
           </p>
-          {onlineError && <p className="mt-2 text-xs text-red-600" role="alert">Falha na atualização; o cache anterior continua disponível: {onlineError}</p>}
+          {onlineError && <p className="mt-2 text-xs text-red-600" role="alert">Não foi possível buscar agora. Os resultados anteriores continuam disponíveis: {onlineError}</p>}
         </div>
         <button type="button" className={buttonSecondaryClass} onClick={() => void handleRefreshOnline()} disabled={isRefreshingOnline || isOnlineLoading}>
-          {isRefreshingOnline ? "Consultando..." : "Atualizar fonte"}
+          {isRefreshingOnline ? "Buscando concursos..." : "Buscar concursos"}
         </button>
       </section>
       {noticeError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-xs text-red-600" role="alert">{noticeError}</p>}
@@ -606,6 +607,9 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
               Concurso / identificação <span className="text-red-600">*</span>
               <input className={inputClass} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} maxLength={160} required disabled={isSaving} placeholder="Ex.: Concurso do Senado — Analista Legislativo" />
             </label>
+            <details className="sm:col-span-2 rounded-xl border border-line bg-paper p-3">
+              <summary className="cursor-pointer text-sm font-semibold text-ink">Mais informações (opcional): órgão, banca, prazos e fonte</summary>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
             <label className={fieldClass}>
               Órgão <span className="font-normal text-muted">(opcional)</span>
               <input className={inputClass} value={form.organization ?? ""} onChange={(event) => setForm({ ...form, organization: event.target.value })} maxLength={120} disabled={isSaving} />
@@ -624,7 +628,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
                 {STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </label>
-            <label className={`${fieldClass} sm:col-span-2`}>
+            <label className={fieldClass}>
               URL da fonte <span className="font-normal text-muted">(opcional)</span>
               <input className={inputClass} type="url" value={form.sourceUrl ?? ""} onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })} maxLength={2048} disabled={isSaving} placeholder="https://..." />
             </label>
@@ -644,10 +648,12 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
               Data da prova <span className="font-normal text-muted">(opcional)</span>
               <input className={inputClass} type="date" value={form.examDate ?? ""} onChange={(event) => setForm({ ...form, examDate: event.target.value })} disabled={isSaving} />
             </label>
-            <label className={`${fieldClass} sm:col-span-2`}>
+            <label className="grid gap-1.5 text-sm font-semibold text-ink sm:col-span-2">
               Observações <span className="font-normal text-muted">(opcional)</span>
               <textarea className={textareaClass} value={form.notes ?? ""} onChange={(event) => setForm({ ...form, notes: event.target.value })} maxLength={10000} disabled={isSaving} placeholder="Anote requisitos a conferir ou informações ainda não confirmadas." />
             </label>
+              </div>
+            </details>
             <div className="flex justify-end gap-2 border-t border-line pt-3 sm:col-span-2">
               <button type="button" className={buttonQuietClass} onClick={() => setIsFormOpen(false)} disabled={isSaving}>Cancelar</button>
               <button type="submit" className={buttonPrimaryClass} disabled={isSaving}>
@@ -710,8 +716,8 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
               <p className="font-semibold text-ink">Edital usado na revisão</p>
               <p className="mt-1 text-muted">
                 {conversion.noticeMaterialId
-                  ? "Há uma cópia offline vinculada a esta oportunidade. Ela será associada à preparação."
-                  : "Nenhuma cópia offline foi salva ainda. Baixe o edital no cartão da oportunidade antes de marcá-lo como vigente."}
+                  ? "O PDF salvo em Materiais será associado à preparação."
+                  : "Ainda não há PDF salvo em Materiais. Salve o edital no cartão da oportunidade para associá-lo à preparação."}
               </p>
               {!conversion.noticeMaterialId && conversionOpportunity && (
                 <button type="button" className={`${buttonSecondaryClass} mt-3`} onClick={() => void handleSaveOnlineNotice(conversionOpportunity)} disabled={pendingOnlineNoticeId === conversionOpportunity.id}>
@@ -720,7 +726,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
               )}
               {conversion.noticeMaterialId && (
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <button type="button" className={buttonSecondaryClass} onClick={() => void handleOpenConversionNotice()} disabled={isConverting}>Abrir edital offline</button>
+                  <button type="button" className={buttonSecondaryClass} onClick={() => void handleOpenConversionNotice()} disabled={isConverting}>Abrir PDF salvo</button>
                   <label className={fieldClass}>
                     Estado do edital
                     <select
@@ -750,11 +756,21 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
         </section>
       )}
 
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label="Resumo de oportunidades">
-        <SummaryCard label="Concursos cadastrados" value={isLoading || error ? "—" : contests.length} detail="Registros locais" />
-        <SummaryCard label="Favoritos" value={isLoading || error ? "—" : favoriteCount} detail="Acompanhados por você" />
-        <SummaryCard label="Inscrições abertas" value={isLoading || error ? "—" : openRegistrations} detail="Conforme situação informada" />
-      </section>
+      <label className={`${fieldClass} rounded-2xl border border-line bg-card p-4`}>
+        Buscar em oportunidades online e concursos salvos
+        <input className={inputClass} type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Ex.: Analista de TI" />
+      </label>
+
+      <details className="rounded-2xl border border-line bg-card shadow-xs" aria-label="Resumo de oportunidades">
+        <summary className="cursor-pointer list-none p-4 text-xs font-semibold text-muted">
+          Resumo de oportunidades{!isLoading && !error ? ` · ${contests.length} concursos · ${favoriteCount} favoritos · ${openRegistrations} inscrições abertas` : ""}
+        </summary>
+        <div className="grid grid-cols-1 gap-3 border-t border-line p-4 sm:grid-cols-3">
+          <SummaryCard label="Concursos cadastrados" value={isLoading || error ? "—" : contests.length} detail="Registros locais" />
+          <SummaryCard label="Favoritos" value={isLoading || error ? "—" : favoriteCount} detail="Acompanhados por você" />
+          <SummaryCard label="Inscrições abertas" value={isLoading || error ? "—" : openRegistrations} detail="Conforme situação informada" />
+        </div>
+      </details>
 
       <section className="glass-card grid gap-4 rounded-2xl p-5 shadow-xs lg:p-6" aria-labelledby="online-contest-list-title">
         <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line pb-4">
@@ -764,7 +780,11 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
           </div>
           <span className="text-xs font-semibold text-muted">{visibleOnlineContests.length} exibidas</span>
         </div>
-        <div className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <details className="rounded-xl border border-line bg-paper/60 p-4">
+          <summary className="cursor-pointer text-xs font-semibold text-ink">
+            Filtros detalhados{activeOnlineFilterCount > 0 ? ` · ${activeOnlineFilterCount} ativos` : ""}
+          </summary>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className={fieldClass}>
             Área
             <select
@@ -852,7 +872,8 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
           <p className="text-[11px] leading-relaxed text-muted sm:col-span-2 lg:col-span-4">
             Filtros estruturados só exibem registros com valor correspondente. Salário e prazo excluem oportunidades sem esse dado; valores ausentes não são tratados como zero.
           </p>
-        </div>
+          </div>
+        </details>
         {isOnlineLoading ? (
           <p className="rounded-xl border border-dashed border-line p-8 text-center text-sm text-muted" aria-live="polite">Carregando cache online...</p>
         ) : visibleOnlineContests.length === 0 ? (
@@ -887,11 +908,7 @@ export function ExploreView({ refreshKey, timezone }: ExploreViewProps) {
           <span className="text-xs font-semibold text-muted">{visibleContests.length} exibidos</span>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-          <label className={fieldClass}>
-            Buscar em concursos locais e oportunidades online
-            <input className={inputClass} type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Ex.: Analista de TI" />
-          </label>
+        <div className="flex justify-end">
           <div className="flex items-end gap-1 rounded-xl border border-line bg-paper p-1" role="group" aria-label="Filtrar concursos">
             <button type="button" className={`min-h-9 rounded-lg px-3 text-xs font-semibold ${filter === "all" ? "bg-card text-ink shadow-xs" : "text-muted"}`} aria-pressed={filter === "all"} onClick={() => setFilter("all")}>Todos</button>
             <button type="button" className={`min-h-9 rounded-lg px-3 text-xs font-semibold ${filter === "favorites" ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 shadow-xs" : "text-muted"}`} aria-pressed={filter === "favorites"} onClick={() => setFilter("favorites")}>★ Favoritos</button>
@@ -1016,7 +1033,7 @@ function ContestCard({
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-paper/60 px-3 py-2 text-xs">
         <span className="min-w-0 flex-1 truncate text-muted" title={contest.noticeMaterialName ?? undefined}>
-          {contest.noticeMaterialName ? `Edital offline: ${contest.noticeMaterialName}` : "Nenhum edital salvo offline"}
+          {contest.noticeMaterialName ? `PDF salvo: ${contest.noticeMaterialName}` : "Nenhum PDF salvo"}
         </span>
         {contest.noticeMaterialId && (
           <button type="button" className={buttonSecondaryClass} onClick={onOpenNotice} disabled={isNoticePending}>Abrir PDF</button>
@@ -1095,7 +1112,7 @@ function OnlineContestCard({
         ))}
       </dl>
       <p className="mt-3 rounded-xl bg-paper px-3 py-2 text-xs leading-relaxed text-muted">
-        <span className="font-semibold text-ink">Evidência de situação: </span>{opportunity.statusEvidence}
+        <span className="font-semibold text-ink">Fonte da situação: </span>{opportunity.statusEvidence}
       </p>
       <p className="mt-2 break-all text-[11px] text-blue-700 dark:text-blue-300">
         <span className="font-semibold text-muted">Origem: </span>{opportunity.sourceUrl}
@@ -1104,11 +1121,11 @@ function OnlineContestCard({
         <button type="button" className={buttonPrimaryClass} onClick={onConvert}>Usar no plano</button>
         {opportunity.noticeMaterialId && (
           <button type="button" className={buttonSecondaryClass} onClick={onOpenNotice} disabled={isNoticePending}>
-            Abrir edital offline
+            Abrir PDF salvo
           </button>
         )}
         <button type="button" className={buttonSecondaryClass} onClick={onSaveNotice} disabled={isNoticePending}>
-          {isNoticePending ? "Baixando..." : opportunity.noticeMaterialId ? "Atualizar edital offline" : "Salvar edital offline"}
+          {isNoticePending ? "Baixando..." : opportunity.noticeMaterialId ? "Atualizar PDF salvo" : "Salvar PDF em Materiais"}
         </button>
       </div>
     </article>

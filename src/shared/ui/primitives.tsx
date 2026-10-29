@@ -125,6 +125,18 @@ export function IconPractice({ className = "size-5" }: { className?: string }) {
   );
 }
 
+export function IconFlashcards({ className = "size-5" }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M4 7.5A2.5 2.5 0 016.5 5H18a2 2 0 012 2v10a2 2 0 01-2 2H6.5A2.5 2.5 0 014 16.5v-9zM4 8h14M8 12h7m-7 3h4"/><path strokeLinecap="round" strokeLinejoin="round" d="M4 8v8.5A2.5 2.5 0 006.5 19"/></svg>;
+}
+
+export function IconWriting({ className = "size-5" }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 20h9M16.5 3.5a2.12 2.12 0 013 3L8 18l-4 1 1-4 11.5-11.5zM14 6l4 4"/></svg>;
+}
+
+export function IconSimulation({ className = "size-5" }: { className?: string }) {
+  return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M8 4h8l2 2h2v14H4V6h2l2-2zM8 4v4h8V4M8 13h8m-8 4h5"/><path strokeLinecap="round" strokeLinejoin="round" d="M18.5 11.5v3l2 1"/><circle cx="18.5" cy="16.5" r="4.5"/></svg>;
+}
+
 export function IconProgress({ className = "size-5" }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">

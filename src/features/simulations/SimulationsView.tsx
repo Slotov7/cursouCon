@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   answerSimulation,
+  createPreparation,
   createSimulation,
   createStudyTask,
   finishSimulation,
@@ -8,6 +9,7 @@ import {
   getSimulation,
   getSimulationResult,
   getSimulations,
+  getQuestions,
   pauseSimulation,
   resumeSimulation,
   startSimulation,
@@ -40,6 +42,8 @@ type SimulationsViewProps = {
   plan: StudyPlan | null;
   refreshKey: number;
   timezone: string;
+  onOpenQuestions: () => void;
+  onDataChanged: () => void;
 };
 
 type DistributionRow = {
@@ -60,12 +64,13 @@ const MODE_LABELS: Record<SimulationMode, string> = {
   exam: "Prova",
 };
 
-export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewProps) {
+export function SimulationsView({ plan, refreshKey, timezone, onOpenQuestions, onDataChanged }: SimulationsViewProps) {
   const [simulations, setSimulations] = useState<SimulationSummary[]>([]);
   const [selectedSimulationId, setSelectedSimulationId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SimulationDetail | null>(null);
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [hasQuestions, setHasQuestions] = useState<boolean | null>(null);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -93,6 +98,22 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
     (subject) => subject.preparationId === primaryPreparation?.id,
   ) ?? [];
   const currentQuestion = detail?.questions[currentQuestionIndex] ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    void getQuestions({
+      subjectId: null, questionType: null, status: "active", board: null, examYear: null,
+      attemptStatus: null, notebookId: null, searchText: null, limit: 1, offset: 0,
+    }).then((questions) => {
+      if (!cancelled) setHasQuestions(questions.length > 0);
+    }).catch((operationError: unknown) => {
+      if (!cancelled) {
+        setHasQuestions(null);
+        setError(getDesktopErrorMessage(operationError));
+      }
+    });
+    return () => { cancelled = true; };
+  }, [refreshKey, retryVersion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,8 +189,8 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
     event.preventDefault();
     setFormError(null);
     setMessage(null);
-    if (!primaryPreparation) {
-      setFormError("Cadastre uma preparação antes de criar um simulado.");
+    if (!hasQuestions) {
+      setFormError("Adicione questões em Questões antes de criar um simulado.");
       return;
     }
 
@@ -215,8 +236,19 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
       return;
     }
 
-    const request: CreateSimulationRequest = {
-      preparationId: primaryPreparation.id,
+    setIsCreating(true);
+    try {
+      const preparation = primaryPreparation ?? await createPreparation({
+        name: "Meus estudos",
+        organization: null,
+        role: null,
+        board: null,
+        examDate: null,
+        makePrimary: true,
+      });
+      if (!primaryPreparation) onDataChanged();
+      const request: CreateSimulationRequest = {
+      preparationId: preparation.id,
       title: normalizedTitle,
       mode,
       questionCount: parsedQuestionCount,
@@ -226,10 +258,7 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
       annulledPoints: parsedAnnulledPoints,
       questionType: null,
       subjectSelections,
-    };
-
-    setIsCreating(true);
-    try {
+      };
       const created = await createSimulation(request);
       setSimulations((previous) => [created.simulation, ...previous]);
       setSelectedSimulationId(created.simulation.id);
@@ -237,7 +266,9 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
       setResult(null);
       setCurrentQuestionIndex(0);
       setIsFormOpen(false);
-      setMessage("Simulado criado localmente com um conjunto fixo de questões.");
+      setMessage(!primaryPreparation
+        ? `Simulado salvo em Simulados: ${created.simulation.title}. A organização Meus estudos foi criada para você.`
+        : `Simulado salvo em Simulados: ${created.simulation.title}.`);
     } catch (operationError: unknown) {
       setFormError(getDesktopErrorMessage(operationError));
     } finally {
@@ -285,7 +316,7 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
         elapsedSeconds: Math.max(0, Math.floor((Date.now() - questionStartedAt.current) / 1000)),
       });
       updateFromDetail(updated);
-      setMessage("Resposta salva localmente.");
+      setMessage("Resposta salva neste simulado. Você pode continuar de onde parou.");
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -313,7 +344,7 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
         scheduledFor: dateKeyForTimezone(timezone),
       });
       setRecoveryAddedSubjectIds((previous) => new Set(previous).add(recoveryKey));
-      setMessage("Tarefa de recuperação adicionada ao plano para hoje.");
+      setMessage("Estudo de revisão adicionado a Hoje.");
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -352,7 +383,7 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
         <div className="relative z-10 grid max-w-4xl gap-4">
           <div className="flex flex-wrap items-center gap-3">
             <span className="rounded-full border border-blue-400/30 bg-blue-500/20 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300">
-              Simulados offline
+              Simulados
             </span>
             <span className="text-xs font-medium text-slate-300/85">
               {simulations.length} {simulations.length === 1 ? "simulado salvo" : "simulados salvos"}
@@ -363,15 +394,15 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
               Treine no ritmo da prova
             </h2>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-200/85">
-              Monte uma seleção objetiva a partir do seu banco local. As questões são congeladas no momento da criação e o gabarito só aparece após a finalização.
+              Monte uma prova com as questões salvas em Questões. O gabarito aparece no final. Você pode pausar e continuar depois.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 pt-2">
-            <button type="button" onClick={openNewForm} className={buttonPrimaryClass}>
-              + Novo simulado
+            <button type="button" onClick={openNewForm} className={buttonPrimaryClass} disabled={!hasQuestions}>
+              {hasQuestions === false ? "Adicione questões primeiro" : "+ Novo simulado"}
             </button>
             <span className="text-xs text-slate-300/75">
-              Treino pode ser pausado; prova mantém o relógio correndo.
+              Na prova com tempo, o relógio continua contando se você sair da tela.
             </span>
           </div>
         </div>
@@ -400,22 +431,28 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
                 <input className={inputClass} value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} />
               </label>
               <label className={fieldClass}>
-                Modo
+                Tipo de simulado
                 <select className={selectClass} value={mode} onChange={(event) => setMode(event.target.value as SimulationMode)}>
                   <option value="training">Treino</option>
                   <option value="exam">Prova com tempo</option>
                 </select>
               </label>
             </div>
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2">
               <label className={fieldClass}>
-                Questões
+                Número de questões
                 <input className={inputClass} type="number" min="1" max="500" value={questionCount} onChange={(event) => setQuestionCount(event.target.value)} />
               </label>
-              <label className={fieldClass}>
-                Tempo em minutos
-                <input className={inputClass} type="number" min="1" max="10080" value={timeLimitMinutes} onChange={(event) => setTimeLimitMinutes(event.target.value)} disabled={mode !== "exam"} />
-              </label>
+              {mode === "exam" && <label className={fieldClass}>
+                Tempo da prova (minutos)
+                <input className={inputClass} type="number" min="1" max="10080" value={timeLimitMinutes} onChange={(event) => setTimeLimitMinutes(event.target.value)} />
+              </label>}
+            </div>
+            {mode === "training" && <p className="text-xs text-muted">Este treino é sem cronômetro. Escolha “Prova com tempo” se quiser simular a duração real.</p>}
+            <details className="rounded-xl border border-line bg-paper/60 p-4">
+              <summary className="cursor-pointer text-sm font-semibold text-ink">Personalizar pontuação e assuntos (opcional)</summary>
+              <div className="mt-3 grid gap-4">
+            <div className="grid gap-4 sm:grid-cols-3">
               <label className={fieldClass}>
                 Penalidade por erro
                 <input className={inputClass} inputMode="decimal" value={negativePoints} onChange={(event) => setNegativePoints(event.target.value)} />
@@ -429,11 +466,11 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
                 <input className={inputClass} inputMode="decimal" value={annulledPoints} onChange={(event) => setAnnulledPoints(event.target.value)} />
               </label>
             </div>
-            <section className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4" aria-labelledby="simulation-distribution-title">
+            <section className="grid gap-3 rounded-xl border border-line bg-card p-4" aria-labelledby="simulation-distribution-title">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p id="simulation-distribution-title" className="text-xs font-bold text-ink">Distribuição por assunto</p>
-                  <p className="mt-1 text-xs leading-relaxed text-muted">Sem linhas, o núcleo considera todos os assuntos da preparação. Com linhas, a soma precisa fechar a quantidade total.</p>
+                  <p className="mt-1 text-xs leading-relaxed text-muted">Sem escolher assuntos, o simulado usa todas as questões disponíveis. Se personalizar, a soma das quantidades precisa bater com o total.</p>
                 </div>
                 <button type="button" className={buttonSecondaryClass} onClick={addDistributionRow} disabled={availableSubjects.length === distribution.length}>+ Adicionar assunto</button>
               </div>
@@ -463,7 +500,8 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
                 </div>
               )}
             </section>
-            <p className="text-xs leading-relaxed text-muted">Discursivas ficam fora desta configuração até o fluxo de correção ser concluído.</p>
+              </div>
+            </details>
             {formError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">{formError}</p>}
             <div className="flex flex-wrap justify-end gap-2 border-t border-line pt-4">
               <button type="button" className={buttonQuietClass} onClick={() => setIsFormOpen(false)} disabled={isCreating}>Cancelar</button>
@@ -473,7 +511,7 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
         </section>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
+      <div className={`grid gap-6 ${simulations.length > 0 ? "xl:grid-cols-[280px_minmax(0,1fr)]" : ""}`}>
         <section className="grid content-start gap-3 rounded-2xl border border-line bg-card p-4 shadow-xs" aria-labelledby="simulation-list-title">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -485,8 +523,14 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
           {!isLoading && simulations.length === 0 && (
             <div className="rounded-xl border border-dashed border-line bg-paper/60 p-5 text-center">
               <p className="text-sm font-semibold text-ink">Nenhum simulado ainda.</p>
-              <p className="mt-1 text-xs leading-relaxed text-muted">Crie o primeiro para congelar uma bateria de questões do seu banco local.</p>
-              <button type="button" className={`${buttonSecondaryClass} mt-4`} onClick={openNewForm}>Criar agora</button>
+              {hasQuestions ? (
+                <p className="mt-1 text-xs leading-relaxed text-muted">Use “Novo simulado” para montar uma prova a partir das questões salvas.</p>
+              ) : (
+                <>
+                  <p className="mt-1 text-xs leading-relaxed text-muted">Primeiro, adicione questões ao seu banco. Depois você poderá montar um simulado com elas.</p>
+                  <button type="button" className={`${buttonSecondaryClass} mt-3`} onClick={onOpenQuestions}>Ir para Questões</button>
+                </>
+              )}
             </div>
           )}
           <div className="grid max-h-[620px] gap-2 overflow-y-auto pr-1">
@@ -517,7 +561,7 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
           )}
         </section>
 
-        <section className="min-w-0">
+        {simulations.length > 0 && <section className="min-w-0">
           {isDetailLoading ? (
             <div className="rounded-2xl border border-line bg-card p-12 text-center text-sm text-muted">Carregando simulado...</div>
           ) : detail ? (
@@ -540,7 +584,7 @@ export function SimulationsView({ plan, refreshKey, timezone }: SimulationsViewP
               <p className="mt-1 text-xs">O conteúdo e as respostas ficam armazenados no espaço local.</p>
             </div>
           )}
-        </section>
+        </section>}
       </div>
     </div>
   );

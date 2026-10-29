@@ -52,6 +52,7 @@ export function DiscursiveView({ plan, refreshKey }: DiscursiveViewProps) {
   const [sourceName, setSourceName] = useState("");
   const [response, setResponse] = useState("");
   const [selfAssessment, setSelfAssessment] = useState<DiscursiveSelfAssessment>("partial");
+  const [responseDrafts, setResponseDrafts] = useState<Record<string, { response: string; assessment: DiscursiveSelfAssessment }>>({});
   const responseStartedAt = useRef(Date.now());
 
   const primaryPreparation =
@@ -84,18 +85,38 @@ export function DiscursiveView({ plan, refreshKey }: DiscursiveViewProps) {
     };
   }, [refreshKey, retryVersion]);
 
+  // Keep separate unfinished answers so switching prompts cannot lose or mix them.
   useEffect(() => {
+    const draft = selectedQuestionId ? responseDrafts[selectedQuestionId] : undefined;
+    setResponse(draft?.response ?? "");
+    setSelfAssessment(draft?.assessment ?? "partial");
     responseStartedAt.current = Date.now();
-    setResponse("");
-    setSelfAssessment("partial");
-  }, [selectedQuestionId]);
+  }, [selectedQuestionId, responseDrafts]);
+
+  const updateResponseDraft = (nextResponse: string) => {
+    setResponse(nextResponse);
+    if (!selectedQuestionId) return;
+    setResponseDrafts((previous) => ({
+      ...previous,
+      [selectedQuestionId]: { response: nextResponse, assessment: selfAssessment },
+    }));
+  };
+
+  const updateAssessmentDraft = (nextAssessment: DiscursiveSelfAssessment) => {
+    setSelfAssessment(nextAssessment);
+    if (!selectedQuestionId) return;
+    setResponseDrafts((previous) => ({
+      ...previous,
+      [selectedQuestionId]: { response, assessment: nextAssessment },
+    }));
+  };
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError(null);
     setMessage(null);
     if (!statement.trim()) {
-      setFormError("Escreva o enunciado da discursiva.");
+      setFormError("Escreva o enunciado da questão.");
       return;
     }
     const request: CreateDiscursiveQuestionRequest = {
@@ -119,7 +140,7 @@ export function DiscursiveView({ plan, refreshKey }: DiscursiveViewProps) {
       setReference("");
       setRubric("");
       setSourceName("");
-      setMessage("Discursiva salva no banco local.");
+      setMessage("Questão salva neste espaço.");
     } catch (operationError: unknown) {
       setFormError(getDesktopErrorMessage(operationError));
     } finally {
@@ -144,7 +165,12 @@ export function DiscursiveView({ plan, refreshKey }: DiscursiveViewProps) {
       });
       setQuestions((previous) => previous.map((question) => question.id === saved.question.id ? saved.question : question));
       setResponse("");
-      setMessage("Resposta discursiva salva separadamente da nota objetiva.");
+      setResponseDrafts((previous) => {
+        const next = { ...previous };
+        delete next[selectedQuestion.id];
+        return next;
+      });
+      setMessage("Sua resposta foi salva.");
     } catch (operationError: unknown) {
       setError(getDesktopErrorMessage(operationError));
     } finally {
@@ -169,13 +195,13 @@ export function DiscursiveView({ plan, refreshKey }: DiscursiveViewProps) {
         <div className="relative z-10 grid max-w-4xl gap-4">
           <div className="flex flex-wrap items-center gap-3">
             <span className="rounded-full border border-amber-400/30 bg-amber-500/20 px-3 py-1 text-xs font-bold uppercase tracking-wider text-amber-200">Discursivas</span>
-            <span className="text-xs font-medium text-slate-300/85">Resposta, referência e rubrica locais</span>
+            <span className="text-xs font-medium text-slate-300/85">Treino de respostas abertas</span>
           </div>
           <div>
-            <h2 className="font-heading text-2xl font-bold leading-tight tracking-tight text-white lg:text-3xl">Escreva para aprender</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-200/85">Registre estudos de caso e respostas abertas sem misturá-los com o gabarito objetivo. A autoavaliação fica vinculada a cada tentativa.</p>
+            <h2 className="font-heading text-2xl font-bold leading-tight tracking-tight text-white lg:text-3xl">Questões discursivas</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-200/85">Escreva sua resposta e avalie como foi. Se tiver, compare com a referência e os critérios de correção.</p>
           </div>
-          <button type="button" onClick={openNewForm} className={buttonPrimaryClass}>+ Nova discursiva</button>
+          <button type="button" onClick={openNewForm} className={`${buttonPrimaryClass} justify-self-start`}>+ Adicionar questão</button>
         </div>
       </section>
 
@@ -185,36 +211,41 @@ export function DiscursiveView({ plan, refreshKey }: DiscursiveViewProps) {
       {isFormOpen && (
         <section className="grid gap-4 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5" aria-labelledby="new-discursive-title">
           <div className="flex items-start justify-between gap-4">
-            <div><Eyebrow>Cadastro local</Eyebrow><h3 id="new-discursive-title" className="mt-1 font-heading text-lg font-bold text-ink">Nova questão discursiva</h3></div>
+            <div><Eyebrow>Nova questão</Eyebrow><h3 id="new-discursive-title" className="mt-1 font-heading text-lg font-bold text-ink">Adicionar questão discursiva</h3></div>
             <button type="button" className={buttonQuietClass} onClick={() => setIsFormOpen(false)}>Fechar</button>
           </div>
           <form className="grid gap-4" onSubmit={handleCreate}>
-            <label className={fieldClass}>Enunciado em Markdown<textarea className={textareaClass} value={statement} onChange={(event) => setStatement(event.target.value)} maxLength={50000} rows={6} /></label>
+            <label className={fieldClass}>Enunciado da questão<textarea className={textareaClass} value={statement} onChange={(event) => setStatement(event.target.value)} maxLength={50000} rows={6} placeholder="Cole ou escreva a proposta de redação ou estudo de caso." /></label>
+            <details className="rounded-xl border border-line bg-paper/60 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-ink">Referência, critérios e assunto (opcional)</summary>
+            <div className="mt-3 grid gap-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <label className={fieldClass}>Referência esperada<textarea className={textareaClass} value={reference} onChange={(event) => setReference(event.target.value)} maxLength={50000} rows={5} /></label>
               <label className={fieldClass}>Rubrica de correção<textarea className={textareaClass} value={rubric} onChange={(event) => setRubric(event.target.value)} maxLength={50000} rows={5} /></label>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <label className={fieldClass}>Assunto<select className={selectClass} value={subjectId} onChange={(event) => setSubjectId(event.target.value)}><option value="">Sem assunto</option>{subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name}</option>)}</select></label>
-              <label className={fieldClass}>Origem<input className={inputClass} value={sourceName} onChange={(event) => setSourceName(event.target.value)} maxLength={240} placeholder="Ex.: estudo de caso do edital" /></label>
+              <label className={fieldClass}>Fonte<input className={inputClass} value={sourceName} onChange={(event) => setSourceName(event.target.value)} maxLength={240} placeholder="Ex.: questão de prova" /></label>
             </div>
+            </div>
+            </details>
             {formError && <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">{formError}</p>}
-            <div className="flex justify-end gap-2 border-t border-line pt-4"><button type="button" className={buttonQuietClass} onClick={() => setIsFormOpen(false)} disabled={isSaving}>Cancelar</button><button type="submit" className={buttonPrimaryClass} disabled={isSaving}>{isSaving ? "Salvando..." : "Salvar discursiva"}</button></div>
+            <div className="flex justify-end gap-2 border-t border-line pt-4"><button type="button" className={buttonQuietClass} onClick={() => setIsFormOpen(false)} disabled={isSaving}>Cancelar</button><button type="submit" className={buttonPrimaryClass} disabled={isSaving}>{isSaving ? "Salvando..." : "Salvar questão"}</button></div>
           </form>
         </section>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
+      <div className={`grid gap-6 ${questions.length > 0 ? "xl:grid-cols-[280px_minmax(0,1fr)]" : ""}`}>
         <section className="grid content-start gap-3 rounded-2xl border border-line bg-card p-4 shadow-xs" aria-labelledby="discursive-list-title">
           <div className="flex items-center justify-between"><div><Eyebrow>Banco local</Eyebrow><h3 id="discursive-list-title" className="mt-1 font-heading text-lg font-bold text-ink">Questões abertas</h3></div>{isLoading && <span className="text-[11px] text-muted">Carregando...</span>}</div>
-          {!isLoading && questions.length === 0 && <div className="rounded-xl border border-dashed border-line bg-paper/60 p-5 text-center"><p className="text-sm font-semibold text-ink">Nenhuma discursiva ainda.</p><p className="mt-1 text-xs text-muted">Cadastre uma situação-problema para praticar sua argumentação.</p><button type="button" className={`${buttonSecondaryClass} mt-4`} onClick={openNewForm}>Cadastrar agora</button></div>}
+          {!isLoading && questions.length === 0 && <div className="rounded-xl border border-dashed border-line bg-paper/60 p-5 text-center"><p className="text-sm font-semibold text-ink">Nenhuma questão discursiva ainda.</p><p className="mt-1 text-xs text-muted">Use + Adicionar questão acima para cadastrar a primeira.</p></div>}
           <div className="grid max-h-[620px] gap-2 overflow-y-auto pr-1">{questions.map((question) => <button key={question.id} type="button" onClick={() => setSelectedQuestionId(question.id)} className={`grid gap-2 rounded-xl border p-3 text-left transition-colors ${question.id === selectedQuestionId ? "border-amber-500/50 bg-amber-500/10" : "border-line bg-paper/60 hover:border-muted/60 hover:bg-paper"}`}><span className="line-clamp-2 text-sm font-bold text-ink">{question.statementMarkdown.split("\n")[0]}</span><span className="flex justify-between gap-2 text-[11px] text-muted"><span>{question.subjectName ?? "Sem assunto"}</span><span>{question.attemptsCount} {question.attemptsCount === 1 ? "tentativa" : "tentativas"}</span></span></button>)}</div>
           {!isLoading && error && <button type="button" className={`${buttonSecondaryClass} w-full`} onClick={() => setRetryVersion((version) => version + 1)}>Tentar novamente</button>}
         </section>
 
-        <section className="min-w-0 rounded-2xl border border-line bg-card p-5 shadow-xs lg:p-7">
-          {selectedQuestion ? <DiscursiveRunner question={selectedQuestion} isSaving={isAnswering} response={response} selfAssessment={selfAssessment} onResponseChange={setResponse} onSelfAssessmentChange={setSelfAssessment} onSave={handleAnswer} /> : <div className="p-8 text-center text-sm text-muted"><p className="font-semibold text-ink">Selecione uma discursiva</p><p className="mt-1">A resposta e a autoavaliação ficam salvas no espaço local.</p></div>}
-        </section>
+        {questions.length > 0 && <section className="min-w-0 rounded-2xl border border-line bg-card p-5 shadow-xs lg:p-7">
+          {selectedQuestion && <DiscursiveRunner question={selectedQuestion} isSaving={isAnswering} response={response} selfAssessment={selfAssessment} onResponseChange={updateResponseDraft} onSelfAssessmentChange={updateAssessmentDraft} onSave={handleAnswer} />}
+        </section>}
       </div>
     </div>
   );
@@ -237,7 +268,7 @@ function DiscursiveRunner({ question, isSaving, response, selfAssessment, onResp
       <MarkdownContent source={question.statementMarkdown} className="question-body font-reading text-[1.05rem] font-medium leading-[1.7] text-ink" />
       <div className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4">
         <label className={fieldClass}>Sua resposta<textarea className={textareaClass} value={response} onChange={(event) => onResponseChange(event.target.value)} maxLength={50000} rows={9} placeholder="Estruture sua resposta, cite fundamentos e conclua." /></label>
-        <div className="flex flex-wrap items-end justify-between gap-3"><label className={`${fieldClass} min-w-48`}>Autoavaliação<select className={selectClass} value={selfAssessment} onChange={(event) => onSelfAssessmentChange(event.target.value as DiscursiveSelfAssessment)}>{Object.entries(SELF_ASSESSMENT_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button type="button" className={buttonPrimaryClass} onClick={onSave} disabled={isSaving || !response.trim()}>{isSaving ? "Salvando..." : "Salvar tentativa"}</button></div>
+          <div className="flex flex-wrap items-end justify-between gap-3"><label className={`${fieldClass} min-w-48`}>Como você avalia sua resposta?<select className={selectClass} value={selfAssessment} onChange={(event) => onSelfAssessmentChange(event.target.value as DiscursiveSelfAssessment)}>{Object.entries(SELF_ASSESSMENT_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button type="button" className={buttonPrimaryClass} onClick={onSave} disabled={isSaving || !response.trim()}>{isSaving ? "Salvando..." : "Salvar resposta"}</button></div>
       </div>
       {question.latestAttempt && <section className="grid gap-3 rounded-xl border border-blue-500/25 bg-blue-500/5 p-4" aria-labelledby="latest-discursive-attempt-title"><div className="flex flex-wrap items-center justify-between gap-3"><h4 id="latest-discursive-attempt-title" className="text-xs font-bold uppercase tracking-wide text-blue-700 dark:text-blue-300">Última tentativa</h4><span className="rounded-full border border-blue-500/25 bg-card px-2.5 py-1 text-[11px] font-semibold text-blue-700 dark:text-blue-300">{SELF_ASSESSMENT_LABELS[question.latestAttempt.selfAssessment]}</span></div><MarkdownContent source={question.latestAttempt.responseMarkdown} /></section>}
       <div className="grid gap-3 sm:grid-cols-2"><ReferenceBlock title="Referência esperada" source={question.referenceMarkdown} /><ReferenceBlock title="Rubrica de correção" source={question.rubricMarkdown} /></div>

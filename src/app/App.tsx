@@ -29,16 +29,20 @@ import {
   BrandLockup,
   BrandMark,
   IconExplore,
+  IconFlashcards,
   IconMaterials,
   IconPlan,
   IconPractice,
   IconProgress,
   IconSettings,
+  IconSimulation,
   IconToday,
+  IconWriting,
   ThemeToggle,
 } from "../shared/ui/primitives";
 
 type ViewId = "today" | "plan" | "materials" | "practice" | "flashcards" | "discursive" | "simulations" | "progress" | "explore" | "settings";
+type PlanEntryAction = "preparation" | "subject" | "task";
 
 const navigation: Array<{
   id: ViewId;
@@ -48,16 +52,20 @@ const navigation: Array<{
   icon: (props: { className?: string }) => ReactElement;
 }> = [
   { id: "today", label: "Hoje", note: "sua próxima ação", icon: IconToday },
-  { id: "plan", label: "Plano & Edital", note: "ciclo de estudo", icon: IconPlan },
+  { id: "plan", label: "Plano de estudo", note: "organize o que estudar", icon: IconPlan },
+  { id: "progress", label: "Progresso", note: "acompanhe seus estudos", icon: IconProgress },
   { id: "materials", label: "Materiais", note: "apostilas & pdfs", icon: IconMaterials },
-  { id: "practice", label: "Questões", note: "banco de questões", badge: "Novo", icon: IconPractice },
-  { id: "flashcards", label: "Flashcards", note: "revisão espaçada", icon: IconPractice },
-  { id: "discursive", label: "Discursivas", note: "respostas abertas", icon: IconPractice },
-  { id: "simulations", label: "Simulados", note: "treino e prova", icon: IconPractice },
-  { id: "progress", label: "Evolução & Sinais", note: "desempenho local", icon: IconProgress },
+  { id: "practice", label: "Questões", note: "pratique questões", badge: "Novo", icon: IconPractice },
+  { id: "flashcards", label: "Cartões de revisão", note: "revise o que estudou", icon: IconFlashcards },
+  { id: "discursive", label: "Questões discursivas", note: "pratique respostas abertas", icon: IconWriting },
+  { id: "simulations", label: "Simulados", note: "treine com uma prova", icon: IconSimulation },
   { id: "explore", label: "Explorar", note: "concursos e prazos", icon: IconExplore },
   { id: "settings", label: "Configurações", note: "preferências locais", icon: IconSettings },
 ];
+
+const primaryNavigationIds = new Set<ViewId>(["today", "plan", "progress", "materials", "practice"]);
+const primaryNavigation = navigation.filter((item) => primaryNavigationIds.has(item.id));
+const moreNavigation = navigation.filter((item) => !primaryNavigationIds.has(item.id));
 
 const DEFAULT_APP_PREFERENCES: AppPreferences = {
   theme: "dark",
@@ -219,6 +227,13 @@ function AppShell({
   const [refreshVersion, setRefreshVersion] = useState(0);
 
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [isMoreNavigationOpen, setIsMoreNavigationOpen] = useState(false);
+  const [planEntryAction, setPlanEntryAction] = useState<PlanEntryAction | null>(null);
+
+  const openPlan = (step?: PlanEntryAction) => {
+    setPlanEntryAction(step ?? null);
+    onNavigate("plan");
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -300,9 +315,11 @@ function AppShell({
 
   const currentSection = navigation.find((item) => item.id === activeView);
   const isSessionActive = dailyPlan?.activeSession?.status === "active";
+  const isInMoreNavigation = moreNavigation.some((item) => item.id === activeView);
+  const showMoreNavigation = isMoreNavigationOpen || isInMoreNavigation;
 
   return (
-    <div className="flex min-h-screen bg-paper text-ink font-sans selection:bg-blue-600 selection:text-white">
+    <div className="flex min-h-screen w-full min-w-0 bg-paper text-ink font-sans selection:bg-blue-600 selection:text-white">
       {/* Command Palette Modal */}
       <CommandPalette
         isOpen={isPaletteOpen}
@@ -336,7 +353,7 @@ function AppShell({
             <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-muted">
               Navegação
             </p>
-            {navigation.map((item) => {
+            {primaryNavigation.map((item) => {
               const isActive = activeView === item.id;
               const IconComponent = item.icon;
               return (
@@ -367,19 +384,46 @@ function AppShell({
                 </button>
               );
             })}
+            <button
+              type="button"
+              aria-expanded={showMoreNavigation}
+              onClick={() => setIsMoreNavigationOpen((open) => !open)}
+              className="flex items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold text-muted hover:bg-paper hover:text-ink"
+            >
+              <span>Mais ferramentas</span>
+              <span aria-hidden="true">{showMoreNavigation ? "−" : "+"}</span>
+            </button>
+            {showMoreNavigation && moreNavigation.map((item) => {
+              const isActive = activeView === item.id;
+              const IconComponent = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onNavigate(item.id)}
+                  aria-current={isActive ? "page" : undefined}
+                  className={`group flex items-center gap-2.5 rounded-xl px-3 py-2 pl-5 text-xs font-semibold whitespace-nowrap transition-colors ${isActive ? "bg-blue-600 text-white" : "text-muted hover:bg-paper hover:text-ink"}`}
+                >
+                  <IconComponent className={`size-4.5 shrink-0 ${isActive ? "text-white" : "text-slate-400"}`} />
+                  <span className="truncate">{item.label}</span>
+                </button>
+              );
+            })}
           </nav>
         </div>
 
         {/* Sidebar Footer & Action */}
         <div className="grid gap-3 pt-3 border-t border-line">
           {/* Quick Study Action CTA */}
-          <button
-            type="button"
-            onClick={() => onNavigate("today")}
-            className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-500 p-2.5 text-xs font-bold text-white shadow-xs transition-all duration-150 ease-out active:scale-[0.97] cursor-pointer"
-          >
-            <span>⚡ Estudar Agora</span>
-          </button>
+          {activeView !== "today" && (
+            <button
+              type="button"
+              onClick={() => onNavigate("today")}
+              className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-500 p-2.5 text-xs font-bold text-white shadow-xs transition-all duration-150 ease-out active:scale-[0.97] cursor-pointer"
+            >
+              <span>⚡ Estudar Agora</span>
+            </button>
+          )}
 
           <div className="flex items-center justify-between px-1 text-xs text-muted">
             <span className="font-mono text-[11px]">Dados locais</span>
@@ -389,7 +433,7 @@ function AppShell({
       </aside>
 
       {/* Main Canvas Area */}
-      <div className="flex flex-1 flex-col lg:pl-64">
+      <div className="flex min-w-0 flex-1 flex-col lg:pl-64">
         {/* Top Header Bar */}
         <header className="sticky top-0 z-30 flex h-15 items-center justify-between border-b border-line bg-card/85 px-4 backdrop-blur-md sm:px-6 lg:px-8">
           <div className="flex items-center gap-4">
@@ -400,7 +444,7 @@ function AppShell({
 
             <div className="hidden sm:block">
               <h1 className="font-heading text-base font-bold text-ink leading-tight">{currentSection?.label}</h1>
-              <p className="text-[11px] text-muted leading-tight">{currentSection?.note}</p>
+              {activeView !== "today" && <p className="text-[11px] text-muted leading-tight">{currentSection?.note}</p>}
             </div>
           </div>
 
@@ -439,8 +483,9 @@ function AppShell({
         </header>
 
         {/* Mobile Navigation Bar */}
-        <nav className="flex lg:hidden items-center justify-around border-b border-line bg-card p-2 overflow-x-auto" aria-label="Navegação móvel">
-          {navigation.map((item) => {
+        <nav className="grid gap-1 border-b border-line bg-card p-2 lg:hidden" aria-label="Navegação móvel">
+          <div className="flex items-center justify-around">
+          {primaryNavigation.map((item) => {
             const isActive = activeView === item.id;
             const IconComponent = item.icon;
             return (
@@ -457,10 +502,29 @@ function AppShell({
               </button>
             );
           })}
+            <button type="button" aria-expanded={showMoreNavigation} onClick={() => setIsMoreNavigationOpen((open) => !open)} className="flex min-w-14 flex-col items-center gap-1 p-2 text-[11px] font-semibold text-muted">
+              <span className="text-lg leading-5" aria-hidden="true">{showMoreNavigation ? "−" : "···"}</span>
+              <span>Mais</span>
+            </button>
+          </div>
+          {showMoreNavigation && (
+            <div className="grid grid-cols-3 gap-1 border-t border-line pt-2">
+              {moreNavigation.map((item) => {
+                const isActive = activeView === item.id;
+                const IconComponent = item.icon;
+                return (
+                  <button key={item.id} type="button" onClick={() => onNavigate(item.id)} aria-current={isActive ? "page" : undefined} className={`flex items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold ${isActive ? "bg-blue-600 text-white" : "text-muted hover:bg-paper hover:text-ink"}`}>
+                    <IconComponent className={`size-4 shrink-0 ${isActive ? "text-white" : "text-slate-400"}`} />
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </nav>
 
         {/* Main View Content Container */}
-        <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 max-w-7xl w-full mx-auto">
+        <main className="mx-auto w-full max-w-7xl min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">
           {preferencesError && (
             <p className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600" role="alert">
               Não foi possível carregar ou salvar as preferências: {preferencesError}
@@ -472,7 +536,7 @@ function AppShell({
               plan={studyPlan}
               dailyPlan={dailyPlan}
               error={studyDataError}
-              onOpenPlan={() => onNavigate("plan")}
+              onOpenPlan={openPlan}
               onDataChanged={refreshStudyData}
               timezone={appPreferences.timezone}
             />
@@ -483,7 +547,11 @@ function AppShell({
               error={studyDataError}
               onRetry={refreshStudyData}
               onPlanChanged={refreshStudyData}
+              onOpenToday={() => onNavigate("today")}
               timezone={appPreferences.timezone}
+              entryAction={planEntryAction}
+              onEntryActionHandled={() => setPlanEntryAction(null)}
+              taskPreparationIdsToday={dailyPlan?.tasks.map((task) => task.preparationId) ?? []}
             />
           ) : activeView === "materials" ? (
             <MaterialsView plan={studyPlan} refreshKey={refreshVersion} />
@@ -494,13 +562,14 @@ function AppShell({
           ) : activeView === "discursive" ? (
             <DiscursiveView plan={studyPlan} refreshKey={refreshVersion} />
           ) : activeView === "simulations" ? (
-            <SimulationsView plan={studyPlan} refreshKey={refreshVersion} timezone={appPreferences.timezone} />
+            <SimulationsView plan={studyPlan} refreshKey={refreshVersion} timezone={appPreferences.timezone} onOpenQuestions={() => onNavigate("practice")} onDataChanged={refreshStudyData} />
           ) : activeView === "progress" ? (
             <ProgressView
               refreshKey={refreshVersion}
               showGamification={appPreferences.gamificationVisible}
               timezone={appPreferences.timezone}
               onOpenToday={() => onNavigate("today")}
+              onDataChanged={refreshStudyData}
             />
           ) : activeView === "explore" ? (
             <ExploreView refreshKey={refreshVersion} timezone={appPreferences.timezone} />
@@ -512,7 +581,7 @@ function AppShell({
               plan={studyPlan}
               dailyPlan={dailyPlan}
               error={studyDataError}
-              onOpenPlan={() => onNavigate("plan")}
+              onOpenPlan={openPlan}
               onDataChanged={refreshStudyData}
               timezone={appPreferences.timezone}
             />

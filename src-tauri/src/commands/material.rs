@@ -32,6 +32,12 @@ pub struct OpenMaterialRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeleteMaterialRequest {
+    pub material_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateMaterialPageRequest {
     pub material_id: String,
     pub page: i64,
@@ -56,6 +62,17 @@ pub fn get_materials(app: AppHandle) -> Result<Vec<MaterialSummary>, CommandErro
     let store = local_workspace_store(&app)?;
     MaterialService::new(store)
         .list()
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub fn delete_material(
+    app: AppHandle,
+    request: DeleteMaterialRequest,
+) -> Result<u64, CommandError> {
+    let store = local_workspace_store(&app)?;
+    MaterialService::new(store)
+        .delete(&request.material_id)
         .map_err(CommandError::from)
 }
 
